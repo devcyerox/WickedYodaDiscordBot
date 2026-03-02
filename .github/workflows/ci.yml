@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - "codex/**"
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Compile check
+        run: python -m py_compile bot.py web_admin.py
+
+      - name: Ruff lint
+        run: ruff check .
+
+      - name: Ruff format check
+        run: ruff format --check .
+
+      - name: Unit tests
+        run: PYTHONPATH=. pytest -q
+
+      - name: Bandit security scan
+        run: bandit -q -r . -x tests,__pycache__,.venv,data
+
+      - name: Python dependency audit
+        run: pip-audit -r requirements.txt
+
+  docker-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          tags: wickedyoda-little-helper:ci

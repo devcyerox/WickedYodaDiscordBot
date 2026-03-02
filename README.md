@@ -14,7 +14,11 @@ Set these in `env.env`:
 - `WEB_PORT` - web GUI port inside container
 - `WEB_ADMIN_DEFAULT_USERNAME` - web admin login username
 - `WEB_ADMIN_DEFAULT_PASSWORD` - web admin login password
+- `WEB_ADMIN_DEFAULT_PASSWORD_HASH` - optional password hash instead of plaintext password
 - `WEB_ADMIN_SESSION_SECRET` - session signing secret for Flask
+- `WEB_SESSION_COOKIE_SECURE` - set `true` when using HTTPS
+- `WEB_SESSION_COOKIE_SAMESITE` - cookie same-site policy (`Lax`, `Strict`, `None`)
+- `WEB_SESSION_TIMEOUT_MINUTES` - web session timeout (minutes)
 - `DATA_DIR` - persistent data directory for moderation action history
 
 ## Included Slash Commands
@@ -40,10 +44,49 @@ All actions are also written to SQLite and visible in the web GUI.
 
 The GUI is built with responsive Bootstrap layout for mobile and desktop.
 
+## Verification And Security Checks
+
+Local verification command:
+
+```bash
+./scripts/verify.sh
+```
+
+This runs:
+- Python compile check
+- Ruff lint + format check
+- Pytest
+- Bandit (in CI Python 3.12; skipped locally on Python 3.14+ due upstream tool incompatibility)
+- pip-audit dependency vulnerability check
+- Docker image build verification
+
+GitHub workflows included:
+- `.github/workflows/ci.yml` - lint/test/audit/docker build
+- `.github/workflows/security.yml` - Gitleaks + Trivy FS/Image scans
+- `.github/workflows/codeql.yml` - CodeQL static analysis
+- `.github/dependabot.yml` - weekly dependency updates
+
 ## Run With Docker Compose
 
 ```bash
 docker compose up --build -d
+```
+
+## Docker Image Publish (GitHub Packages / GHCR)
+
+Workflow: `.github/workflows/docker-publish.yml`
+
+- Publishes on push to `main`, semantic version tags (`v*.*.*`), or manual run.
+- Push target:
+  - `ghcr.io/<owner>/<repo>:latest`
+  - `ghcr.io/<owner>/<repo>:<branch|tag|sha>`
+- Multi-arch build: `linux/amd64`, `linux/arm64`
+
+To trigger publish, push to `main` or create a tag:
+
+```bash
+git tag v0.1.0
+git push origin main --tags
 ```
 
 ## Required Bot Permissions

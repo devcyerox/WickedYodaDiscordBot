@@ -2,15 +2,13 @@ import logging
 import os
 import sqlite3
 import threading
-from datetime import datetime, timedelta, timezone
-from typing import Optional
+from datetime import UTC, datetime, timedelta
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 
 from web_admin import start_web_admin
-
 
 logging.basicConfig(
     level=logging.INFO,
@@ -107,7 +105,7 @@ class ActionStore:
                     VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
-                        datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+                        datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S"),
                         action,
                         status,
                         moderator,
@@ -127,8 +125,8 @@ class ModerationBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents)
         self.guild_object = discord.Object(id=GUILD_ID)
         self.commands_synced = 0
-        self.started_at = datetime.now(timezone.utc)
-        self.web_thread: Optional[threading.Thread] = None
+        self.started_at = datetime.now(UTC)
+        self.web_thread: threading.Thread | None = None
 
     async def setup_hook(self) -> None:
         self.tree.copy_global_to(guild=self.guild_object)
@@ -203,7 +201,7 @@ async def reply_ephemeral(interaction: discord.Interaction, message: str) -> Non
         await interaction.response.send_message(message, ephemeral=True)
 
 
-async def get_log_channel(client: commands.Bot) -> Optional[discord.TextChannel]:
+async def get_log_channel(client: commands.Bot) -> discord.TextChannel | None:
     channel = client.get_channel(BOT_LOG_CHANNEL)
     if isinstance(channel, discord.TextChannel):
         return channel
@@ -228,8 +226,8 @@ async def log_action(client: commands.Bot, title: str, description: str, color: 
 async def log_interaction(
     interaction: discord.Interaction,
     action: str,
-    target: Optional[discord.abc.User] = None,
-    reason: Optional[str] = None,
+    target: discord.abc.User | None = None,
+    reason: str | None = None,
     success: bool = True,
 ) -> None:
     actor_mention = interaction.user.mention if interaction.user else "Unknown"
@@ -240,12 +238,7 @@ async def log_interaction(
     target_text = f"\nTarget: {target.mention} ({target.id})" if target else ""
     target_db = f"{target} ({target.id})" if target else ""
     reason_text = f"\nReason: {reason}" if reason else ""
-    description = (
-        f"Action: `{action}`\n"
-        f"Status: **{status}**\n"
-        f"Moderator: {actor_mention}\n"
-        f"Guild: {guild_name}{target_text}{reason_text}"
-    )
+    description = f"Action: `{action}`\nStatus: **{status}**\nModerator: {actor_mention}\nGuild: {guild_name}{target_text}{reason_text}"
     await log_action(
         bot,
         f"Moderation Action - {action}",
@@ -274,7 +267,7 @@ async def ping(interaction: discord.Interaction) -> None:
 async def kick(
     interaction: discord.Interaction,
     member: discord.Member,
-    reason: Optional[str] = "No reason provided",
+    reason: str | None = "No reason provided",
 ) -> None:
     try:
         await member.kick(reason=reason)
@@ -291,7 +284,7 @@ async def kick(
 async def ban(
     interaction: discord.Interaction,
     member: discord.Member,
-    reason: Optional[str] = "No reason provided",
+    reason: str | None = "No reason provided",
     delete_days: app_commands.Range[int, 0, 7] = 0,
 ) -> None:
     try:
@@ -318,7 +311,7 @@ async def timeout(
     interaction: discord.Interaction,
     member: discord.Member,
     minutes: app_commands.Range[int, 1, 40320],
-    reason: Optional[str] = "No reason provided",
+    reason: str | None = "No reason provided",
 ) -> None:
     try:
         until = discord.utils.utcnow() + timedelta(minutes=minutes)
@@ -336,7 +329,7 @@ async def timeout(
 async def untimeout(
     interaction: discord.Interaction,
     member: discord.Member,
-    reason: Optional[str] = "No reason provided",
+    reason: str | None = "No reason provided",
 ) -> None:
     try:
         await member.edit(timed_out_until=None, reason=reason)
