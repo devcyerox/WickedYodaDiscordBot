@@ -1737,6 +1737,22 @@ def create_app(
         parsed = urlparse(value if "://" in value else f"//{value}")
         return str(parsed.hostname or "").strip().lower()
 
+    def _request_hostnames() -> set[str]:
+        hosts: set[str] = set()
+        direct_host = _extract_hostname(str(request.host or ""))
+        if direct_host:
+            hosts.add(direct_host)
+
+        for header_name in ("X-Forwarded-Host", "X-Original-Host"):
+            raw_value = str(request.headers.get(header_name, "")).strip()
+            if not raw_value:
+                continue
+            for candidate in raw_value.split(","):
+                candidate_host = _extract_hostname(candidate.strip())
+                if candidate_host:
+                    hosts.add(candidate_host)
+        return hosts
+
     def _client_ip() -> str:
         forwarded = str(request.headers.get("X-Forwarded-For", "")).strip()
         if forwarded:
@@ -1849,15 +1865,15 @@ def create_app(
         return user
 
     def _is_same_origin_request() -> bool:
-        host = _extract_hostname(str(request.host or ""))
-        if not host:
+        allowed_hosts = _request_hostnames()
+        if not allowed_hosts:
             return True
         for header_name in ("Origin", "Referer"):
             header_value = str(request.headers.get(header_name, "")).strip()
             if not header_value:
                 continue
             source = _extract_hostname(header_value)
-            if source and source != host:
+            if source and source not in allowed_hosts:
                 return False
         return True
 
