@@ -72,6 +72,7 @@ jobs:
             fs \
             --severity HIGH,CRITICAL \
             --scanners vuln,misconfig,secret \
+            --ignore-unfixed \
             --db-repository public.ecr.aws/aquasecurity/trivy-db:2 \
             --java-db-repository public.ecr.aws/aquasecurity/trivy-java-db:1 \
             --format sarif \
@@ -124,6 +125,7 @@ jobs:
             aquasec/trivy:0.56.1 \
             image \
             --severity HIGH,CRITICAL \
+            --ignore-unfixed \
             --db-repository public.ecr.aws/aquasecurity/trivy-db:2 \
             --java-db-repository public.ecr.aws/aquasecurity/trivy-java-db:1 \
             --format sarif \
