@@ -53,6 +53,7 @@ def env_int(name: str, default: int) -> int:
 DISCORD_TOKEN = required_env("DISCORD_TOKEN")
 GUILD_ID = int(required_env("GUILD_ID"))
 BOT_LOG_CHANNEL = int(required_env("Bot_Log_Channel"))
+MANAGED_GUILD_IDS_RAW = os.getenv("MANAGED_GUILD_IDS", "").strip()
 
 DATA_DIR = os.getenv("DATA_DIR", "/app/data")
 WEB_ENABLED = env_bool("WEB_ENABLED", True)
@@ -69,6 +70,20 @@ YOUTUBE_POLL_INTERVAL_SECONDS = env_int("YOUTUBE_POLL_INTERVAL_SECONDS", 300)
 YOUTUBE_REQUEST_TIMEOUT_SECONDS = env_int("YOUTUBE_REQUEST_TIMEOUT_SECONDS", 12)
 UPTIME_STATUS_ENABLED = env_bool("UPTIME_STATUS_ENABLED", True)
 UPTIME_STATUS_TIMEOUT_SECONDS = env_int("UPTIME_STATUS_TIMEOUT_SECONDS", 8)
+WEB_RESTART_ENABLED = env_bool("WEB_RESTART_ENABLED", False)
+WEB_AVATAR_MAX_UPLOAD_BYTES = max(1024, env_int("WEB_AVATAR_MAX_UPLOAD_BYTES", 2 * 1024 * 1024))
+
+if MANAGED_GUILD_IDS_RAW:
+    parsed_guild_ids: set[int] = set()
+    for part in re.split(r"[\s,]+", MANAGED_GUILD_IDS_RAW):
+        if not part:
+            continue
+        if not part.isdigit():
+            raise RuntimeError("MANAGED_GUILD_IDS must contain only numeric guild IDs.")
+        parsed_guild_ids.add(int(part))
+    MANAGED_GUILD_IDS: set[int] | None = parsed_guild_ids if parsed_guild_ids else None
+else:
+    MANAGED_GUILD_IDS = None
 
 SHORT_CODE_REGEX = re.compile(r"Link saved:\s*([0-9]{4,})")
 STATUS_PAGE_PATH_REGEX = re.compile(r"^/status/([^/]+)/?$")
@@ -819,6 +834,15 @@ class ActionStore:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS guild_settings (
+                    guild_id INTEGER PRIMARY KEY,
+                    bot_log_channel_id INTEGER,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
             existing_tags = conn.execute("SELECT COUNT(*) FROM tag_responses").fetchone()[0]
             if int(existing_tags) == 0:
                 now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
@@ -828,8 +852,17 @@ class ActionStore:
                         INSERT INTO tag_responses (tag, response, updated_at)
                         VALUES (?, ?, ?)
                         """,
-                        (tag, response, now),
+                        (f"{GUILD_ID}:{tag}", response, now),
                     )
+            existing_guild_setting = conn.execute("SELECT COUNT(*) FROM guild_settings WHERE guild_id = ?", (GUILD_ID,)).fetchone()[0]
+            if int(existing_guild_setting) == 0:
+                conn.execute(
+                    """
+                    INSERT INTO guild_settings (guild_id, bot_log_channel_id, updated_at)
+                    VALUES (?, ?, ?)
+                    """,
+                    (GUILD_ID, BOT_LOG_CHANNEL, datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")),
+                )
             conn.commit()
 
     def record(
@@ -895,14 +928,23 @@ class ActionStore:
                 )
                 conn.commit()
 
-    def get_command_permissions(self) -> dict[str, dict[str, str | list[int]]]:
+    def get_command_permissions(self, guild_id: int) -> dict[str, dict[str, str | list[int]]]:
+        prefix = f"{int(guild_id)}:"
         with self._lock:
             with self._connect() as conn:
                 conn.row_factory = sqlite3.Row
                 rows = conn.execute("SELECT command_key, mode, role_ids_json FROM command_permissions").fetchall()
         mapping: dict[str, dict[str, str | list[int]]] = {}
+        found_prefixed = False
         for row in rows:
             command_key = str(row["command_key"]).strip()
+            if command_key.startswith(prefix):
+                found_prefixed = True
+                command_key = command_key.removeprefix(prefix)
+            elif ":" in command_key:
+                continue
+            elif int(guild_id) != GUILD_ID:
+                continue
             if command_key not in COMMAND_PERMISSION_METADATA:
                 continue
             raw_role_ids = row["role_ids_json"]
@@ -911,10 +953,17 @@ class ActionStore:
             except json.JSONDecodeError:
                 parsed_role_ids = []
             mapping[command_key] = normalize_command_permission_rule({"mode": row["mode"], "role_ids": parsed_role_ids})
-        return mapping
+        if found_prefixed:
+            return mapping
+        if int(guild_id) == GUILD_ID:
+            return mapping
+        return {}
 
-    def save_command_permissions(self, rules: dict[str, dict[str, str | list[int]]]) -> dict[str, dict[str, str | list[int]]]:
+    def save_command_permissions(
+        self, guild_id: int, rules: dict[str, dict[str, str | list[int]]]
+    ) -> dict[str, dict[str, str | list[int]]]:
         now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
+        prefix = f"{int(guild_id)}:"
         stored_rules: dict[str, dict[str, str | list[int]]] = {}
         for key, rule in (rules or {}).items():
             if key not in COMMAND_PERMISSION_METADATA:
@@ -926,35 +975,50 @@ class ActionStore:
 
         with self._lock:
             with self._connect() as conn:
-                conn.execute("DELETE FROM command_permissions")
+                conn.execute("DELETE FROM command_permissions WHERE command_key LIKE ?", (f"{prefix}%",))
                 for key, rule in stored_rules.items():
                     conn.execute(
                         """
                         INSERT INTO command_permissions (command_key, mode, role_ids_json, updated_at)
                         VALUES (?, ?, ?, ?)
                         """,
-                        (key, str(rule["mode"]), json.dumps(rule["role_ids"]), now),
+                        (f"{prefix}{key}", str(rule["mode"]), json.dumps(rule["role_ids"]), now),
                     )
                 conn.commit()
         return stored_rules
 
-    def get_tag_responses(self) -> dict[str, str]:
+    def get_tag_responses(self, guild_id: int) -> dict[str, str]:
+        prefix = f"{int(guild_id)}:"
         with self._lock:
             with self._connect() as conn:
                 conn.row_factory = sqlite3.Row
                 rows = conn.execute("SELECT tag, response FROM tag_responses ORDER BY tag ASC").fetchall()
         mapping: dict[str, str] = {}
+        found_prefixed = False
         for row in rows:
-            tag = normalize_tag(str(row["tag"]))
+            raw_tag = str(row["tag"])
+            if raw_tag.startswith(prefix):
+                found_prefixed = True
+                raw_tag = raw_tag.removeprefix(prefix)
+            elif ":" in raw_tag:
+                continue
+            elif int(guild_id) != GUILD_ID:
+                continue
+            tag = normalize_tag(raw_tag)
             if not tag:
                 continue
             response = str(row["response"]).strip()
             if response:
                 mapping[tag] = response
-        return mapping
+        if found_prefixed:
+            return mapping
+        if int(guild_id) == GUILD_ID and mapping:
+            return mapping
+        return dict(DEFAULT_TAG_RESPONSES)
 
-    def save_tag_responses(self, mapping: dict[str, str]) -> dict[str, str]:
+    def save_tag_responses(self, guild_id: int, mapping: dict[str, str]) -> dict[str, str]:
         now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
+        prefix = f"{int(guild_id)}:"
         normalized: dict[str, str] = {}
         for raw_tag, raw_response in (mapping or {}).items():
             tag = normalize_tag(str(raw_tag))
@@ -965,17 +1029,49 @@ class ActionStore:
 
         with self._lock:
             with self._connect() as conn:
-                conn.execute("DELETE FROM tag_responses")
+                conn.execute("DELETE FROM tag_responses WHERE tag LIKE ?", (f"{prefix}%",))
                 for tag, response in normalized.items():
                     conn.execute(
                         """
                         INSERT INTO tag_responses (tag, response, updated_at)
                         VALUES (?, ?, ?)
                         """,
-                        (tag, response, now),
+                        (f"{prefix}{tag}", response, now),
                     )
                 conn.commit()
         return normalized
+
+    def get_guild_settings(self, guild_id: int) -> dict[str, int | None]:
+        with self._lock:
+            with self._connect() as conn:
+                conn.row_factory = sqlite3.Row
+                row = conn.execute(
+                    "SELECT guild_id, bot_log_channel_id FROM guild_settings WHERE guild_id = ?",
+                    (int(guild_id),),
+                ).fetchone()
+        if row is None:
+            return {"guild_id": int(guild_id), "bot_log_channel_id": None}
+        return {
+            "guild_id": int(row["guild_id"]),
+            "bot_log_channel_id": int(row["bot_log_channel_id"]) if row["bot_log_channel_id"] else None,
+        }
+
+    def save_guild_settings(self, guild_id: int, *, bot_log_channel_id: int | None) -> dict[str, int | None]:
+        now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO guild_settings (guild_id, bot_log_channel_id, updated_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(guild_id) DO UPDATE SET
+                        bot_log_channel_id = excluded.bot_log_channel_id,
+                        updated_at = excluded.updated_at
+                    """,
+                    (int(guild_id), bot_log_channel_id, now),
+                )
+                conn.commit()
+        return self.get_guild_settings(guild_id)
 
 
 ACTION_DB_PATH = resolve_action_db_path()
@@ -985,15 +1081,15 @@ BOT_LOG_FILE, BOT_CHANNEL_LOG_FILE, CONTAINER_ERROR_LOG_FILE = configure_runtime
 ACTION_STORE = ActionStore(ACTION_DB_PATH)
 
 
-def resolve_command_permission_state(command_key: str) -> tuple[str, str, list[int]]:
+def resolve_command_permission_state(command_key: str, guild_id: int) -> tuple[str, str, list[int]]:
     default_policy = COMMAND_PERMISSION_METADATA.get(command_key, {}).get("default_policy", COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC)
-    stored_rules = ACTION_STORE.get_command_permissions()
+    stored_rules = ACTION_STORE.get_command_permissions(guild_id=guild_id)
     rule = normalize_command_permission_rule(stored_rules.get(command_key))
     return str(default_policy), str(rule["mode"]), normalize_role_ids(rule["role_ids"])
 
 
-def can_use_command(member: discord.Member | discord.User, command_key: str) -> bool:
-    default_policy, mode, role_ids = resolve_command_permission_state(command_key)
+def can_use_command(member: discord.Member | discord.User, command_key: str, guild_id: int) -> bool:
+    default_policy, mode, role_ids = resolve_command_permission_state(command_key, guild_id=guild_id)
     if mode == COMMAND_PERMISSION_MODE_PUBLIC:
         return True
     if mode == COMMAND_PERMISSION_MODE_CUSTOM_ROLES:
@@ -1003,8 +1099,8 @@ def can_use_command(member: discord.Member | discord.User, command_key: str) -> 
     return True
 
 
-def build_command_permission_denied_message(command_key: str, guild: discord.Guild | None = None) -> str:
-    default_policy, mode, role_ids = resolve_command_permission_state(command_key)
+def build_command_permission_denied_message(command_key: str, guild_id: int, guild: discord.Guild | None = None) -> str:
+    default_policy, mode, role_ids = resolve_command_permission_state(command_key, guild_id=guild_id)
     if mode == COMMAND_PERMISSION_MODE_CUSTOM_ROLES:
         if guild is None or not role_ids:
             return "You do not have one of the roles required to run this command."
@@ -1044,8 +1140,8 @@ def validate_manageable_role(actor: discord.Member, role: discord.Role, bot_memb
     return True, None
 
 
-def build_command_permissions_web_payload() -> dict:
-    rules = ACTION_STORE.get_command_permissions()
+def build_command_permissions_web_payload(guild_id: int) -> dict:
+    rules = ACTION_STORE.get_command_permissions(guild_id=guild_id)
     commands_payload: list[dict] = []
     for command_key, metadata in COMMAND_PERMISSION_METADATA.items():
         rule = normalize_command_permission_rule(rules.get(command_key))
@@ -1061,18 +1157,18 @@ def build_command_permissions_web_payload() -> dict:
                 "role_ids": rule["role_ids"],
             }
         )
-    return {"ok": True, "commands": commands_payload}
+    return {"ok": True, "commands": commands_payload, "guild_id": int(guild_id)}
 
 
-def run_web_get_command_permissions() -> dict:
+def run_web_get_command_permissions(guild_id: int) -> dict:
     try:
-        return build_command_permissions_web_payload()
+        return build_command_permissions_web_payload(guild_id=guild_id)
     except Exception as exc:
         logger.exception("Failed to build command permissions payload: %s", exc)
         return {"ok": False, "error": "Failed to load command permissions."}
 
 
-def run_web_update_command_permissions(payload: dict, _actor_email: str) -> dict:
+def run_web_update_command_permissions(payload: dict, _actor_email: str, guild_id: int) -> dict:
     if not isinstance(payload, dict):
         return {"ok": False, "error": "Invalid payload."}
     commands_payload = payload.get("commands")
@@ -1091,25 +1187,25 @@ def run_web_update_command_permissions(payload: dict, _actor_email: str) -> dict
         updated_rules[command_key] = {"mode": mode, "role_ids": role_ids}
 
     try:
-        ACTION_STORE.save_command_permissions(updated_rules)
+        ACTION_STORE.save_command_permissions(guild_id=guild_id, rules=updated_rules)
     except Exception as exc:
         logger.exception("Failed to save command permissions: %s", exc)
         return {"ok": False, "error": "Failed to save command permissions."}
-    response = build_command_permissions_web_payload()
+    response = build_command_permissions_web_payload(guild_id=guild_id)
     response["message"] = "Command permissions updated."
     return response
 
 
-def run_web_get_tag_responses() -> dict:
+def run_web_get_tag_responses(guild_id: int) -> dict:
     try:
-        mapping = ACTION_STORE.get_tag_responses()
+        mapping = ACTION_STORE.get_tag_responses(guild_id=guild_id)
     except Exception as exc:
         logger.exception("Failed to load tag responses: %s", exc)
         return {"ok": False, "error": "Failed to load tag responses."}
     return {"ok": True, "mapping": mapping}
 
 
-def run_web_save_tag_responses(mapping: dict, _actor_email: str) -> dict:
+def run_web_save_tag_responses(mapping: dict, _actor_email: str, guild_id: int) -> dict:
     if not isinstance(mapping, dict):
         return {"ok": False, "error": "Tag responses payload must be an object."}
     normalized: dict[str, str] = {}
@@ -1123,17 +1219,179 @@ def run_web_save_tag_responses(mapping: dict, _actor_email: str) -> dict:
         normalized[tag] = response
 
     try:
-        saved = ACTION_STORE.save_tag_responses(normalized)
+        saved = ACTION_STORE.save_tag_responses(guild_id=guild_id, mapping=normalized)
     except Exception as exc:
         logger.exception("Failed to save tag responses: %s", exc)
         return {"ok": False, "error": "Failed to save tag responses."}
     return {"ok": True, "mapping": saved, "message": "Tag responses updated."}
 
 
+def run_web_get_guild_settings(guild_id: int) -> dict:
+    try:
+        payload = ACTION_STORE.get_guild_settings(guild_id=guild_id)
+    except Exception as exc:
+        logger.exception("Failed to load guild settings for %s: %s", guild_id, exc)
+        return {"ok": False, "error": "Failed to load guild settings."}
+    return {"ok": True, **payload}
+
+
+def run_web_save_guild_settings(payload: dict, _actor_email: str, guild_id: int) -> dict:
+    if not isinstance(payload, dict):
+        return {"ok": False, "error": "Invalid payload."}
+    raw_channel_id = str(payload.get("bot_log_channel_id", "")).strip()
+    bot_log_channel_id: int | None
+    if not raw_channel_id:
+        bot_log_channel_id = None
+    elif raw_channel_id.isdigit():
+        bot_log_channel_id = int(raw_channel_id)
+    else:
+        return {"ok": False, "error": "Bot log channel ID must be numeric."}
+
+    try:
+        saved = ACTION_STORE.save_guild_settings(
+            guild_id=guild_id,
+            bot_log_channel_id=bot_log_channel_id,
+        )
+    except Exception as exc:
+        logger.exception("Failed to save guild settings for %s: %s", guild_id, exc)
+        return {"ok": False, "error": "Failed to save guild settings."}
+    return {"ok": True, **saved, "message": "Guild settings updated."}
+
+
+def run_web_get_bot_profile(guild_id: int) -> dict:
+    selected_guild_id = int(guild_id) if isinstance(guild_id, int) else GUILD_ID
+    guild = bot.get_guild(selected_guild_id) if "bot" in globals() else None
+    if guild is None and "bot" in globals():
+        managed = bot.get_managed_guilds()
+        if managed:
+            guild = managed[0]
+            selected_guild_id = guild.id
+    user = bot.user if "bot" in globals() else None
+    if user is None:
+        return {"ok": False, "error": "Bot user is not ready yet."}
+
+    member = guild.get_member(user.id) if guild else None
+    return {
+        "ok": True,
+        "id": user.id,
+        "name": user.name,
+        "global_name": user.global_name or "",
+        "avatar_url": str(user.display_avatar.url) if user.display_avatar else "",
+        "guild_id": guild.id if guild else selected_guild_id,
+        "guild_name": guild.name if guild else "",
+        "server_nickname": member.nick if member else "",
+        "message": "Bot profile loaded.",
+    }
+
+
+async def _apply_bot_profile_update(username: str | None, server_nickname: str | None, clear_server_nickname: bool, guild_id: int) -> None:
+    if bot.user is None:
+        raise RuntimeError("Bot user is not ready yet.")
+    if username:
+        current = str(bot.user.name or "").strip()
+        if username != current:
+            await bot.user.edit(username=username)
+
+    guild = bot.get_guild(int(guild_id))
+    if guild is None:
+        return
+    bot_member = guild.get_member(bot.user.id)
+    if bot_member is None:
+        return
+    if clear_server_nickname:
+        await bot_member.edit(nick=None, reason="Updated via web admin")
+    elif server_nickname is not None and server_nickname != "":
+        await bot_member.edit(nick=server_nickname, reason="Updated via web admin")
+
+
+async def _apply_bot_avatar_update(payload: bytes) -> None:
+    if bot.user is None:
+        raise RuntimeError("Bot user is not ready yet.")
+    await bot.user.edit(avatar=payload)
+
+
+def run_web_update_bot_profile(payload: dict, actor_email: str, guild_id: int) -> dict:
+    if not isinstance(payload, dict):
+        return {"ok": False, "error": "Invalid payload."}
+    raw_username = str(payload.get("bot_name", "")).strip()
+    raw_server_nickname = str(payload.get("server_nickname", "")).strip()
+    clear_server_nickname = bool(payload.get("clear_server_nickname", False))
+    username = raw_username if raw_username else None
+    server_nickname: str | None
+    if clear_server_nickname:
+        server_nickname = None
+    else:
+        server_nickname = raw_server_nickname if raw_server_nickname else None
+    if username and (len(username) < 2 or len(username) > 32):
+        return {"ok": False, "error": "Bot username must be between 2 and 32 characters."}
+    if server_nickname and len(server_nickname) > 32:
+        return {"ok": False, "error": "Server nickname must be 32 characters or fewer."}
+
+    try:
+        future = asyncio.run_coroutine_threadsafe(
+            _apply_bot_profile_update(username, server_nickname, clear_server_nickname, int(guild_id)),
+            bot.loop,
+        )
+        future.result(timeout=25)
+    except Exception as exc:
+        logger.exception("Failed to update bot profile via web admin (%s): %s", actor_email, exc)
+        return {"ok": False, "error": f"Failed to update bot profile: {exc}"}
+    profile = run_web_get_bot_profile(guild_id=int(guild_id))
+    profile["message"] = "Bot profile updated."
+    return profile
+
+
+def run_web_update_bot_avatar(payload: bytes, filename: str, actor_email: str, guild_id: int) -> dict:
+    if not isinstance(payload, bytes):
+        return {"ok": False, "error": "Avatar payload must be bytes."}
+    if len(payload) == 0:
+        return {"ok": False, "error": "Avatar file is empty."}
+    if len(payload) > WEB_AVATAR_MAX_UPLOAD_BYTES:
+        return {
+            "ok": False,
+            "error": f"Avatar file too large ({len(payload)} bytes). Max is {WEB_AVATAR_MAX_UPLOAD_BYTES} bytes.",
+        }
+    lowered = str(filename or "").strip().lower()
+    if not lowered.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif")):
+        return {"ok": False, "error": "Avatar must be PNG, JPG, JPEG, WEBP, or GIF."}
+
+    try:
+        future = asyncio.run_coroutine_threadsafe(_apply_bot_avatar_update(payload), bot.loop)
+        future.result(timeout=25)
+    except Exception as exc:
+        logger.exception("Failed to update bot avatar via web admin (%s): %s", actor_email, exc)
+        return {"ok": False, "error": f"Failed to update bot avatar: {exc}"}
+    profile = run_web_get_bot_profile(guild_id=int(guild_id))
+    profile["message"] = "Bot avatar updated."
+    return profile
+
+
+def run_web_request_restart(actor_email: str) -> dict:
+    if not WEB_RESTART_ENABLED:
+        return {"ok": False, "error": "WEB_RESTART_ENABLED is false."}
+    logger.warning("Restart requested from web admin by %s", actor_email)
+    record_action_safe(
+        action="restart_requested",
+        status="success",
+        moderator=actor_email,
+        target="container",
+        reason="Web admin restart request",
+        guild="system",
+    )
+
+    def _exit_process() -> None:
+        logger.warning("Exiting process due to web admin restart request.")
+        os._exit(0)
+
+    timer = threading.Timer(1.0, _exit_process)
+    timer.daemon = True
+    timer.start()
+    return {"ok": True, "message": "Restart requested. Container should restart shortly."}
+
+
 class ModerationBot(commands.Bot):
     def __init__(self) -> None:
         super().__init__(command_prefix=commands.when_mentioned, intents=intents)
-        self.guild_object = discord.Object(id=GUILD_ID)
         self.commands_synced = 0
         self.expected_commands = 0
         self.started_at = datetime.now(UTC)
@@ -1142,33 +1400,50 @@ class ModerationBot(commands.Bot):
         self.web_channel_options: list[dict] = []
         self.web_role_options: list[dict] = []
 
+    def get_managed_guilds(self) -> list[discord.Guild]:
+        guilds = sorted(self.guilds, key=lambda item: item.id)
+        if MANAGED_GUILD_IDS is None:
+            return guilds
+        return [guild for guild in guilds if guild.id in MANAGED_GUILD_IDS]
+
     async def sync_guild_commands(self, reason: str) -> None:
-        expected = len(self.tree.get_commands(guild=self.guild_object))
-        synced = await self.tree.sync(guild=self.guild_object)
-        self.commands_synced = len(synced)
-        self.expected_commands = expected
-        synced_names = ", ".join(f"/{command.name}" for command in synced)
-        logger.info(
-            "Synced %s/%s command(s) to guild %s (%s): %s",
-            self.commands_synced,
-            self.expected_commands,
-            GUILD_ID,
-            reason,
-            synced_names or "(none)",
-        )
+        managed_guilds = self.get_managed_guilds()
+        expected_per_guild = len(self.tree.get_commands())
+        self.expected_commands = expected_per_guild * max(1, len(managed_guilds))
+        synced_total = 0
+        for guild in managed_guilds:
+            guild_obj = discord.Object(id=guild.id)
+            self.tree.copy_global_to(guild=guild_obj)
+            synced = await self.tree.sync(guild=guild_obj)
+            synced_total += len(synced)
+            synced_names = ", ".join(f"/{command.name}" for command in synced)
+            logger.info(
+                "Synced %s/%s command(s) to guild %s (%s): %s",
+                len(synced),
+                expected_per_guild,
+                guild.id,
+                reason,
+                synced_names or "(none)",
+            )
+        self.commands_synced = synced_total
 
     async def setup_hook(self) -> None:
-        await self.sync_guild_commands(reason="startup")
         if WEB_ENABLED and self.web_thread is None:
             self.web_thread = start_web_admin(
                 db_path=ACTION_DB_PATH,
                 get_bot_snapshot=self.get_web_snapshot,
-                get_notification_channels=self.get_web_channel_options,
+                get_managed_guilds=self.get_web_managed_guilds,
                 get_discord_catalog=self.get_web_discord_catalog,
                 get_command_permissions=run_web_get_command_permissions,
                 save_command_permissions=run_web_update_command_permissions,
                 get_tag_responses=run_web_get_tag_responses,
                 save_tag_responses=run_web_save_tag_responses,
+                get_guild_settings=run_web_get_guild_settings,
+                save_guild_settings=run_web_save_guild_settings,
+                get_bot_profile=run_web_get_bot_profile,
+                update_bot_profile=run_web_update_bot_profile,
+                update_bot_avatar=run_web_update_bot_avatar,
+                request_restart=run_web_request_restart,
                 resolve_youtube_subscription=lambda source_url: resolve_youtube_subscription_seed(source_url),
                 host=WEB_BIND_HOST,
                 port=WEB_PORT,
@@ -1179,44 +1454,53 @@ class ModerationBot(commands.Bot):
 
     async def on_ready(self) -> None:
         logger.info("Logged in as %s (%s)", self.user, self.user.id if self.user else "n/a")
-        if self.commands_synced < self.expected_commands:
-            logger.warning(
-                "Guild command sync appears incomplete (%s/%s). Retrying sync once.",
-                self.commands_synced,
-                self.expected_commands,
-            )
-            await self.sync_guild_commands(reason="ready-retry")
-        self.web_channel_options = self.build_web_channel_options()
-        self.web_role_options = self.build_web_role_options()
+        await self.sync_guild_commands(reason="ready-sync")
+        managed = self.get_managed_guilds()
+        default_guild_id = managed[0].id if managed else GUILD_ID
+        self.web_channel_options = self.build_web_channel_options(guild_id=default_guild_id)
+        self.web_role_options = self.build_web_role_options(guild_id=default_guild_id)
         if not ENABLE_MEMBERS_INTENT:
             logger.info("ENABLE_MEMBERS_INTENT is disabled; no privileged members intent requested.")
-        await log_action(
-            self,
-            "Bot Started",
-            f"{self.user.mention if self.user else 'Bot'} is online and ready.",
-            color=discord.Color.green(),
-        )
+        if managed:
+            for guild in managed:
+                await log_action(
+                    self,
+                    "Bot Started",
+                    f"{self.user.mention if self.user else 'Bot'} is online and ready.",
+                    color=discord.Color.green(),
+                    guild_id=guild.id,
+                )
+        else:
+            await log_action(
+                self,
+                "Bot Started",
+                f"{self.user.mention if self.user else 'Bot'} is online and ready.",
+                color=discord.Color.green(),
+                guild_id=GUILD_ID,
+            )
         ACTION_STORE.record(
             action="bot_started",
             status="success",
             moderator="system",
             target=str(self.user) if self.user else "bot",
             reason="Bot connected to Discord.",
-            guild=str(GUILD_ID),
+            guild="multi-guild",
         )
 
     def get_web_snapshot(self) -> dict:
         latency_ms = max(int(self.latency * 1000), 0) if self.is_ready() else 0
+        managed = self.get_managed_guilds()
         return {
             "bot_name": str(self.user) if self.user else "Starting...",
             "guild_id": GUILD_ID,
+            "guild_count": len(managed),
             "latency_ms": latency_ms,
             "commands_synced": self.commands_synced,
             "started_at": self.started_at.isoformat(),
         }
 
-    def build_web_channel_options(self) -> list[dict]:
-        guild = self.get_guild(GUILD_ID)
+    def build_web_channel_options(self, guild_id: int) -> list[dict]:
+        guild = self.get_guild(guild_id)
         if guild is None:
             return []
         options: list[dict] = []
@@ -1224,11 +1508,8 @@ class ModerationBot(commands.Bot):
             options.append({"id": channel.id, "name": f"#{channel.name}"})
         return options
 
-    def get_web_channel_options(self) -> list[dict]:
-        return list(self.web_channel_options)
-
-    def build_web_role_options(self) -> list[dict]:
-        guild = self.get_guild(GUILD_ID)
+    def build_web_role_options(self, guild_id: int) -> list[dict]:
+        guild = self.get_guild(guild_id)
         if guild is None:
             return []
         options: list[dict] = []
@@ -1238,30 +1519,48 @@ class ModerationBot(commands.Bot):
             options.append({"id": role.id, "name": f"@{role.name}"})
         return options
 
-    def get_web_discord_catalog(self) -> dict:
-        guild = self.get_guild(GUILD_ID)
+    def get_web_managed_guilds(self) -> list[dict]:
+        managed = self.get_managed_guilds()
+        return [{"id": guild.id, "name": guild.name} for guild in managed]
+
+    def get_web_discord_catalog(self, guild_id: int | None = None) -> dict:
+        selected_guild_id = int(guild_id) if isinstance(guild_id, int) else GUILD_ID
+        guild = self.get_guild(selected_guild_id)
+        if guild is None:
+            managed = self.get_managed_guilds()
+            if managed:
+                guild = managed[0]
+                selected_guild_id = guild.id
+            else:
+                return {"ok": False, "error": "No managed guilds available."}
+        if MANAGED_GUILD_IDS is not None and guild.id not in MANAGED_GUILD_IDS:
+            return {"ok": False, "error": "Selected guild is not managed by this bot."}
+
+        channels = self.build_web_channel_options(guild_id=selected_guild_id)
+        roles = self.build_web_role_options(guild_id=selected_guild_id)
+        self.web_channel_options = channels
+        self.web_role_options = roles
         if guild is None:
             return {"ok": False, "error": "Guild not available."}
-        self.web_channel_options = self.build_web_channel_options()
-        self.web_role_options = self.build_web_role_options()
         return {
             "ok": True,
             "guild": {"id": guild.id, "name": guild.name},
-            "channels": list(self.web_channel_options),
-            "roles": list(self.web_role_options),
+            "channels": channels,
+            "roles": roles,
         }
 
     async def on_message(self, message: discord.Message) -> None:
         if message.author.bot:
             return
-        if isinstance(message.author, discord.Member) and message.guild and message.guild.id == GUILD_ID:
+        managed_ids = {guild.id for guild in self.get_managed_guilds()}
+        if isinstance(message.author, discord.Member) and message.guild and message.guild.id in managed_ids:
             content = (message.content or "").strip()
             if content.startswith("!"):
                 tag_key = normalize_tag(content.split()[0])
                 if tag_key:
-                    tag_mapping = ACTION_STORE.get_tag_responses()
+                    tag_mapping = ACTION_STORE.get_tag_responses(guild_id=message.guild.id)
                     response = tag_mapping.get(tag_key)
-                    if response and can_use_command(message.author, "tag"):
+                    if response and can_use_command(message.author, "tag", guild_id=message.guild.id):
                         await message.channel.send(response)
         await self.process_commands(message)
 
@@ -1279,7 +1578,6 @@ class ModerationBot(commands.Bot):
         subscriptions = ACTION_STORE.list_youtube_subscriptions(enabled_only=True)
         if not subscriptions:
             return
-        self.web_channel_options = self.build_web_channel_options()
         for subscription in subscriptions:
             await self._process_youtube_subscription(subscription)
 
@@ -1322,18 +1620,18 @@ class ModerationBot(commands.Bot):
         description = (
             f"Action: `youtube_notify`\n"
             f"Status: **Success**\n"
-            f"Guild: {GUILD_ID}\n"
+            f"Guild: {notify_channel.guild.id}\n"
             f"Target: {notify_channel.mention} ({notify_channel.id})\n"
             f"Reason: {latest['channel_title']} - {latest['video_title']}"
         )
-        await log_action(self, "YouTube Notification", description, discord.Color.red())
+        await log_action(self, "YouTube Notification", description, discord.Color.red(), guild_id=notify_channel.guild.id)
         record_action_safe(
             action="youtube_notify",
             status="success",
             moderator="system",
             target=f"{notify_channel.name} ({notify_channel.id})",
             reason=truncate_log_text(f"{latest['channel_title']} - {latest['video_title']}"),
-            guild=str(GUILD_ID),
+            guild=str(notify_channel.guild.id),
         )
 
 
@@ -1381,16 +1679,37 @@ async def get_text_channel(client: commands.Bot, channel_id: int) -> discord.Tex
     return None
 
 
-async def get_log_channel(client: commands.Bot) -> discord.TextChannel | None:
-    return await get_text_channel(client, BOT_LOG_CHANNEL)
+def resolve_bot_log_channel_id(guild_id: int | None = None) -> int:
+    if guild_id is not None:
+        try:
+            guild_settings = ACTION_STORE.get_guild_settings(guild_id=guild_id)
+            configured = guild_settings.get("bot_log_channel_id")
+            if isinstance(configured, int) and configured > 0:
+                return configured
+        except Exception as exc:
+            logger.warning("Unable to load guild settings for %s: %s", guild_id, exc)
+    return BOT_LOG_CHANNEL
 
 
-async def log_action(client: commands.Bot, title: str, description: str, color: discord.Color) -> None:
+async def get_log_channel(client: commands.Bot, guild_id: int | None = None) -> discord.TextChannel | None:
+    channel_id = resolve_bot_log_channel_id(guild_id=guild_id)
+    channel = await get_text_channel(client, channel_id)
+    if isinstance(channel, discord.TextChannel):
+        if guild_id is None or channel.guild.id == guild_id:
+            return channel
+    return None
+
+
+async def log_action(client: commands.Bot, title: str, description: str, color: discord.Color, guild_id: int | None = None) -> None:
     try:
         bot_channel_logger.info("%s | %s", title, description.replace("\n", " | "))
-        channel = await get_log_channel(client)
+        channel = await get_log_channel(client, guild_id=guild_id)
         if channel is None:
-            logger.error("Bot_Log_Channel %s not found or not a text channel.", BOT_LOG_CHANNEL)
+            logger.error(
+                "Bot log channel %s not found or not a text channel for guild %s.",
+                resolve_bot_log_channel_id(guild_id=guild_id),
+                guild_id if guild_id is not None else "default",
+            )
             return
         embed = discord.Embed(title=title, description=description, color=color)
         await channel.send(embed=embed)
@@ -1408,6 +1727,7 @@ async def log_interaction(
     actor_mention = interaction.user.mention if interaction.user else "Unknown"
     actor_label = f"{interaction.user} ({interaction.user.id})" if interaction.user else "Unknown"
     guild_name = interaction.guild.name if interaction.guild else "Unknown Guild"
+    guild_identifier = str(interaction.guild.id) if interaction.guild else "dm"
     status = "Success" if success else "Failed"
     status_db = "success" if success else "failed"
     target_text = f"\nTarget: {target.mention} ({target.id})" if target else ""
@@ -1419,6 +1739,7 @@ async def log_interaction(
         f"Moderation Action - {action}",
         description,
         discord.Color.blurple() if success else discord.Color.red(),
+        guild_id=interaction.guild.id if interaction.guild else None,
     )
     record_action_safe(
         action=action,
@@ -1426,20 +1747,21 @@ async def log_interaction(
         moderator=actor_label,
         target=target_db,
         reason=reason or "",
-        guild=guild_name,
+        guild=guild_identifier,
     )
 
 
 async def ensure_interaction_command_access(interaction: discord.Interaction, command_key: str) -> bool:
-    if can_use_command(interaction.user, command_key):
+    guild_id = interaction.guild.id if interaction.guild else GUILD_ID
+    if can_use_command(interaction.user, command_key, guild_id=guild_id):
         return True
-    message = build_command_permission_denied_message(command_key, interaction.guild)
+    message = build_command_permission_denied_message(command_key, guild_id=guild_id, guild=interaction.guild)
     await reply_ephemeral(interaction, message)
     await log_interaction(interaction, action="permission_denied", reason=f"{command_key}: {message}", success=False)
     return False
 
 
-@bot.tree.command(name="ping", description="Check if the bot is online.", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="ping", description="Check if the bot is online.")
 async def ping(interaction: discord.Interaction) -> None:
     if not await ensure_interaction_command_access(interaction, "ping"):
         return
@@ -1450,7 +1772,7 @@ async def ping(interaction: discord.Interaction) -> None:
     await log_interaction(interaction, action="ping", success=True)
 
 
-@bot.tree.command(name="sayhi", description="Introduce the bot in the channel.", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="sayhi", description="Introduce the bot in the channel.")
 async def sayhi(interaction: discord.Interaction) -> None:
     if not await ensure_interaction_command_access(interaction, "sayhi"):
         return
@@ -1459,7 +1781,7 @@ async def sayhi(interaction: discord.Interaction) -> None:
     await log_interaction(interaction, action="sayhi", reason="Posted channel introduction", success=True)
 
 
-@bot.tree.command(name="happy", description="Post a random puppy picture.", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="happy", description="Post a random puppy picture.")
 async def happy(interaction: discord.Interaction) -> None:
     if not await ensure_interaction_command_access(interaction, "happy"):
         return
@@ -1492,7 +1814,7 @@ async def happy(interaction: discord.Interaction) -> None:
         )
 
 
-@bot.tree.command(name="shorten", description="Create a short URL.", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="shorten", description="Create a short URL.")
 @app_commands.describe(url="URL to shorten using the configured shortener")
 async def shorten(interaction: discord.Interaction, url: str) -> None:
     if not await ensure_interaction_command_access(interaction, "shorten"):
@@ -1530,7 +1852,7 @@ async def shorten(interaction: discord.Interaction, url: str) -> None:
         await log_interaction(interaction, action="shorten", reason=truncate_log_text(str(exc)), success=False)
 
 
-@bot.tree.command(name="expand", description="Expand a short code or short URL.", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="expand", description="Expand a short code or short URL.")
 @app_commands.describe(value="Short code (example: 1234) or full short URL")
 async def expand(interaction: discord.Interaction, value: str) -> None:
     if not await ensure_interaction_command_access(interaction, "expand"):
@@ -1568,7 +1890,7 @@ async def expand(interaction: discord.Interaction, value: str) -> None:
         await log_interaction(interaction, action="expand", reason=truncate_log_text(str(exc)), success=False)
 
 
-@bot.tree.command(name="uptime", description="Show current uptime monitor status.", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="uptime", description="Show current uptime monitor status.")
 async def uptime(interaction: discord.Interaction) -> None:
     if not await ensure_interaction_command_access(interaction, "uptime"):
         return
@@ -1597,7 +1919,7 @@ async def uptime(interaction: discord.Interaction) -> None:
         await log_interaction(interaction, action="uptime", reason=truncate_log_text(str(exc)), success=False)
 
 
-@bot.tree.command(name="logs", description="View recent container error logs.", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="logs", description="View recent container error logs.")
 @app_commands.checks.has_permissions(manage_messages=True)
 @app_commands.describe(lines="Number of recent lines to show (10-400)")
 async def logs(interaction: discord.Interaction, lines: app_commands.Range[int, 10, 400] = 120) -> None:
@@ -1629,7 +1951,7 @@ async def logs(interaction: discord.Interaction, lines: app_commands.Range[int, 
     await log_interaction(interaction, action="logs", reason=f"lines={int(lines)}", success=True)
 
 
-@bot.tree.command(name="help", description="Show available bot features.", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="help", description="Show available bot features.")
 async def help_command(interaction: discord.Interaction) -> None:
     if not await ensure_interaction_command_access(interaction, "help"):
         return
@@ -1645,11 +1967,12 @@ async def help_command(interaction: discord.Interaction) -> None:
     await log_interaction(interaction, action="help", success=True)
 
 
-@bot.tree.command(name="tags", description="List configured tags.", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="tags", description="List configured tags.")
 async def tags(interaction: discord.Interaction) -> None:
     if not await ensure_interaction_command_access(interaction, "tags"):
         return
-    mapping = ACTION_STORE.get_tag_responses()
+    guild_id = interaction.guild.id if interaction.guild else GUILD_ID
+    mapping = ACTION_STORE.get_tag_responses(guild_id=guild_id)
     if not mapping:
         await reply_ephemeral(interaction, "No tags are configured.")
         await log_interaction(interaction, action="tags", reason="no tags configured", success=False)
@@ -1659,13 +1982,14 @@ async def tags(interaction: discord.Interaction) -> None:
     await log_interaction(interaction, action="tags", reason=truncate_log_text(tag_list), success=True)
 
 
-@bot.tree.command(name="tag", description="Post a configured tag response.", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="tag", description="Post a configured tag response.")
 @app_commands.describe(name="Tag name (with or without !)")
 async def tag(interaction: discord.Interaction, name: str) -> None:
     if not await ensure_interaction_command_access(interaction, "tag"):
         return
     tag_key = normalize_tag(name)
-    mapping = ACTION_STORE.get_tag_responses()
+    guild_id = interaction.guild.id if interaction.guild else GUILD_ID
+    mapping = ACTION_STORE.get_tag_responses(guild_id=guild_id)
     if not tag_key or tag_key not in mapping:
         await reply_ephemeral(interaction, "Tag not found. Use `/tags` to list available tags.")
         await log_interaction(interaction, action="tag", reason=f"missing tag: {name}", success=False)
@@ -1674,7 +1998,7 @@ async def tag(interaction: discord.Interaction, name: str) -> None:
     await log_interaction(interaction, action="tag", reason=tag_key, success=True)
 
 
-@bot.tree.command(name="kick", description="Kick a member from the server.", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="kick", description="Kick a member from the server.")
 @app_commands.checks.has_permissions(kick_members=True)
 @app_commands.describe(member="Member to kick", reason="Reason for the kick")
 async def kick(
@@ -1693,7 +2017,7 @@ async def kick(
         await log_interaction(interaction, action="kick", target=member, reason=str(reason), success=False)
 
 
-@bot.tree.command(name="ban", description="Ban a member from the server.", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="ban", description="Ban a member from the server.")
 @app_commands.checks.has_permissions(ban_members=True)
 @app_commands.describe(member="Member to ban", reason="Reason for the ban", delete_days="Delete message history (0-7)")
 async def ban(
@@ -1721,7 +2045,7 @@ async def ban(
         await log_interaction(interaction, action="ban", target=member, reason=str(reason), success=False)
 
 
-@bot.tree.command(name="timeout", description="Timeout a member for a number of minutes.", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="timeout", description="Timeout a member for a number of minutes.")
 @app_commands.checks.has_permissions(moderate_members=True)
 @app_commands.describe(member="Member to timeout", minutes="Timeout duration in minutes", reason="Reason for timeout")
 async def timeout(
@@ -1742,7 +2066,7 @@ async def timeout(
         await log_interaction(interaction, action="timeout", target=member, reason=str(reason), success=False)
 
 
-@bot.tree.command(name="untimeout", description="Remove timeout from a member.", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="untimeout", description="Remove timeout from a member.")
 @app_commands.checks.has_permissions(moderate_members=True)
 @app_commands.describe(member="Member to remove timeout from", reason="Reason for removing timeout")
 async def untimeout(
@@ -1761,7 +2085,7 @@ async def untimeout(
         await log_interaction(interaction, action="untimeout", target=member, reason=str(reason), success=False)
 
 
-@bot.tree.command(name="purge", description="Delete a number of recent messages.", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="purge", description="Delete a number of recent messages.")
 @app_commands.checks.has_permissions(manage_messages=True)
 @app_commands.describe(amount="Number of messages to delete (1-100)")
 async def purge(interaction: discord.Interaction, amount: app_commands.Range[int, 1, 100]) -> None:
@@ -1785,7 +2109,7 @@ async def purge(interaction: discord.Interaction, amount: app_commands.Range[int
         await log_interaction(interaction, action="purge", reason=str(exc), success=False)
 
 
-@bot.tree.command(name="unban", description="Unban a member by user ID.", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="unban", description="Unban a member by user ID.")
 @app_commands.checks.has_permissions(ban_members=True)
 @app_commands.describe(user_id="User ID to unban", reason="Reason for unban")
 async def unban(interaction: discord.Interaction, user_id: str, reason: str | None = "No reason provided") -> None:
@@ -1812,7 +2136,7 @@ async def unban(interaction: discord.Interaction, user_id: str, reason: str | No
         await log_interaction(interaction, action="unban", reason=f"{target_user_id}: {exc}", success=False)
 
 
-@bot.tree.command(name="addrole", description="Add a role to a member.", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="addrole", description="Add a role to a member.")
 @app_commands.checks.has_permissions(manage_roles=True)
 @app_commands.describe(member="Member to update", role="Role to add", reason="Reason for role assignment")
 async def addrole(
@@ -1855,7 +2179,7 @@ async def addrole(
         await log_interaction(interaction, action="addrole", target=member, reason=str(exc), success=False)
 
 
-@bot.tree.command(name="removerole", description="Remove a role from a member.", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="removerole", description="Remove a role from a member.")
 @app_commands.checks.has_permissions(manage_roles=True)
 @app_commands.describe(member="Member to update", role="Role to remove", reason="Reason for role removal")
 async def removerole(

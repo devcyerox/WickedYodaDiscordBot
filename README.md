@@ -17,7 +17,8 @@ Set these in `env.env`:
 
 - `DISCORD_TOKEN` - your bot token
 - `GUILD_ID` - your Discord server (guild) ID
-- `Bot_Log_Channel` - text channel ID where bot action logs are posted
+- `MANAGED_GUILD_IDS` - optional comma-separated guild IDs to manage/sync (defaults to all guilds the bot is in)
+- `Bot_Log_Channel` - default text channel ID where bot action logs are posted (can be overridden per guild in web GUI)
 - `WEB_ENABLED` - enable web GUI (`true`/`false`)
 - `WEB_BIND_HOST` - web server bind host (use `0.0.0.0` in Docker)
 - `WEB_PORT` - web GUI port inside container
@@ -41,6 +42,10 @@ Set these in `env.env`:
 - `WEB_SESSION_COOKIE_SECURE` - set `true` when using HTTPS
 - `WEB_SESSION_COOKIE_SAMESITE` - cookie same-site policy (`Lax`, `Strict`, `None`)
 - `WEB_SESSION_TIMEOUT_MINUTES` - web session timeout (minutes)
+- `WEB_AVATAR_MAX_UPLOAD_BYTES` - max avatar upload size for `/admin/bot-profile` (default `2097152`)
+- `WEB_ENFORCE_CSRF` - enforce CSRF token checks on POST routes (`true`/`false`)
+- `WEB_ENFORCE_SAME_ORIGIN_POSTS` - block cross-origin POST requests (`true`/`false`)
+- `WEB_RESTART_ENABLED` - allow admin-triggered container restart from web GUI (`true`/`false`)
 - `DATA_DIR` - persistent internal data directory for moderation action history (recommended: `/app/data`)
 - `LOG_DIR` - optional override for log file directory shown in web GUI Logs page
 - `WEB_ENV_FILE` - optional path to env file used by web GUI settings editor (default: `./env.env`)
@@ -78,10 +83,17 @@ SQLite storage is internal to the container at `/app/data/mod_actions.db`.
 
 - URL: `http://localhost:8080`
 - Login: `WEB_ADMIN_DEFAULT_USERNAME` / `WEB_ADMIN_DEFAULT_PASSWORD`
+- Use the guild dropdown in the top nav to switch the server you are managing.
+- Theme switcher (Light/Black) is available in the top nav and persists per browser.
+- Login includes optional "Keep me signed in" mode (5-day max), inactivity timeout, and IP-based login attempt throttling.
 - Pages:
   - Dashboard (`/admin`)
   - Action history (`/admin/actions`)
   - YouTube subscriptions (`/admin/youtube`)
+  - Observability (`/admin/observability`, login required)
+  - Bot profile (`/admin/bot-profile`, admin only)
+    - Includes bot username/nickname updates and avatar upload
+  - Guild settings (`/admin/guild-settings`, admin only)
   - Logs viewer (`/admin/logs`)
   - Wiki viewer (`/admin/wiki`)
   - Account password management (`/admin/account`)
@@ -89,6 +101,7 @@ SQLite storage is internal to the container at `/app/data/mod_actions.db`.
   - Command permissions (`/admin/command-permissions`, admin only)
   - Tag responses (`/admin/tag-responses`, admin only)
   - Runtime settings editor (`/admin/settings`, admin only)
+  - Public status page (`/status/everything`)
 
 The GUI is built with responsive Bootstrap layout for mobile and desktop.
 Settings are editable from the GUI and saved back to `env.env` (or `WEB_ENV_FILE`), with dropdown selectors for boolean and common numeric options where possible.

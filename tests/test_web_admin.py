@@ -1,3 +1,5 @@
+import io
+import re
 import sqlite3
 from pathlib import Path
 
@@ -12,6 +14,23 @@ def _bot_snapshot() -> dict:
         "commands_synced": 6,
         "started_at": "2026-01-01T00:00:00+00:00",
     }
+
+
+def _extract_csrf_token(response_body: bytes) -> str:
+    html = response_body.decode("utf-8", errors="ignore")
+    match = re.search(r'<meta name="csrf-token" content="([^"]+)"', html)
+    assert match is not None
+    return match.group(1)
+
+
+def _login(client) -> str:
+    response = client.post(
+        "/login",
+        data={"username": "admin@example.com", "password": "TestPass123!"},
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    return _extract_csrf_token(response.data)
 
 
 def test_healthz_route(tmp_path: Path, monkeypatch) -> None:
@@ -45,12 +64,7 @@ def test_login_and_dashboard_access(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("WEB_ADMIN_DEFAULT_PASSWORD", "TestPass123!")
     app = create_app(str(tmp_path / "actions.db"), _bot_snapshot)
     client = app.test_client()
-
-    response = client.post(
-        "/login",
-        data={"username": "admin@example.com", "password": "TestPass123!"},
-        follow_redirects=True,
-    )
+    response = client.post("/login", data={"username": "admin@example.com", "password": "TestPass123!"}, follow_redirects=True)
 
     assert response.status_code == 200
     assert b"Latest Actions" in response.data
@@ -79,14 +93,14 @@ def test_actions_list_renders_existing_records(tmp_path: Path, monkeypatch) -> N
         conn.execute(
             """
             INSERT INTO actions (created_at, action, status, moderator, target, reason, guild)
-            VALUES ('2026-01-01 00:00:00', 'kick', 'success', 'mod', 'user', 'reason', 'guild')
+            VALUES ('2026-01-01 00:00:00', 'kick', 'success', 'mod', 'user', 'reason', '1234567890')
             """
         )
         conn.commit()
 
     app = create_app(str(db_path), _bot_snapshot)
     client = app.test_client()
-    client.post("/login", data={"username": "admin@example.com", "password": "TestPass123!"}, follow_redirects=True)
+    _login(client)
 
     response = client.get("/admin/actions")
 
@@ -118,11 +132,12 @@ def test_youtube_subscription_add_and_render(tmp_path: Path, monkeypatch) -> Non
         resolve_youtube_subscription=resolver,
     )
     client = app.test_client()
-    client.post("/login", data={"username": "admin@example.com", "password": "TestPass123!"}, follow_redirects=True)
+    csrf_token = _login(client)
 
     response = client.post(
         "/admin/youtube/add",
         data={"youtube_url": "https://www.youtube.com/@example", "notify_channel_id": "9999"},
+        headers={"X-CSRF-Token": csrf_token},
         follow_redirects=True,
     )
 
@@ -141,11 +156,12 @@ def test_settings_save_updates_env_file(tmp_path: Path, monkeypatch) -> None:
 
     app = create_app(str(tmp_path / "actions.db"), _bot_snapshot)
     client = app.test_client()
-    client.post("/login", data={"username": "admin@example.com", "password": "TestPass123!"}, follow_redirects=True)
+    csrf_token = _login(client)
 
     response = client.post(
         "/admin/settings/save",
         data={"WEB_PORT": "8000", "DISCORD_TOKEN": "********"},
+        headers={"X-CSRF-Token": csrf_token},
         follow_redirects=True,
     )
 
@@ -164,7 +180,7 @@ def test_logs_and_wiki_pages_render(tmp_path: Path, monkeypatch) -> None:
 
     app = create_app(str(tmp_path / "actions.db"), _bot_snapshot)
     client = app.test_client()
-    client.post("/login", data={"username": "admin@example.com", "password": "TestPass123!"}, follow_redirects=True)
+    _login(client)
 
     logs_response = client.get("/admin/logs")
     wiki_response = client.get("/admin/wiki")
@@ -173,6 +189,60 @@ def test_logs_and_wiki_pages_render(tmp_path: Path, monkeypatch) -> None:
     assert b"Logs" in logs_response.data
     assert wiki_response.status_code == 200
     assert b"Command-Reference.md" in wiki_response.data
+
+
+def test_observability_and_bot_profile_pages_render(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_USERNAME", "admin@example.com")
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_PASSWORD", "TestPass123!")
+
+    def get_bot_profile() -> dict:
+        return {
+            "ok": True,
+            "id": 123,
+            "name": "WickedYodaBot",
+            "global_name": "WickedYodaBot",
+            "avatar_url": "",
+            "guild_name": "Test Guild",
+            "server_nickname": "",
+        }
+
+    def update_bot_profile(payload: dict, _actor: str) -> dict:
+        return get_bot_profile() | {"message": "updated", **payload}
+
+    def update_bot_avatar(_payload: bytes, _filename: str, _actor: str) -> dict:
+        return get_bot_profile() | {"avatar_url": "https://example.com/avatar.png", "message": "avatar updated"}
+
+    app = create_app(
+        str(tmp_path / "actions.db"),
+        _bot_snapshot,
+        get_bot_profile=get_bot_profile,
+        update_bot_profile=update_bot_profile,
+        update_bot_avatar=update_bot_avatar,
+    )
+    client = app.test_client()
+
+    csrf_token = _login(client)
+    observability_response = client.get("/admin/observability")
+    profile_response = client.get("/admin/bot-profile")
+    avatar_response = client.post(
+        "/admin/bot-profile",
+        data={
+            "action": "avatar",
+            "avatar_file": (io.BytesIO(b"fakepngbytes"), "avatar.png"),
+        },
+        headers={"X-CSRF-Token": csrf_token},
+        content_type="multipart/form-data",
+        follow_redirects=True,
+    )
+    restart_response = client.post("/admin/restart", headers={"X-CSRF-Token": csrf_token}, follow_redirects=True)
+
+    assert observability_response.status_code == 200
+    assert b"Observability" in observability_response.data
+    assert profile_response.status_code == 200
+    assert b"Bot Profile" in profile_response.data
+    assert avatar_response.status_code == 200
+    assert b"avatar updated" in avatar_response.data
+    assert restart_response.status_code == 200
 
 
 def test_command_permissions_and_tag_pages_render(tmp_path: Path, monkeypatch) -> None:
@@ -212,7 +282,7 @@ def test_command_permissions_and_tag_pages_render(tmp_path: Path, monkeypatch) -
         save_tag_responses=save_tag_responses,
     )
     client = app.test_client()
-    client.post("/login", data={"username": "admin@example.com", "password": "TestPass123!"}, follow_redirects=True)
+    _login(client)
 
     permissions_response = client.get("/admin/command-permissions")
     tags_response = client.get("/admin/tag-responses")
