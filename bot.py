@@ -45,7 +45,7 @@ DISCORD_TOKEN = required_env("DISCORD_TOKEN")
 GUILD_ID = int(required_env("GUILD_ID"))
 BOT_LOG_CHANNEL = int(required_env("Bot_Log_Channel"))
 
-DATA_DIR = os.getenv("DATA_DIR", "data")
+DATA_DIR = os.getenv("DATA_DIR", "/app/data")
 WEB_ENABLED = env_bool("WEB_ENABLED", True)
 WEB_BIND_HOST = os.getenv("WEB_BIND_HOST", "0.0.0.0")
 WEB_PORT = env_int("WEB_PORT", 8080)
