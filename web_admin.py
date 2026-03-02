@@ -1,16 +1,18 @@
 import os
+import secrets
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from functools import wraps
-from typing import Callable
 
 from flask import Flask, flash, redirect, render_template_string, request, session, url_for
-
+from werkzeug.security import check_password_hash
 
 SENSITIVE_ENV_KEYS = {
     "DISCORD_TOKEN",
     "WEB_ADMIN_DEFAULT_PASSWORD",
+    "WEB_ADMIN_DEFAULT_PASSWORD_HASH",
     "WEB_ADMIN_SESSION_SECRET",
 }
 
@@ -64,6 +66,23 @@ def _fetch_counts(db_path: str) -> dict:
         "success": success,
         "failed": failed,
     }
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value in (None, ""):
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default
 
 
 PAGE_TEMPLATE = """
@@ -248,9 +267,34 @@ PAGE_TEMPLATE = """
 
 def create_app(db_path: str, get_bot_snapshot: Callable[[], dict]) -> Flask:
     app = Flask(__name__)
-    app.secret_key = os.getenv("WEB_ADMIN_SESSION_SECRET", "change-me-in-env")
+    configured_secret = os.getenv("WEB_ADMIN_SESSION_SECRET")
+    if configured_secret:
+        app.secret_key = configured_secret
+    else:
+        app.secret_key = secrets.token_urlsafe(48)
+        app.logger.warning("WEB_ADMIN_SESSION_SECRET not set. Generated ephemeral secret for this runtime.")
+
+    app.config["SESSION_COOKIE_HTTPONLY"] = True
+    app.config["SESSION_COOKIE_SAMESITE"] = os.getenv("WEB_SESSION_COOKIE_SAMESITE", "Lax")
+    app.config["SESSION_COOKIE_SECURE"] = _env_bool("WEB_SESSION_COOKIE_SECURE", False)
+    app.permanent_session_lifetime = timedelta(minutes=_env_int("WEB_SESSION_TIMEOUT_MINUTES", 60))
+
     admin_user = os.getenv("WEB_ADMIN_DEFAULT_USERNAME", "admin@example.com")
-    admin_password = os.getenv("WEB_ADMIN_DEFAULT_PASSWORD", "ChangeMe123!")
+    admin_password = os.getenv("WEB_ADMIN_DEFAULT_PASSWORD", "")
+    admin_password_hash = os.getenv("WEB_ADMIN_DEFAULT_PASSWORD_HASH", "")
+
+    if not admin_password and not admin_password_hash:
+        admin_password = secrets.token_urlsafe(16)
+        app.logger.warning("WEB_ADMIN_DEFAULT_PASSWORD not set. Generated one-time random admin password for this run.")
+
+    def is_valid_login(username: str, password: str) -> bool:
+        if username.lower() != admin_user.lower():
+            return False
+        if admin_password_hash:
+            return check_password_hash(admin_password_hash, password)
+        if admin_password.startswith(("pbkdf2:", "scrypt:")):
+            return check_password_hash(admin_password, password)
+        return secrets.compare_digest(password, admin_password)
 
     def login_required(handler):
         @wraps(handler)
@@ -263,14 +307,26 @@ def create_app(db_path: str, get_bot_snapshot: Callable[[], dict]) -> Flask:
 
     @app.get("/healthz")
     def healthz():
-        return {"status": "ok", "timestamp": datetime.now(timezone.utc).isoformat()}
+        return {"status": "ok", "timestamp": datetime.now(UTC).isoformat()}
+
+    @app.after_request
+    def add_security_headers(response):
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+        response.headers.setdefault("Cache-Control", "no-store")
+        response.headers.setdefault(
+            "Content-Security-Policy", "default-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data:;"
+        )
+        return response
 
     @app.route("/login", methods=["GET", "POST"])
     def login():
         if request.method == "POST":
             username = request.form.get("username", "").strip()
             password = request.form.get("password", "")
-            if username.lower() == admin_user.lower() and password == admin_password:
+            if is_valid_login(username, password):
+                session.permanent = True
                 session["user"] = username
                 flash("Logged in.", "success")
                 return redirect(url_for("dashboard"))
