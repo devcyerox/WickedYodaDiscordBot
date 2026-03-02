@@ -1,8 +1,13 @@
+import asyncio
+import http.client
+import json
 import logging
 import os
+import re
 import sqlite3
 import tempfile
 import threading
+import urllib.parse
 from datetime import UTC, datetime, timedelta
 
 import discord
@@ -51,12 +56,299 @@ WEB_ENABLED = env_bool("WEB_ENABLED", True)
 WEB_BIND_HOST = os.getenv("WEB_BIND_HOST", "127.0.0.1")
 WEB_PORT = env_int("WEB_PORT", 8080)
 ENABLE_MEMBERS_INTENT = env_bool("ENABLE_MEMBERS_INTENT", False)
+SHORTENER_ENABLED = env_bool("SHORTENER_ENABLED", False)
+SHORTENER_TIMEOUT_SECONDS = env_int("SHORTENER_TIMEOUT_SECONDS", 8)
+UPTIME_STATUS_ENABLED = env_bool("UPTIME_STATUS_ENABLED", True)
+UPTIME_STATUS_TIMEOUT_SECONDS = env_int("UPTIME_STATUS_TIMEOUT_SECONDS", 8)
+
+SHORT_CODE_REGEX = re.compile(r"Link saved:\s*([0-9]{4,})")
+STATUS_PAGE_PATH_REGEX = re.compile(r"^/status/([^/]+)/?$")
+
+
+def normalize_shortener_base_url(raw_url: str) -> str:
+    parsed = urllib.parse.urlparse(raw_url.strip())
+    if parsed.scheme not in {"http", "https"}:
+        raise RuntimeError("SHORTENER_BASE_URL must start with http:// or https://")
+    if not parsed.netloc:
+        raise RuntimeError("SHORTENER_BASE_URL must include a domain.")
+    return f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
+
+
+def normalize_status_page_url(raw_url: str) -> str:
+    parsed = urllib.parse.urlparse(raw_url.strip())
+    if parsed.scheme not in {"http", "https"}:
+        raise RuntimeError("UPTIME_STATUS_PAGE_URL must start with http:// or https://")
+    if not parsed.netloc:
+        raise RuntimeError("UPTIME_STATUS_PAGE_URL must include a domain.")
+    path = parsed.path.rstrip("/")
+    if not STATUS_PAGE_PATH_REGEX.match(path):
+        raise RuntimeError("UPTIME_STATUS_PAGE_URL must match /status/<slug>.")
+    return urllib.parse.urlunparse((parsed.scheme, parsed.netloc, path, "", "", ""))
+
+
+SHORTENER_BASE_URL = normalize_shortener_base_url(os.getenv("SHORTENER_BASE_URL", "https://l.twy4.us"))
+SHORTENER_HOST = urllib.parse.urlparse(SHORTENER_BASE_URL).netloc.lower()
+UPTIME_STATUS_PAGE_URL = normalize_status_page_url(
+    os.getenv("UPTIME_STATUS_PAGE_URL", "https://randy.wickedyoda.com/status/everything")
+)
+UPTIME_STATUS_PAGE_PARSED = urllib.parse.urlparse(UPTIME_STATUS_PAGE_URL)
+uptime_slug_match = STATUS_PAGE_PATH_REGEX.match(UPTIME_STATUS_PAGE_PARSED.path)
+if uptime_slug_match is None:
+    raise RuntimeError("UPTIME_STATUS_PAGE_URL path could not be parsed.")
+UPTIME_STATUS_SLUG = uptime_slug_match.group(1)
+UPTIME_API_BASE = f"{UPTIME_STATUS_PAGE_PARSED.scheme}://{UPTIME_STATUS_PAGE_PARSED.netloc}"
+UPTIME_API_CONFIG_URL = f"{UPTIME_API_BASE}/api/status-page/{UPTIME_STATUS_SLUG}"
+UPTIME_API_HEARTBEAT_URL = f"{UPTIME_API_BASE}/api/status-page/heartbeat/{UPTIME_STATUS_SLUG}"
+
+if SHORTENER_TIMEOUT_SECONDS <= 0:
+    raise RuntimeError("SHORTENER_TIMEOUT_SECONDS must be a positive integer.")
+if UPTIME_STATUS_TIMEOUT_SECONDS <= 0:
+    raise RuntimeError("UPTIME_STATUS_TIMEOUT_SECONDS must be a positive integer.")
 
 intents = discord.Intents.default()
 intents.guilds = True
 intents.members = ENABLE_MEMBERS_INTENT
 intents.messages = True
 intents.message_content = False
+
+
+def normalize_target_url(raw_url: str) -> str:
+    value = raw_url.strip()
+    if not value:
+        raise ValueError("Please provide a URL.")
+    if "://" not in value:
+        value = f"https://{value}"
+    parsed = urllib.parse.urlparse(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("Invalid URL. Use a valid http(s) URL.")
+    return urllib.parse.urlunparse(parsed)
+
+
+def normalize_short_reference(raw_value: str) -> str:
+    value = raw_value.strip()
+    if not value:
+        raise ValueError("Please provide a short code or short URL.")
+    if value.isdigit():
+        return f"{SHORTENER_BASE_URL}/{value}"
+    parsed = urllib.parse.urlparse(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("Invalid short URL format.")
+    if parsed.netloc.lower() != SHORTENER_HOST:
+        raise ValueError(f"Short URL must use {SHORTENER_HOST}.")
+    short_code = parsed.path.strip("/")
+    if not short_code or "/" in short_code or not short_code.isdigit():
+        raise ValueError("Short URL must point to a numeric short code.")
+    return f"{SHORTENER_BASE_URL}/{short_code}"
+
+
+def truncate_log_text(text: str, max_length: int = 300) -> str:
+    if len(text) <= max_length:
+        return text
+    return f"{text[: max_length - 3]}..."
+
+
+def shortener_request(
+    method: str,
+    url: str,
+    body: bytes | None = None,
+    headers: dict[str, str] | None = None,
+) -> tuple[int, dict[str, str], str]:
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise RuntimeError("Shortener request URL is invalid.")
+    path = parsed.path or "/"
+    if parsed.query:
+        path = f"{path}?{parsed.query}"
+
+    connection_cls = http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
+    request_headers = {"User-Agent": "WickedYodaLittleHelper/1.0"}
+    if headers:
+        request_headers.update(headers)
+
+    conn = connection_cls(parsed.netloc, timeout=SHORTENER_TIMEOUT_SECONDS)
+    try:
+        conn.request(method=method, url=path, body=body, headers=request_headers)
+        response = conn.getresponse()
+        response_headers = {name.lower(): value for name, value in response.getheaders()}
+        response_body = response.read().decode("utf-8", errors="ignore")
+        return response.status, response_headers, response_body
+    except OSError as exc:
+        raise RuntimeError(f"Shortener request failed: {exc}") from exc
+    finally:
+        conn.close()
+
+
+def create_short_url(target_url: str) -> tuple[str, str]:
+    payload = urllib.parse.urlencode({"short": target_url}).encode("utf-8")
+    status, _, response_body = shortener_request(
+        method="POST",
+        url=f"{SHORTENER_BASE_URL}/",
+        body=payload,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+    if status >= 400:
+        raise RuntimeError(f"Shortener returned HTTP {status}.")
+
+    match = SHORT_CODE_REGEX.search(response_body)
+    if not match:
+        raise RuntimeError("Shortener did not return a short code.")
+
+    short_code = match.group(1)
+    short_url = f"{SHORTENER_BASE_URL}/{short_code}"
+    return short_code, short_url
+
+
+def expand_short_url(short_url: str) -> str:
+    status, headers, _ = shortener_request(method="GET", url=short_url)
+    if status in {301, 302, 303, 307, 308}:
+        location = headers.get("location")
+        if not location:
+            raise RuntimeError("Shortener redirect did not include a Location header.")
+        return urllib.parse.urljoin(short_url, location)
+    if status == 404:
+        raise RuntimeError("Short code not found.")
+    if status >= 400:
+        raise RuntimeError(f"Shortener returned HTTP {status}.")
+    raise RuntimeError("Shortener did not return a redirect target.")
+
+
+def uptime_request_json(url: str) -> dict:
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise RuntimeError("Uptime API URL is invalid.")
+    path = parsed.path or "/"
+    if parsed.query:
+        path = f"{path}?{parsed.query}"
+
+    connection_cls = http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
+    conn = connection_cls(parsed.netloc, timeout=UPTIME_STATUS_TIMEOUT_SECONDS)
+    try:
+        conn.request("GET", path, headers={"User-Agent": "WickedYodaLittleHelper/1.0", "Accept": "application/json"})
+        response = conn.getresponse()
+        body_text = response.read().decode("utf-8", errors="ignore")
+    except OSError as exc:
+        raise RuntimeError(f"Uptime request failed: {exc}") from exc
+    finally:
+        conn.close()
+
+    if response.status >= 400:
+        raise RuntimeError(f"Uptime endpoint returned HTTP {response.status}.")
+    try:
+        parsed_body = json.loads(body_text)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("Uptime endpoint returned invalid JSON.") from exc
+    if not isinstance(parsed_body, dict):
+        raise RuntimeError("Uptime endpoint returned an unexpected response.")
+    return parsed_body
+
+
+def _status_label(status_code: int) -> str:
+    return {
+        0: "down",
+        1: "up",
+        2: "pending",
+        3: "maintenance",
+    }.get(status_code, "unknown")
+
+
+def fetch_uptime_snapshot() -> dict:
+    config_payload = uptime_request_json(UPTIME_API_CONFIG_URL)
+    heartbeat_payload = uptime_request_json(UPTIME_API_HEARTBEAT_URL)
+
+    group_list = config_payload.get("publicGroupList", [])
+    heartbeat_list = heartbeat_payload.get("heartbeatList", {})
+    uptime_list = heartbeat_payload.get("uptimeList", {})
+    if not isinstance(group_list, list) or not isinstance(heartbeat_list, dict):
+        raise RuntimeError("Uptime payload is missing expected fields.")
+
+    monitor_names: dict[int, str] = {}
+    for group in group_list:
+        if not isinstance(group, dict):
+            continue
+        monitors = group.get("monitorList", [])
+        if not isinstance(monitors, list):
+            continue
+        for monitor in monitors:
+            if not isinstance(monitor, dict):
+                continue
+            monitor_id = monitor.get("id")
+            monitor_name = monitor.get("name")
+            if isinstance(monitor_id, int) and isinstance(monitor_name, str):
+                monitor_names[monitor_id] = monitor_name.strip()
+
+    status_counts = {"up": 0, "down": 0, "pending": 0, "maintenance": 0, "unknown": 0}
+    down_monitors: list[str] = []
+    latest_timestamp = ""
+
+    monitor_ids = sorted(monitor_names.keys())
+    if not monitor_ids:
+        monitor_ids = sorted(int(key) for key in heartbeat_list.keys() if str(key).isdigit())
+
+    for monitor_id in monitor_ids:
+        entries = heartbeat_list.get(str(monitor_id), [])
+        latest_entry = entries[-1] if isinstance(entries, list) and entries else None
+        if not isinstance(latest_entry, dict):
+            status_counts["unknown"] += 1
+            continue
+
+        status_code = latest_entry.get("status")
+        status_label = _status_label(status_code) if isinstance(status_code, int) else "unknown"
+        status_counts[status_label] += 1
+
+        current_time = latest_entry.get("time")
+        if isinstance(current_time, str) and current_time > latest_timestamp:
+            latest_timestamp = current_time
+
+        if status_label == "down":
+            monitor_name = monitor_names.get(monitor_id, f"Monitor {monitor_id}")
+            uptime_key = f"{monitor_id}_24"
+            uptime_value = uptime_list.get(uptime_key) if isinstance(uptime_list, dict) else None
+            if isinstance(uptime_value, int | float):
+                down_monitors.append(f"{monitor_name} ({uptime_value * 100:.1f}% 24h)")
+            else:
+                down_monitors.append(monitor_name)
+
+    return {
+        "title": config_payload.get("config", {}).get("title", "Uptime Status"),
+        "page_url": UPTIME_STATUS_PAGE_URL,
+        "total": len(monitor_ids),
+        "counts": status_counts,
+        "down_monitors": down_monitors,
+        "last_sample": latest_timestamp,
+    }
+
+
+def format_uptime_summary(snapshot: dict) -> str:
+    counts = snapshot.get("counts", {})
+    total = int(snapshot.get("total", 0))
+    up = int(counts.get("up", 0))
+    down = int(counts.get("down", 0))
+    pending = int(counts.get("pending", 0))
+    maintenance = int(counts.get("maintenance", 0))
+    unknown = int(counts.get("unknown", 0))
+
+    lines = [
+        f"**{snapshot.get('title', 'Uptime Status')}**",
+        f"Page: {snapshot.get('page_url', UPTIME_STATUS_PAGE_URL)}",
+        f"Monitors: {total} | Up: {up} | Down: {down} | Pending: {pending} | Maintenance: {maintenance} | Unknown: {unknown}",
+    ]
+
+    last_sample = str(snapshot.get("last_sample", "")).strip()
+    if last_sample:
+        lines.append(f"Last sample: {last_sample} UTC")
+
+    down_monitors = snapshot.get("down_monitors", [])
+    if isinstance(down_monitors, list) and down_monitors:
+        lines.append("Down monitors:")
+        for item in down_monitors[:10]:
+            lines.append(f"- {truncate_log_text(str(item), max_length=120)}")
+        if len(down_monitors) > 10:
+            lines.append(f"- ...and {len(down_monitors) - 10} more")
+    else:
+        lines.append("No monitors are currently down.")
+
+    message = "\n".join(lines)
+    return truncate_log_text(message, max_length=1800)
 
 
 def resolve_action_db_path() -> str:
@@ -289,6 +581,92 @@ async def log_interaction(
 async def ping(interaction: discord.Interaction) -> None:
     await interaction.response.send_message("WickedYoda's Little Helper is online.", ephemeral=True)
     await log_interaction(interaction, action="ping", success=True)
+
+
+@bot.tree.command(name="shorten", description="Create a short URL.", guild=discord.Object(id=GUILD_ID))
+@app_commands.describe(url="URL to shorten using the configured shortener")
+async def shorten(interaction: discord.Interaction, url: str) -> None:
+    if not SHORTENER_ENABLED:
+        await reply_ephemeral(interaction, "Shortener integration is disabled.")
+        await log_interaction(interaction, action="shorten", reason="shortener disabled", success=False)
+        return
+
+    try:
+        normalized_url = normalize_target_url(url)
+    except ValueError as exc:
+        await reply_ephemeral(interaction, str(exc))
+        await log_interaction(interaction, action="shorten", reason=str(exc), success=False)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+    try:
+        _, short_url = await asyncio.to_thread(create_short_url, normalized_url)
+        await interaction.followup.send(f"Short URL: {short_url}", ephemeral=True)
+        await log_interaction(
+            interaction,
+            action="shorten",
+            reason=truncate_log_text(f"{normalized_url} -> {short_url}"),
+            success=True,
+        )
+    except RuntimeError as exc:
+        await interaction.followup.send(f"Failed to shorten URL: {exc}", ephemeral=True)
+        await log_interaction(interaction, action="shorten", reason=truncate_log_text(str(exc)), success=False)
+
+
+@bot.tree.command(name="expand", description="Expand a short code or short URL.", guild=discord.Object(id=GUILD_ID))
+@app_commands.describe(value="Short code (example: 1234) or full short URL")
+async def expand(interaction: discord.Interaction, value: str) -> None:
+    if not SHORTENER_ENABLED:
+        await reply_ephemeral(interaction, "Shortener integration is disabled.")
+        await log_interaction(interaction, action="expand", reason="shortener disabled", success=False)
+        return
+
+    try:
+        short_url = normalize_short_reference(value)
+    except ValueError as exc:
+        await reply_ephemeral(interaction, str(exc))
+        await log_interaction(interaction, action="expand", reason=str(exc), success=False)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+    try:
+        resolved_url = await asyncio.to_thread(expand_short_url, short_url)
+        await interaction.followup.send(f"Expanded URL: {resolved_url}", ephemeral=True)
+        await log_interaction(
+            interaction,
+            action="expand",
+            reason=truncate_log_text(f"{short_url} -> {resolved_url}"),
+            success=True,
+        )
+    except RuntimeError as exc:
+        await interaction.followup.send(f"Failed to expand URL: {exc}", ephemeral=True)
+        await log_interaction(interaction, action="expand", reason=truncate_log_text(str(exc)), success=False)
+
+
+@bot.tree.command(name="uptime", description="Show current uptime monitor status.", guild=discord.Object(id=GUILD_ID))
+async def uptime(interaction: discord.Interaction) -> None:
+    if not UPTIME_STATUS_ENABLED:
+        await reply_ephemeral(interaction, "Uptime status integration is disabled.")
+        await log_interaction(interaction, action="uptime", reason="uptime integration disabled", success=False)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+    try:
+        snapshot = await asyncio.to_thread(fetch_uptime_snapshot)
+        summary = format_uptime_summary(snapshot)
+        await interaction.followup.send(summary, ephemeral=True)
+        counts = snapshot.get("counts", {})
+        await log_interaction(
+            interaction,
+            action="uptime",
+            reason=truncate_log_text(
+                f"up={counts.get('up', 0)} down={counts.get('down', 0)} pending={counts.get('pending', 0)}"
+            ),
+            success=True,
+        )
+    except RuntimeError as exc:
+        await interaction.followup.send(f"Failed to fetch uptime status: {exc}", ephemeral=True)
+        await log_interaction(interaction, action="uptime", reason=truncate_log_text(str(exc)), success=False)
 
 
 @bot.tree.command(name="kick", description="Kick a member from the server.", guild=discord.Object(id=GUILD_ID))
