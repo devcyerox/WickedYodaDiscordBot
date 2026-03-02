@@ -70,6 +70,27 @@ def test_login_and_dashboard_access(tmp_path: Path, monkeypatch) -> None:
     assert b"Latest Actions" in response.data
 
 
+def test_login_allows_forwarded_host_origin_match(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_USERNAME", "admin@example.com")
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_PASSWORD", "TestPass123!")
+    app = create_app(str(tmp_path / "actions.db"), _bot_snapshot)
+    client = app.test_client()
+
+    response = client.post(
+        "/login",
+        data={"username": "admin@example.com", "password": "TestPass123!"},
+        headers={
+            "Origin": "http://docker2.tail99133.ts.net:8065",
+            "X-Forwarded-Host": "docker2.tail99133.ts.net:8065",
+        },
+        base_url="http://127.0.0.1:8080",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 302
+    assert "/admin" in response.headers["Location"]
+
+
 def test_actions_list_renders_existing_records(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("WEB_ADMIN_DEFAULT_USERNAME", "admin@example.com")
     monkeypatch.setenv("WEB_ADMIN_DEFAULT_PASSWORD", "TestPass123!")
