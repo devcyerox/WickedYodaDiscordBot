@@ -7,7 +7,7 @@ ruff format --check .
 PYTHONPATH=. pytest -q
 python_minor_version="$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")"
 if python3 -c "import sys; raise SystemExit(0 if sys.version_info < (3, 14) else 1)"; then
-  bandit -q -r . -x tests,__pycache__,.venv,data
+  bandit -q -c pyproject.toml -r .
 else
   echo "Skipping bandit on Python ${python_minor_version} (known incompatibility); CI runs bandit on Python 3.12."
 fi

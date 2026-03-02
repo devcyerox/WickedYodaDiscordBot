@@ -45,7 +45,7 @@ jobs:
         run: PYTHONPATH=. pytest -q
 
       - name: Bandit security scan
-        run: bandit -q -r . -x tests,__pycache__,.venv,data
+        run: bandit -q -c pyproject.toml -r .
 
       - name: Python dependency audit
         run: pip-audit -r requirements.txt
