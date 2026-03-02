@@ -16,9 +16,9 @@ When adding or changing a bot command, update `wiki/Command-Reference.md` in the
 Set these in `env.env`:
 
 - `DISCORD_TOKEN` - your bot token
-- `GUILD_ID` - your Discord server (guild) ID
+- `GUILD_ID` - optional default guild ID (needed for legacy single-guild defaults; can be omitted in multi-guild mode)
 - `MANAGED_GUILD_IDS` - optional comma-separated guild IDs to manage/sync (defaults to all guilds the bot is in)
-- `Bot_Log_Channel` - default text channel ID where bot action logs are posted (can be overridden per guild in web GUI)
+- `Bot_Log_Channel` - optional default text channel ID for bot action logs (can be overridden per guild in web GUI)
 - `WEB_ENABLED` - enable web GUI (`true`/`false`)
 - `WEB_BIND_HOST` - web server bind host (use `0.0.0.0` in Docker)
 - `WEB_PORT` - web GUI port inside container
@@ -74,7 +74,7 @@ Set these in `env.env`:
 
 Detailed command behavior, parameters, and permission requirements are documented in [`wiki/Command-Reference.md`](wiki/Command-Reference.md).
 
-All command actions (success/failure) are logged to `Bot_Log_Channel`.
+All command actions (success/failure) are logged to per-guild configured log channel, or `Bot_Log_Channel` when set.
 All actions are also written to SQLite and visible in the web GUI.
 
 SQLite storage is internal to the container at `/app/data/mod_actions.db`.
