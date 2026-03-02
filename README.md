@@ -8,6 +8,8 @@ Project wiki files live in [`wiki/`](wiki/).
 
 - [`wiki/Home.md`](wiki/Home.md) - wiki index and maintenance workflow
 - [`wiki/Command-Reference.md`](wiki/Command-Reference.md) - full slash command documentation
+- [`wiki/Multi-Guild-and-Env.md`](wiki/Multi-Guild-and-Env.md) - multi-guild behavior and environment variable patterns
+- [`wiki/Web-Admin-Interface.md`](wiki/Web-Admin-Interface.md) - web GUI authentication, pages, and security controls
 
 When adding or changing a bot command, update `wiki/Command-Reference.md` in the same pull request.
 
@@ -50,6 +52,23 @@ Set these in `env.env`:
 - `LOG_DIR` - optional override for log file directory shown in web GUI Logs page
 - `WEB_ENV_FILE` - optional path to env file used by web GUI settings editor (default: `./env.env`)
 - `WEB_GITHUB_WIKI_URL` - optional external wiki URL button in the web GUI Wiki page
+
+### Multi-Guild Startup Notes
+
+- Minimum required variable is `DISCORD_TOKEN`.
+- `MANAGED_GUILD_IDS` is recommended for controlled multi-guild operation.
+- `GUILD_ID` is optional; keep it only for legacy/single-guild defaults.
+- `Bot_Log_Channel` is optional when you configure per-guild log channels in `/admin/guild-settings`.
+
+Example multi-guild config:
+
+```env
+DISCORD_TOKEN=your-token
+MANAGED_GUILD_IDS=111111111111111111,222222222222222222
+WEB_ENABLED=true
+WEB_BIND_HOST=0.0.0.0
+WEB_PORT=8080
+```
 
 ## Included Slash Commands
 
