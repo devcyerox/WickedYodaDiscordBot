@@ -22,6 +22,12 @@ Set these in `env.env`:
 - `WEB_BIND_HOST` - web server bind host (use `0.0.0.0` in Docker)
 - `WEB_PORT` - web GUI port inside container
 - `ENABLE_MEMBERS_INTENT` - set `true` only if you enabled Server Members Intent in Discord Developer Portal
+- `SHORTENER_ENABLED` - enable Shortipy integration commands (`/shorten`, `/expand`)
+- `SHORTENER_BASE_URL` - Shortipy base URL (example: `https://l.twy4.us`)
+- `SHORTENER_TIMEOUT_SECONDS` - timeout for Shortipy requests
+- `UPTIME_STATUS_ENABLED` - enable uptime status integration command (`/uptime`)
+- `UPTIME_STATUS_PAGE_URL` - public Uptime Kuma status page URL (example: `https://randy.wickedyoda.com/status/everything`)
+- `UPTIME_STATUS_TIMEOUT_SECONDS` - timeout for uptime API requests
 - `WEB_ADMIN_DEFAULT_USERNAME` - web admin login username
 - `WEB_ADMIN_DEFAULT_PASSWORD` - web admin login password
 - `WEB_ADMIN_DEFAULT_PASSWORD_HASH` - optional password hash instead of plaintext password
@@ -34,6 +40,9 @@ Set these in `env.env`:
 ## Included Slash Commands
 
 - `/ping`
+- `/shorten`
+- `/expand`
+- `/uptime`
 - `/kick`
 - `/ban`
 - `/timeout`

@@ -13,6 +13,41 @@ Guild-scoped slash commands currently registered in `bot.py`.
   - Replies with `WickedYoda's Little Helper is online.` (ephemeral).
   - Logs success to `Bot_Log_Channel` and SQLite action history.
 
+## `/shorten`
+
+- Description: Create a short URL with the configured Shortipy instance.
+- Parameters:
+  - `url` (`str`) - long URL to shorten
+- Required user permissions: none
+- Bot action:
+  - Validates URL format (`http`/`https`).
+  - Sends URL to `SHORTENER_BASE_URL` via Shortipy form POST.
+  - Replies with generated short URL (ephemeral).
+  - Logs success/failure to `Bot_Log_Channel` and SQLite action history.
+
+## `/expand`
+
+- Description: Resolve a short code or short URL to the destination URL.
+- Parameters:
+  - `value` (`str`) - numeric short code (for example `1234`) or full short URL
+- Required user permissions: none
+- Bot action:
+  - Validates short code/URL against `SHORTENER_BASE_URL`.
+  - Requests short URL and reads redirect target.
+  - Replies with expanded destination URL (ephemeral).
+  - Logs success/failure to `Bot_Log_Channel` and SQLite action history.
+
+## `/uptime`
+
+- Description: Show current monitor health from the configured Uptime Kuma status page.
+- Parameters: none
+- Required user permissions: none
+- Bot action:
+  - Calls Uptime Kuma API endpoints derived from `UPTIME_STATUS_PAGE_URL`.
+  - Summarizes monitor counts (`Up`, `Down`, `Pending`, `Maintenance`, `Unknown`).
+  - Includes a short list of currently down monitors.
+  - Replies ephemerally and logs success/failure to `Bot_Log_Channel` and SQLite action history.
+
 ## `/kick`
 
 - Description: Kick a member from the server.

@@ -379,6 +379,10 @@ def create_app(db_path: str, get_bot_snapshot: Callable[[], dict]) -> Flask:
             "WEB_ENABLED",
             "WEB_BIND_HOST",
             "WEB_PORT",
+            "SHORTENER_ENABLED",
+            "SHORTENER_BASE_URL",
+            "UPTIME_STATUS_ENABLED",
+            "UPTIME_STATUS_PAGE_URL",
             "WEB_ADMIN_DEFAULT_USERNAME",
         ]
         settings_view = []
