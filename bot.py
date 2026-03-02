@@ -1,6 +1,7 @@
 import logging
 import os
 import sqlite3
+import tempfile
 import threading
 from datetime import UTC, datetime, timedelta
 
@@ -47,7 +48,7 @@ BOT_LOG_CHANNEL = int(required_env("Bot_Log_Channel"))
 
 DATA_DIR = os.getenv("DATA_DIR", "/app/data")
 WEB_ENABLED = env_bool("WEB_ENABLED", True)
-WEB_BIND_HOST = os.getenv("WEB_BIND_HOST", "0.0.0.0")
+WEB_BIND_HOST = os.getenv("WEB_BIND_HOST", "127.0.0.1")
 WEB_PORT = env_int("WEB_PORT", 8080)
 
 intents = discord.Intents.default()
@@ -60,7 +61,8 @@ intents.message_content = False
 def resolve_action_db_path() -> str:
     configured_path = os.getenv("ACTION_DB_PATH", "").strip()
     preferred_path = configured_path or os.path.join(DATA_DIR, "mod_actions.db")
-    fallback_path = "/tmp/wickedyoda/mod_actions.db"
+    fallback_root = os.path.join(tempfile.gettempdir(), "wickedyoda")
+    fallback_path = os.path.join(fallback_root, "mod_actions.db")
     candidates = [preferred_path]
     if fallback_path != preferred_path:
         candidates.append(fallback_path)
