@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 
 from flask import Flask, flash, redirect, render_template_string, request, session, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
+from werkzeug.utils import safe_join
 
 SENSITIVE_ENV_KEYS = {
     "DISCORD_TOKEN",
@@ -366,24 +367,14 @@ def _resolve_log_directory(db_path: str) -> Path:
     return Path(db_path).resolve().parent
 
 
-def _build_log_file_map(log_dir: Path) -> dict[str, Path]:
-    log_root = log_dir.resolve()
-    discovered = sorted(path.name for path in log_root.glob("*.log") if path.is_file())
-    log_names = list(dict.fromkeys([*LOG_FILE_OPTIONS, *discovered]))
-    mapping: dict[str, Path] = {}
-    for name in log_names:
-        if not name or Path(name).suffix.lower() != ".log":
-            continue
-        candidate = (log_root / name).resolve()
-        try:
-            candidate.relative_to(log_root)
-        except ValueError:
-            continue
-        mapping[name] = candidate
-    return mapping
-
-
-def _tail_file(safe_path: Path, line_limit: int = 400) -> str:
+def _tail_file(log_dir: Path, log_name: str, line_limit: int = 400) -> str:
+    candidate_name = Path(log_name.strip()).name
+    if not candidate_name or candidate_name in {".", ".."}:
+        return "Invalid log file path."
+    safe_path_raw = safe_join(str(log_dir.resolve()), candidate_name)
+    if not safe_path_raw:
+        return "Invalid log file path."
+    safe_path = Path(safe_path_raw)
     if safe_path.suffix.lower() != ".log":
         return "Invalid log file selection."
     if not safe_path.exists() or not safe_path.is_file():
@@ -2331,16 +2322,14 @@ def create_app(
     @login_required
     def logs():
         log_dir = _resolve_log_directory(db_path)
-        log_map = _build_log_file_map(log_dir)
-        log_options = list(log_map.keys())
+        discovered_logs = sorted(path.name for path in log_dir.glob("*.log") if path.is_file())
+        log_options = list(dict.fromkeys([*LOG_FILE_OPTIONS, *discovered_logs]))
         if not log_options:
             log_options = list(LOG_FILE_OPTIONS)
-            log_map = _build_log_file_map(log_dir)
         selected_log = Path(request.args.get("log", log_options[0]).strip()).name
-        if selected_log not in log_map:
+        if selected_log not in log_options:
             selected_log = log_options[0]
-        selected_path = log_map.get(selected_log)
-        log_preview = _tail_file(selected_path) if selected_path is not None else f"Log file not found: {selected_log}"
+        log_preview = _tail_file(log_dir, selected_log)
         return _render_page(
             "logs",
             "Web Admin Logs",
