@@ -1947,12 +1947,14 @@ def create_app(
     def enforce_post_security():
         if request.method != "POST":
             return None
+        # Allow login POSTs even when host/origin headers are rewritten by upstream proxies.
+        # Same-origin and CSRF checks still protect authenticated admin POST endpoints.
+        if request.endpoint in {"login", "healthz"}:
+            return None
         if enforce_same_origin_posts and not _is_same_origin_request():
             app.logger.warning("Blocked cross-origin POST request: path=%s ip=%s", request.path, _client_ip())
             return ("Blocked request due to origin policy.", 403)
         if not enforce_csrf:
-            return None
-        if request.endpoint in {"login", "healthz"}:
             return None
         expected = str(session.get("csrf_token", "")).strip()
         submitted = str(request.form.get("csrf_token", "")).strip() or str(request.headers.get("X-CSRF-Token", "")).strip()
