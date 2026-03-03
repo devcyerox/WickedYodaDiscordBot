@@ -136,6 +136,24 @@ def test_login_allows_forwarded_host_origin_match(tmp_path: Path, monkeypatch) -
     assert "/admin" in response.headers["Location"]
 
 
+def test_login_not_blocked_by_same_origin_policy(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_USERNAME", "admin@example.com")
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_PASSWORD", "TestPass123!")
+    app = create_app(str(tmp_path / "actions.db"), _bot_snapshot)
+    client = app.test_client()
+
+    response = client.post(
+        "/login",
+        data={"username": "admin@example.com", "password": "TestPass123!"},
+        headers={"Origin": "http://not-the-same-origin.example"},
+        base_url="http://127.0.0.1:8080",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 302
+    assert "/admin" in response.headers["Location"]
+
+
 def test_actions_list_renders_existing_records(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("WEB_ADMIN_DEFAULT_USERNAME", "admin@example.com")
     monkeypatch.setenv("WEB_ADMIN_DEFAULT_PASSWORD", "TestPass123!")
