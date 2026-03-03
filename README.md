@@ -25,6 +25,7 @@ Set these in `env.env`:
 - `WEB_BIND_HOST` - web server bind host (use `0.0.0.0` in Docker)
 - `WEB_PORT` - web GUI port inside container
 - `WEB_TLS_ENABLED` - enable HTTPS for the web GUI (`true`/`false`)
+- `WEB_TLS_PORT` - HTTPS web GUI port (recommended: `WEB_PORT + 1`)
 - `WEB_TLS_CERT_FILE` - optional TLS certificate path (requires `WEB_TLS_KEY_FILE`)
 - `WEB_TLS_KEY_FILE` - optional TLS private key path (requires `WEB_TLS_CERT_FILE`)
 - `ENABLE_MEMBERS_INTENT` - set `true` only if you enabled Server Members Intent in Discord Developer Portal
@@ -70,8 +71,9 @@ DISCORD_TOKEN=your-token
 MANAGED_GUILD_IDS=111111111111111111,222222222222222222
 WEB_ENABLED=true
 WEB_BIND_HOST=0.0.0.0
-WEB_PORT=8081
+WEB_PORT=8080
 WEB_TLS_ENABLED=true
+WEB_TLS_PORT=8081
 ```
 
 ## Included Slash Commands
@@ -104,7 +106,8 @@ SQLite storage is internal to the container at `/app/data/mod_actions.db`.
 
 ## Web Admin GUI
 
-- URL: `https://localhost:8081`
+- HTTP URL: `http://localhost:8080`
+- HTTPS URL: `https://localhost:8081`
 - Login: `WEB_ADMIN_DEFAULT_USERNAME` / `WEB_ADMIN_DEFAULT_PASSWORD`
 - If `WEB_TLS_ENABLED=true` and cert/key files are not set, Flask runs with an adhoc self-signed certificate.
 - Use the guild dropdown in the top nav to switch the server you are managing.

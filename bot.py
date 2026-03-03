@@ -68,8 +68,9 @@ MANAGED_GUILD_IDS_RAW = os.getenv("MANAGED_GUILD_IDS", "").strip()
 DATA_DIR = os.getenv("DATA_DIR", "/app/data")
 WEB_ENABLED = env_bool("WEB_ENABLED", True)
 WEB_BIND_HOST = os.getenv("WEB_BIND_HOST", "127.0.0.1")
-WEB_PORT = env_int("WEB_PORT", 8081)
+WEB_PORT = env_int("WEB_PORT", 8080)
 WEB_TLS_ENABLED = env_bool("WEB_TLS_ENABLED", False)
+WEB_TLS_PORT = env_int("WEB_TLS_PORT", WEB_PORT + 1)
 WEB_TLS_CERT_FILE = os.getenv("WEB_TLS_CERT_FILE", "").strip()
 WEB_TLS_KEY_FILE = os.getenv("WEB_TLS_KEY_FILE", "").strip()
 ENABLE_MEMBERS_INTENT = env_bool("ENABLE_MEMBERS_INTENT", False)
@@ -88,6 +89,8 @@ WEB_AVATAR_MAX_UPLOAD_BYTES = max(1024, env_int("WEB_AVATAR_MAX_UPLOAD_BYTES", 2
 
 if WEB_TLS_ENABLED and bool(WEB_TLS_CERT_FILE) != bool(WEB_TLS_KEY_FILE):
     raise RuntimeError("WEB_TLS_CERT_FILE and WEB_TLS_KEY_FILE must both be set when using custom TLS certificates.")
+if WEB_TLS_ENABLED and WEB_TLS_PORT == WEB_PORT:
+    raise RuntimeError("WEB_TLS_PORT must be different from WEB_PORT when WEB_TLS_ENABLED is true.")
 
 if MANAGED_GUILD_IDS_RAW:
     parsed_guild_ids: set[int] = set()
@@ -1443,6 +1446,7 @@ class ModerationBot(commands.Bot):
         self.expected_commands = 0
         self.started_at = datetime.now(UTC)
         self.web_thread: threading.Thread | None = None
+        self.web_tls_thread: threading.Thread | None = None
         self.youtube_monitor_task: asyncio.Task | None = None
         self.web_channel_options: list[dict] = []
         self.web_role_options: list[dict] = []
@@ -1476,12 +1480,6 @@ class ModerationBot(commands.Bot):
 
     async def setup_hook(self) -> None:
         if WEB_ENABLED and self.web_thread is None:
-            ssl_context: str | tuple[str, str] | None = None
-            if WEB_TLS_ENABLED:
-                if WEB_TLS_CERT_FILE and WEB_TLS_KEY_FILE:
-                    ssl_context = (WEB_TLS_CERT_FILE, WEB_TLS_KEY_FILE)
-                else:
-                    ssl_context = "adhoc"
             self.web_thread = start_web_admin(
                 db_path=ACTION_DB_PATH,
                 get_bot_snapshot=self.get_web_snapshot,
@@ -1500,10 +1498,35 @@ class ModerationBot(commands.Bot):
                 resolve_youtube_subscription=lambda source_url: resolve_youtube_subscription_seed(source_url),
                 host=WEB_BIND_HOST,
                 port=WEB_PORT,
-                ssl_context=ssl_context,
             )
-            scheme = "https" if WEB_TLS_ENABLED else "http"
-            logger.info("Web admin started at %s://%s:%s", scheme, WEB_BIND_HOST, WEB_PORT)
+            logger.info("Web admin HTTP started at http://%s:%s", WEB_BIND_HOST, WEB_PORT)
+            if WEB_TLS_ENABLED and self.web_tls_thread is None:
+                ssl_context: str | tuple[str, str]
+                if WEB_TLS_CERT_FILE and WEB_TLS_KEY_FILE:
+                    ssl_context = (WEB_TLS_CERT_FILE, WEB_TLS_KEY_FILE)
+                else:
+                    ssl_context = "adhoc"
+                self.web_tls_thread = start_web_admin(
+                    db_path=ACTION_DB_PATH,
+                    get_bot_snapshot=self.get_web_snapshot,
+                    get_managed_guilds=self.get_web_managed_guilds,
+                    get_discord_catalog=self.get_web_discord_catalog,
+                    get_command_permissions=run_web_get_command_permissions,
+                    save_command_permissions=run_web_update_command_permissions,
+                    get_tag_responses=run_web_get_tag_responses,
+                    save_tag_responses=run_web_save_tag_responses,
+                    get_guild_settings=run_web_get_guild_settings,
+                    save_guild_settings=run_web_save_guild_settings,
+                    get_bot_profile=run_web_get_bot_profile,
+                    update_bot_profile=run_web_update_bot_profile,
+                    update_bot_avatar=run_web_update_bot_avatar,
+                    request_restart=run_web_request_restart,
+                    resolve_youtube_subscription=lambda source_url: resolve_youtube_subscription_seed(source_url),
+                    host=WEB_BIND_HOST,
+                    port=WEB_TLS_PORT,
+                    ssl_context=ssl_context,
+                )
+                logger.info("Web admin HTTPS started at https://%s:%s", WEB_BIND_HOST, WEB_TLS_PORT)
         if YOUTUBE_NOTIFY_ENABLED and self.youtube_monitor_task is None:
             self.youtube_monitor_task = self.loop.create_task(self.youtube_monitor_loop(), name="youtube-monitor")
 
