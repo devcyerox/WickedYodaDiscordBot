@@ -366,23 +366,24 @@ def _resolve_log_directory(db_path: str) -> Path:
     return Path(db_path).resolve().parent
 
 
-def _resolve_safe_child_path(base_dir: Path, name: str) -> Path | None:
-    candidate_name = Path(name.strip()).name
-    if not candidate_name or candidate_name in {".", ".."}:
-        return None
-    base_dir_resolved = base_dir.resolve()
-    candidate = (base_dir_resolved / candidate_name).resolve()
-    try:
-        candidate.relative_to(base_dir_resolved)
-    except ValueError:
-        return None
-    return candidate
+def _build_log_file_map(log_dir: Path) -> dict[str, Path]:
+    log_root = log_dir.resolve()
+    discovered = sorted(path.name for path in log_root.glob("*.log") if path.is_file())
+    log_names = list(dict.fromkeys([*LOG_FILE_OPTIONS, *discovered]))
+    mapping: dict[str, Path] = {}
+    for name in log_names:
+        if not name or Path(name).suffix.lower() != ".log":
+            continue
+        candidate = (log_root / name).resolve()
+        try:
+            candidate.relative_to(log_root)
+        except ValueError:
+            continue
+        mapping[name] = candidate
+    return mapping
 
 
-def _tail_file(base_dir: Path, name: str, line_limit: int = 400) -> str:
-    safe_path = _resolve_safe_child_path(base_dir, name)
-    if safe_path is None:
-        return "Invalid log file path."
+def _tail_file(safe_path: Path, line_limit: int = 400) -> str:
     if safe_path.suffix.lower() != ".log":
         return "Invalid log file selection."
     if not safe_path.exists() or not safe_path.is_file():
@@ -2330,14 +2331,16 @@ def create_app(
     @login_required
     def logs():
         log_dir = _resolve_log_directory(db_path)
-        discovered_logs = sorted(path.name for path in log_dir.glob("*.log") if path.is_file())
-        log_options = list(dict.fromkeys([*LOG_FILE_OPTIONS, *discovered_logs]))
+        log_map = _build_log_file_map(log_dir)
+        log_options = list(log_map.keys())
         if not log_options:
             log_options = list(LOG_FILE_OPTIONS)
+            log_map = _build_log_file_map(log_dir)
         selected_log = Path(request.args.get("log", log_options[0]).strip()).name
-        if selected_log not in log_options:
+        if selected_log not in log_map:
             selected_log = log_options[0]
-        log_preview = _tail_file(log_dir, selected_log)
+        selected_path = log_map.get(selected_log)
+        log_preview = _tail_file(selected_path) if selected_path is not None else f"Log file not found: {selected_log}"
         return _render_page(
             "logs",
             "Web Admin Logs",
