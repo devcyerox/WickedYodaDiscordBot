@@ -47,6 +47,51 @@ def test_healthz_route(tmp_path: Path, monkeypatch) -> None:
     assert "timestamp" in payload
 
 
+def test_coop_headers_omitted_for_untrusted_http_origin(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_USERNAME", "admin@example.com")
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_PASSWORD", "TestPass123!")
+    app = create_app(str(tmp_path / "actions.db"), _bot_snapshot)
+    client = app.test_client()
+
+    response = client.get("/healthz", base_url="http://docker2.tail99133.ts.net:8065")
+
+    assert response.status_code == 200
+    assert "Cross-Origin-Opener-Policy" not in response.headers
+    assert "Cross-Origin-Resource-Policy" not in response.headers
+
+
+def test_coop_headers_set_for_https_origin(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_USERNAME", "admin@example.com")
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_PASSWORD", "TestPass123!")
+    app = create_app(str(tmp_path / "actions.db"), _bot_snapshot)
+    client = app.test_client()
+
+    response = client.get("/healthz", base_url="https://docker2.tail99133.ts.net:8065")
+
+    assert response.status_code == 200
+    assert response.headers.get("Cross-Origin-Opener-Policy") == "same-origin"
+    assert response.headers.get("Cross-Origin-Resource-Policy") == "same-origin"
+    assert "Strict-Transport-Security" in response.headers
+
+
+def test_coop_headers_set_for_forwarded_https_proto(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_USERNAME", "admin@example.com")
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_PASSWORD", "TestPass123!")
+    app = create_app(str(tmp_path / "actions.db"), _bot_snapshot)
+    client = app.test_client()
+
+    response = client.get(
+        "/healthz",
+        base_url="http://docker2.tail99133.ts.net:8065",
+        headers={"X-Forwarded-Proto": "https"},
+    )
+
+    assert response.status_code == 200
+    assert response.headers.get("Cross-Origin-Opener-Policy") == "same-origin"
+    assert response.headers.get("Cross-Origin-Resource-Policy") == "same-origin"
+    assert "Strict-Transport-Security" in response.headers
+
+
 def test_admin_redirects_to_login_when_not_authenticated(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("WEB_ADMIN_DEFAULT_USERNAME", "admin@example.com")
     monkeypatch.setenv("WEB_ADMIN_DEFAULT_PASSWORD", "TestPass123!")

@@ -34,6 +34,9 @@ SETTINGS_FIELD_ORDER = [
     "WEB_ENABLED",
     "WEB_BIND_HOST",
     "WEB_PORT",
+    "WEB_TLS_ENABLED",
+    "WEB_TLS_CERT_FILE",
+    "WEB_TLS_KEY_FILE",
     "ENABLE_MEMBERS_INTENT",
     "COMMAND_RESPONSES_EPHEMERAL",
     "PUPPY_IMAGE_API_URL",
@@ -65,6 +68,7 @@ SETTINGS_FIELD_ORDER = [
 ]
 SETTINGS_DROPDOWN_OPTIONS: dict[str, tuple[str, ...]] = {
     "WEB_ENABLED": BOOL_SELECT_OPTIONS,
+    "WEB_TLS_ENABLED": BOOL_SELECT_OPTIONS,
     "ENABLE_MEMBERS_INTENT": BOOL_SELECT_OPTIONS,
     "COMMAND_RESPONSES_EPHEMERAL": BOOL_SELECT_OPTIONS,
     "SHORTENER_ENABLED": BOOL_SELECT_OPTIONS,
@@ -77,7 +81,7 @@ SETTINGS_DROPDOWN_OPTIONS: dict[str, tuple[str, ...]] = {
     "WEB_SESSION_COOKIE_SAMESITE": SESSION_SAMESITE_OPTIONS,
     "WEB_SESSION_TIMEOUT_MINUTES": ("30", "60", "120", "240"),
     "WEB_AVATAR_MAX_UPLOAD_BYTES": ("262144", "524288", "1048576", "2097152", "3145728", "4194304"),
-    "WEB_PORT": ("8080", "8000", "5000"),
+    "WEB_PORT": ("8081", "8080", "8000", "5000"),
     "PUPPY_IMAGE_TIMEOUT_SECONDS": ("5", "8", "10", "15", "30"),
     "SHORTENER_TIMEOUT_SECONDS": ("5", "8", "10", "15", "30"),
     "YOUTUBE_POLL_INTERVAL_SECONDS": ("60", "120", "300", "600", "900"),
@@ -346,6 +350,12 @@ def _validate_settings_payload(payload: dict[str, str], allowed_keys: list[str])
                 errors.append(f"{key} must be numeric.")
                 continue
         validated[key] = raw_value
+
+    tls_enabled = validated.get("WEB_TLS_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
+    tls_cert = validated.get("WEB_TLS_CERT_FILE", "").strip()
+    tls_key = validated.get("WEB_TLS_KEY_FILE", "").strip()
+    if tls_enabled and bool(tls_cert) != bool(tls_key):
+        errors.append("WEB_TLS_CERT_FILE and WEB_TLS_KEY_FILE must both be set when WEB_TLS_ENABLED is true.")
     return validated, errors
 
 
@@ -1753,6 +1763,25 @@ def create_app(
                     hosts.add(candidate_host)
         return hosts
 
+    def _is_secure_request() -> bool:
+        if request.is_secure:
+            return True
+        forwarded_proto = str(request.headers.get("X-Forwarded-Proto", "")).strip()
+        if forwarded_proto:
+            first_proto = forwarded_proto.split(",", 1)[0].strip().lower()
+            if first_proto == "https":
+                return True
+        return False
+
+    def _is_potentially_trustworthy_origin() -> bool:
+        if _is_secure_request():
+            return True
+        local_hosts = {"localhost", "127.0.0.1", "::1"}
+        for host in _request_hostnames():
+            if host in local_hosts or host.endswith(".localhost"):
+                return True
+        return False
+
     def _client_ip() -> str:
         forwarded = str(request.headers.get("X-Forwarded-For", "")).strip()
         if forwarded:
@@ -1943,8 +1972,12 @@ def create_app(
         response.headers.setdefault("Referrer-Policy", "no-referrer")
         response.headers.setdefault("X-Permitted-Cross-Domain-Policies", "none")
         response.headers.setdefault("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
-        response.headers.setdefault("Cross-Origin-Resource-Policy", "same-origin")
-        response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
+        if _is_potentially_trustworthy_origin():
+            response.headers.setdefault("Cross-Origin-Resource-Policy", "same-origin")
+            response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
+        else:
+            response.headers.pop("Cross-Origin-Resource-Policy", None)
+            response.headers.pop("Cross-Origin-Opener-Policy", None)
         response.headers.setdefault("Cache-Control", "no-store")
         response.headers.setdefault("Pragma", "no-cache")
         response.headers.setdefault(
@@ -1952,7 +1985,7 @@ def create_app(
             "default-src 'self' https://cdn.jsdelivr.net; img-src 'self' https: data:; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
             "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
         )
-        if request.is_secure:
+        if _is_secure_request():
             response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains; preload")
         started = request.environ.get("wickedyoda_request_start")
         duration_ms = int(max(0.0, (time.perf_counter() - float(started)) * 1000.0)) if isinstance(started, float) else -1
@@ -2605,7 +2638,8 @@ def start_web_admin(
     request_restart: Callable[[str], dict] | None = None,
     resolve_youtube_subscription: Callable[[str], dict] | None = None,
     host: str = "127.0.0.1",
-    port: int = 8080,
+    port: int = 8081,
+    ssl_context: str | tuple[str, str] | None = None,
 ) -> threading.Thread:
     app = create_app(
         db_path,
@@ -2627,7 +2661,7 @@ def start_web_admin(
     )
 
     def run() -> None:
-        app.run(host=host, port=port, debug=False, use_reloader=False)
+        app.run(host=host, port=port, debug=False, use_reloader=False, ssl_context=ssl_context)
 
     thread = threading.Thread(target=run, daemon=True, name="web-admin")
     thread.start()
