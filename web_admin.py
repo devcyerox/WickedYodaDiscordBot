@@ -27,6 +27,9 @@ LOG_FILE_OPTIONS = ("bot.log", "bot_log.log", "container_errors.log", "web_gui_a
 AUTH_MODE_STANDARD = "standard"
 AUTH_MODE_REMEMBER = "remember"
 REMEMBER_LOGIN_DAYS = 5
+PASSWORD_ROTATION_DAYS = 90
+PASSWORD_MIN_LENGTH = 12
+SQLITE_TIMEOUT_SECONDS = 10
 SETTINGS_FIELD_ORDER = [
     "DISCORD_TOKEN",
     "GUILD_ID",
@@ -99,11 +102,79 @@ def _is_sensitive_key(key: str) -> bool:
     return "TOKEN" in upper_key or "PASSWORD" in upper_key or "SECRET" in upper_key
 
 
+def _apply_best_effort_permissions(path: Path, mode: int) -> None:
+    try:
+        os.chmod(path, mode)
+    except OSError:
+        return
+
+
+def _ensure_private_directory(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    _apply_best_effort_permissions(path, 0o700)
+
+
+def _secure_sqlite_sidecars(path: Path) -> None:
+    for suffix in ("", "-wal", "-shm"):
+        target = path if not suffix else path.with_name(f"{path.name}{suffix}")
+        if target.exists():
+            _apply_best_effort_permissions(target, 0o600)
+
+
+def _sqlite_connect(db_path: str) -> sqlite3.Connection:
+    db_file = Path(db_path).expanduser()
+    parent = db_file.parent
+    if str(parent) not in {"", "."}:
+        _ensure_private_directory(parent)
+    conn = sqlite3.connect(str(db_file), timeout=SQLITE_TIMEOUT_SECONDS)
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute(f"PRAGMA busy_timeout = {SQLITE_TIMEOUT_SECONDS * 1000}")
+    _secure_sqlite_sidecars(db_file)
+    return conn
+
+
+def _parse_stored_datetime(raw_value: object) -> datetime | None:
+    raw_text = str(raw_value or "").strip()
+    if not raw_text:
+        return None
+    for candidate in (raw_text, raw_text.replace("Z", "+00:00")):
+        try:
+            parsed = datetime.fromisoformat(candidate)
+            if parsed.tzinfo is None:
+                return parsed.replace(tzinfo=UTC)
+            return parsed.astimezone(UTC)
+        except ValueError:
+            continue
+    for fmt in ("%Y-%m-%d %H:%M:%S",):
+        try:
+            return datetime.strptime(raw_text, fmt).replace(tzinfo=UTC)
+        except ValueError:
+            continue
+    return None
+
+
+def _password_policy_error(password: str) -> str | None:
+    if len(password) < PASSWORD_MIN_LENGTH:
+        return f"Password must be at least {PASSWORD_MIN_LENGTH} characters."
+    if not any(char.islower() for char in password):
+        return "Password must include a lowercase letter."
+    if not any(char.isupper() for char in password):
+        return "Password must include an uppercase letter."
+    if not any(char.isdigit() for char in password):
+        return "Password must include a number."
+    return None
+
+
+def _password_hash_needs_upgrade(password_hash: str) -> bool:
+    return not str(password_hash or "").startswith("scrypt:")
+
+
 def _ensure_actions_table(db_path: str) -> None:
     directory = os.path.dirname(db_path)
     if directory:
         os.makedirs(directory, exist_ok=True)
-    with sqlite3.connect(db_path) as conn:
+    with _sqlite_connect(db_path) as conn:
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS actions (
@@ -125,7 +196,7 @@ def _ensure_youtube_subscriptions_table(db_path: str) -> None:
     directory = os.path.dirname(db_path)
     if directory:
         os.makedirs(directory, exist_ok=True)
-    with sqlite3.connect(db_path) as conn:
+    with _sqlite_connect(db_path) as conn:
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS youtube_subscriptions (
@@ -159,7 +230,7 @@ def _fetch_actions(db_path: str, limit: int = 200, guild_id: int | None = None) 
         params.append(str(guild_id))
     query += " ORDER BY id DESC LIMIT ?"
     params.append(limit)
-    with sqlite3.connect(db_path) as conn:
+    with _sqlite_connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(query, tuple(params)).fetchall()
     return [dict(row) for row in rows]
@@ -181,7 +252,7 @@ def _fetch_youtube_subscriptions(db_path: str, limit: int = 300, channel_ids: li
         params.extend(channel_ids)
     query += " ORDER BY id DESC LIMIT ?"
     params.append(limit)
-    with sqlite3.connect(db_path) as conn:
+    with _sqlite_connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(query, tuple(params)).fetchall()
     return [dict(row) for row in rows]
@@ -200,7 +271,7 @@ def _upsert_youtube_subscription(
     last_published_at: str,
 ) -> None:
     _ensure_youtube_subscriptions_table(db_path)
-    with sqlite3.connect(db_path) as conn:
+    with _sqlite_connect(db_path) as conn:
         conn.execute(
             """
             INSERT INTO youtube_subscriptions (
@@ -233,7 +304,7 @@ def _upsert_youtube_subscription(
 
 def _delete_youtube_subscription(db_path: str, subscription_id: int) -> bool:
     _ensure_youtube_subscriptions_table(db_path)
-    with sqlite3.connect(db_path) as conn:
+    with _sqlite_connect(db_path) as conn:
         cursor = conn.execute("DELETE FROM youtube_subscriptions WHERE id = ?", (subscription_id,))
         conn.commit()
     return cursor.rowcount > 0
@@ -241,7 +312,7 @@ def _delete_youtube_subscription(db_path: str, subscription_id: int) -> bool:
 
 def _fetch_counts(db_path: str, guild_id: int | None = None) -> dict:
     _ensure_actions_table(db_path)
-    with sqlite3.connect(db_path) as conn:
+    with _sqlite_connect(db_path) as conn:
         if guild_id is None:
             total = conn.execute("SELECT COUNT(*) FROM actions").fetchone()[0]
             success = conn.execute("SELECT COUNT(*) FROM actions WHERE status = ?", ("success",)).fetchone()[0]
@@ -304,11 +375,12 @@ def _read_env_file(path: Path) -> dict[str, str]:
 def _write_env_file(path: Path, updates: dict[str, str]) -> None:
     existing = _read_env_file(path)
     existing.update(updates)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_private_directory(path.parent)
     lines = [f"{key}={existing[key]}" for key in SETTINGS_FIELD_ORDER if key in existing]
     extra_keys = sorted(key for key in existing if key not in SETTINGS_FIELD_ORDER)
     lines.extend(f"{key}={existing[key]}" for key in extra_keys)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    _apply_best_effort_permissions(path, 0o600)
 
 
 def _build_settings_fields() -> list[dict]:
@@ -351,6 +423,14 @@ def _validate_settings_payload(payload: dict[str, str], allowed_keys: list[str])
             if not raw_value.isdigit():
                 errors.append(f"{key} must be numeric.")
                 continue
+        if key == "WEB_ADMIN_DEFAULT_USERNAME" and raw_value and not _is_valid_email(raw_value):
+            errors.append("WEB_ADMIN_DEFAULT_USERNAME must be a valid email address.")
+            continue
+        if key == "WEB_ADMIN_DEFAULT_PASSWORD" and raw_value:
+            password_policy_error = _password_policy_error(raw_value)
+            if password_policy_error:
+                errors.append(f"WEB_ADMIN_DEFAULT_PASSWORD: {password_policy_error}")
+                continue
         validated[key] = raw_value
 
     tls_enabled = validated.get("WEB_TLS_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
@@ -362,6 +442,8 @@ def _validate_settings_payload(payload: dict[str, str], allowed_keys: list[str])
         errors.append("WEB_TLS_CERT_FILE and WEB_TLS_KEY_FILE must both be set when WEB_TLS_ENABLED is true.")
     if tls_enabled and web_port and tls_port and web_port == tls_port:
         errors.append("WEB_TLS_PORT must be different from WEB_PORT when WEB_TLS_ENABLED is true.")
+    if validated.get("WEB_SESSION_COOKIE_SAMESITE", "") == "None" and validated.get("WEB_SESSION_COOKIE_SECURE", "").lower() != "true":
+        errors.append("WEB_SESSION_COOKIE_SECURE must be true when WEB_SESSION_COOKIE_SAMESITE is None.")
     return validated, errors
 
 
@@ -375,7 +457,7 @@ def _resolve_log_directory(db_path: str) -> Path:
 
     for candidate in candidates:
         try:
-            candidate.mkdir(parents=True, exist_ok=True)
+            _ensure_private_directory(candidate)
             test_path = candidate / ".wickedyoda-log-write-test"
             with test_path.open("a", encoding="utf-8"):
                 pass
@@ -465,7 +547,7 @@ def _ensure_users_table(db_path: str) -> None:
     directory = os.path.dirname(db_path)
     if directory:
         os.makedirs(directory, exist_ok=True)
-    with sqlite3.connect(db_path) as conn:
+    with _sqlite_connect(db_path) as conn:
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS web_users (
@@ -473,29 +555,47 @@ def _ensure_users_table(db_path: str) -> None:
                 password_hash TEXT NOT NULL,
                 display_name TEXT NOT NULL DEFAULT '',
                 is_admin INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                password_changed_at TEXT NOT NULL
             )
             """
         )
         columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(web_users)").fetchall()}
         if "display_name" not in columns:
             conn.execute("ALTER TABLE web_users ADD COLUMN display_name TEXT NOT NULL DEFAULT ''")
+        if "password_changed_at" not in columns:
+            conn.execute("ALTER TABLE web_users ADD COLUMN password_changed_at TEXT")
+            conn.execute("UPDATE web_users SET password_changed_at = COALESCE(password_changed_at, created_at)")
         conn.commit()
 
 
-def _upsert_user(db_path: str, email: str, password_hash: str, is_admin: bool, display_name: str | None = None) -> None:
+def _upsert_user(
+    db_path: str,
+    email: str,
+    password_hash: str,
+    is_admin: bool,
+    display_name: str | None = None,
+    *,
+    password_changed_at: str | None = None,
+) -> None:
     _ensure_users_table(db_path)
     normalized_display_name = display_name.strip() if isinstance(display_name, str) else None
-    with sqlite3.connect(db_path) as conn:
+    created_at = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
+    resolved_password_changed_at = password_changed_at or created_at
+    with _sqlite_connect(db_path) as conn:
         conn.execute(
             """
-            INSERT INTO web_users (email, password_hash, display_name, is_admin, created_at)
-            VALUES (?, ?, COALESCE(?, ''), ?, ?)
+            INSERT INTO web_users (email, password_hash, display_name, is_admin, created_at, password_changed_at)
+            VALUES (?, ?, COALESCE(?, ''), ?, ?, ?)
             ON CONFLICT(email) DO UPDATE SET
                 password_hash = excluded.password_hash,
                 display_name = CASE
                     WHEN ? IS NULL THEN web_users.display_name
                     ELSE excluded.display_name
+                END,
+                password_changed_at = CASE
+                    WHEN ? IS NULL THEN web_users.password_changed_at
+                    ELSE excluded.password_changed_at
                 END,
                 is_admin = excluded.is_admin
             """,
@@ -504,8 +604,10 @@ def _upsert_user(db_path: str, email: str, password_hash: str, is_admin: bool, d
                 password_hash,
                 normalized_display_name,
                 int(is_admin),
-                datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S"),
+                created_at,
+                resolved_password_changed_at,
                 normalized_display_name,
+                password_changed_at,
             ),
         )
         conn.commit()
@@ -513,10 +615,10 @@ def _upsert_user(db_path: str, email: str, password_hash: str, is_admin: bool, d
 
 def _get_user(db_path: str, email: str) -> dict | None:
     _ensure_users_table(db_path)
-    with sqlite3.connect(db_path) as conn:
+    with _sqlite_connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute(
-            "SELECT email, password_hash, display_name, is_admin, created_at FROM web_users WHERE email = ?",
+            "SELECT email, password_hash, display_name, is_admin, created_at, password_changed_at FROM web_users WHERE email = ?",
             (email.lower(),),
         ).fetchone()
     return dict(row) if row else None
@@ -524,7 +626,7 @@ def _get_user(db_path: str, email: str) -> dict | None:
 
 def _list_users(db_path: str) -> list[dict]:
     _ensure_users_table(db_path)
-    with sqlite3.connect(db_path) as conn:
+    with _sqlite_connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute("SELECT email, display_name, is_admin, created_at FROM web_users ORDER BY email ASC").fetchall()
     return [dict(row) for row in rows]
@@ -532,7 +634,7 @@ def _list_users(db_path: str) -> list[dict]:
 
 def _delete_user(db_path: str, email: str) -> bool:
     _ensure_users_table(db_path)
-    with sqlite3.connect(db_path) as conn:
+    with _sqlite_connect(db_path) as conn:
         cursor = conn.execute("DELETE FROM web_users WHERE email = ?", (email.lower(),))
         conn.commit()
     return cursor.rowcount > 0
@@ -561,11 +663,16 @@ def _update_user_record(
     resolved_password_hash = password_hash or str(existing.get("password_hash", "")).strip()
     if not resolved_password_hash:
         return False, "Password hash is missing."
-    with sqlite3.connect(db_path) as conn:
+    password_changed_at = (
+        datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
+        if password_hash is not None
+        else str(existing.get("password_changed_at") or existing.get("created_at") or "").strip()
+    )
+    with _sqlite_connect(db_path) as conn:
         conn.execute(
             """
             UPDATE web_users
-            SET email = ?, password_hash = ?, display_name = ?, is_admin = ?
+            SET email = ?, password_hash = ?, display_name = ?, is_admin = ?, password_changed_at = ?
             WHERE email = ?
             """,
             (
@@ -573,11 +680,31 @@ def _update_user_record(
                 resolved_password_hash,
                 display_name.strip(),
                 int(is_admin),
+                password_changed_at,
                 current_email.strip().lower(),
             ),
         )
         conn.commit()
     return True, "User updated."
+
+
+def _update_user_password_hash_only(db_path: str, email: str, password_hash: str) -> None:
+    _ensure_users_table(db_path)
+    with _sqlite_connect(db_path) as conn:
+        conn.execute(
+            "UPDATE web_users SET password_hash = ? WHERE email = ?",
+            (password_hash, email.strip().lower()),
+        )
+        conn.commit()
+
+
+def _password_rotation_required(user: dict) -> bool:
+    changed_at = _parse_stored_datetime(user.get("password_changed_at"))
+    if changed_at is None:
+        changed_at = _parse_stored_datetime(user.get("created_at"))
+    if changed_at is None:
+        return False
+    return datetime.now(UTC) >= (changed_at + timedelta(days=PASSWORD_ROTATION_DAYS))
 
 
 def _is_valid_email(email: str) -> bool:
@@ -1804,6 +1931,7 @@ def create_app(
     app.config["SESSION_COOKIE_HTTPONLY"] = True
     app.config["SESSION_COOKIE_SAMESITE"] = os.getenv("WEB_SESSION_COOKIE_SAMESITE", "Lax")
     app.config["SESSION_COOKIE_SECURE"] = _env_bool("WEB_SESSION_COOKIE_SECURE", False)
+    app.config["MAX_CONTENT_LENGTH"] = max(1024 * 1024, _env_int("WEB_AVATAR_MAX_UPLOAD_BYTES", 2 * 1024 * 1024) + (64 * 1024))
     app.permanent_session_lifetime = timedelta(days=REMEMBER_LOGIN_DAYS)
     web_session_timeout_minutes = max(5, _env_int("WEB_SESSION_TIMEOUT_MINUTES", 60))
     enforce_csrf = _env_bool("WEB_ENFORCE_CSRF", True)
@@ -1835,18 +1963,52 @@ def create_app(
     admin_user = os.getenv("WEB_ADMIN_DEFAULT_USERNAME", "admin@example.com").strip().lower()
     admin_password = os.getenv("WEB_ADMIN_DEFAULT_PASSWORD", "")
     admin_password_hash = os.getenv("WEB_ADMIN_DEFAULT_PASSWORD_HASH", "")
+    generated_one_time_admin_password = False
 
     if not admin_password_hash:
         if not admin_password:
             admin_password = secrets.token_urlsafe(16)
+            generated_one_time_admin_password = True
             app.logger.warning("WEB_ADMIN_DEFAULT_PASSWORD not set. Generated one-time random admin password for this run.")
+        password_policy_error = _password_policy_error(admin_password)
+        if password_policy_error:
+            raise RuntimeError(f"WEB_ADMIN_DEFAULT_PASSWORD does not meet policy: {password_policy_error}")
         admin_password_hash = generate_password_hash(admin_password)
     elif admin_password_hash.startswith(("pbkdf2:", "scrypt:")):
         pass
     else:
         admin_password_hash = generate_password_hash(admin_password_hash)
 
-    _upsert_user(db_path, admin_user, admin_password_hash, is_admin=True)
+    existing_admin_user = _get_user(db_path, admin_user)
+    if existing_admin_user is None:
+        _upsert_user(
+            db_path,
+            admin_user,
+            admin_password_hash,
+            is_admin=True,
+            display_name="Admin",
+            password_changed_at=datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S"),
+        )
+    elif (
+        admin_password
+        and not generated_one_time_admin_password
+        and not check_password_hash(str(existing_admin_user.get("password_hash", "")), admin_password)
+    ):
+        _upsert_user(
+            db_path,
+            admin_user,
+            generate_password_hash(admin_password),
+            is_admin=True,
+            password_changed_at=datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S"),
+        )
+    elif admin_password_hash and str(existing_admin_user.get("password_hash", "")).strip() != admin_password_hash:
+        _upsert_user(
+            db_path,
+            admin_user,
+            admin_password_hash,
+            is_admin=True,
+            password_changed_at=datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S"),
+        )
 
     def _managed_guild_options() -> list[dict]:
         raw_options: list[dict] = []
@@ -2222,6 +2384,7 @@ def create_app(
         session.pop("auth_issued_at", None)
         session.pop("auth_last_seen", None)
         session.pop("auth_remember_until", None)
+        session.pop("password_rotation_required", None)
 
     def _set_auth_session(user: dict, remember_login: bool) -> None:
         now_dt = datetime.now(UTC)
@@ -2234,6 +2397,7 @@ def create_app(
             session["auth_remember_until"] = (now_dt + timedelta(days=REMEMBER_LOGIN_DAYS)).isoformat()
         else:
             session.pop("auth_remember_until", None)
+        session["password_rotation_required"] = _password_rotation_required(user)
         session.permanent = True
         _ensure_csrf_token()
 
@@ -2298,6 +2462,7 @@ def create_app(
             _clear_auth_session()
             return None
         session["is_admin"] = bool(user.get("is_admin"))
+        session["password_rotation_required"] = _password_rotation_required(user)
         return user
 
     def _is_same_origin_request() -> bool:
@@ -2319,6 +2484,10 @@ def create_app(
             return None
         if not check_password_hash(str(user["password_hash"]), password):
             return None
+        if _password_hash_needs_upgrade(str(user["password_hash"])):
+            upgraded_hash = generate_password_hash(password)
+            _update_user_password_hash_only(db_path, str(user["email"]), upgraded_hash)
+            user = _get_user(db_path, username) or (user | {"password_hash": upgraded_hash})
         return user
 
     def login_required(handler):
@@ -2390,6 +2559,19 @@ def create_app(
             return ("Blocked request due to origin policy.", 403)
         return None
 
+    @app.before_request
+    def enforce_password_rotation():
+        endpoint = str(request.endpoint or "").strip()
+        if not endpoint or endpoint.startswith("static"):
+            return None
+        if endpoint in {"login", "logout", "account", "healthz", "public_status", "public_status_everything"}:
+            return None
+        user = _current_user()
+        if user is None or not bool(session.get("password_rotation_required")):
+            return None
+        flash(f"Your password is older than {PASSWORD_ROTATION_DAYS} days. Update it before continuing.", "warning")
+        return redirect(url_for("account"))
+
     @app.get("/healthz")
     def healthz():
         return {"status": "ok", "timestamp": datetime.now(UTC).isoformat()}
@@ -2447,6 +2629,9 @@ def create_app(
                 login_attempts.pop(client_ip, None)
                 _set_auth_session(user, remember_login=remember_login)
                 _resolve_selected_guild_id()
+                if bool(session.get("password_rotation_required")):
+                    flash(f"Your password is older than {PASSWORD_ROTATION_DAYS} days. Update it now.", "warning")
+                    return redirect(url_for("account"))
                 flash("Logged in.", "success")
                 return redirect(url_for("home"))
             attempts.append(time.time())
@@ -3089,8 +3274,9 @@ def create_app(
         if not _is_valid_email(email):
             flash("Please provide a valid email address.", "danger")
             return redirect(url_for("users"))
-        if len(password) < 8:
-            flash("Password must be at least 8 characters.", "danger")
+        password_policy_error = _password_policy_error(password)
+        if password_policy_error:
+            flash(password_policy_error, "danger")
             return redirect(url_for("users"))
 
         _upsert_user(
@@ -3130,8 +3316,9 @@ def create_app(
                 return redirect(url_for("users"))
         password_hash = None
         if new_password:
-            if len(new_password) < 8:
-                flash("Reset password must be at least 8 characters.", "danger")
+            password_policy_error = _password_policy_error(new_password)
+            if password_policy_error:
+                flash(password_policy_error, "danger")
                 return redirect(url_for("users"))
             password_hash = generate_password_hash(new_password)
 
@@ -3194,11 +3381,19 @@ def create_app(
             confirm_new_password = request.form.get("confirm_new_password", "")
             updated_email = request.form.get("email", "").strip().lower()
             display_name = request.form.get("display_name", "").strip()
+            password_rotation_required = bool(session.get("password_rotation_required"))
             if not check_password_hash(str(user["password_hash"]), current_password):
                 flash("Current password is incorrect.", "danger")
                 return redirect(url_for("account"))
-            if new_password and len(new_password) < 8:
-                flash("New password must be at least 8 characters.", "danger")
+            if password_rotation_required and not new_password:
+                flash(f"Password rotation is required every {PASSWORD_ROTATION_DAYS} days. Set a new password now.", "danger")
+                return redirect(url_for("account"))
+            if new_password and new_password == current_password:
+                flash("New password must be different from the current password.", "danger")
+                return redirect(url_for("account"))
+            password_policy_error = _password_policy_error(new_password) if new_password else None
+            if password_policy_error:
+                flash(password_policy_error, "danger")
                 return redirect(url_for("account"))
             if new_password and new_password != confirm_new_password:
                 flash("New password confirmation does not match.", "danger")
@@ -3215,6 +3410,7 @@ def create_app(
                 flash(message, "danger")
                 return redirect(url_for("account"))
             session["user"] = (updated_email or current_user).lower()
+            session["password_rotation_required"] = False
             flash("Account updated.", "success")
             return redirect(url_for("account"))
 

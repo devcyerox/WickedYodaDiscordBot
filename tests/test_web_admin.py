@@ -3,6 +3,8 @@ import re
 import sqlite3
 from pathlib import Path
 
+from werkzeug.security import generate_password_hash
+
 from web_admin import create_app
 
 
@@ -629,8 +631,8 @@ def test_account_can_update_own_email_name_and_password(tmp_path: Path, monkeypa
             "display_name": "Admin Prime",
             "email": "admin2@example.com",
             "current_password": "TestPass123!",
-            "new_password": "NewPass123!",
-            "confirm_new_password": "NewPass123!",
+            "new_password": "NewPass1234!",
+            "confirm_new_password": "NewPass1234!",
         },
         headers={"X-CSRF-Token": csrf_token},
         follow_redirects=True,
@@ -644,7 +646,7 @@ def test_account_can_update_own_email_name_and_password(tmp_path: Path, monkeypa
     client.get("/logout")
     relogin_response = client.post(
         "/login",
-        data={"username": "admin2@example.com", "password": "NewPass123!"},
+        data={"username": "admin2@example.com", "password": "NewPass1234!"},
         follow_redirects=True,
     )
 
@@ -846,3 +848,110 @@ def test_read_only_user_can_view_portal_but_cannot_modify_it(tmp_path: Path, mon
     assert b"Read-only accounts can view this page but cannot make changes." in settings_response.data
     assert command_response.status_code == 200
     assert b"Read-only accounts can view this page but cannot make changes." in command_response.data
+
+
+def test_login_upgrades_legacy_password_hash(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_USERNAME", "admin@example.com")
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_PASSWORD", "TestPass123!")
+    db_path = tmp_path / "actions.db"
+    app = create_app(str(db_path), _bot_snapshot)
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE web_users SET password_hash = ? WHERE email = ?",
+            (generate_password_hash("TestPass123!", method="pbkdf2:sha256"), "admin@example.com"),
+        )
+        conn.commit()
+
+    client = app.test_client()
+    response = client.post(
+        "/login",
+        data={"username": "admin@example.com", "password": "TestPass123!"},
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    with sqlite3.connect(db_path) as conn:
+        upgraded_hash = conn.execute(
+            "SELECT password_hash FROM web_users WHERE email = ?",
+            ("admin@example.com",),
+        ).fetchone()[0]
+    assert upgraded_hash.startswith("scrypt:")
+
+
+def test_password_rotation_forces_account_update(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_USERNAME", "admin@example.com")
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_PASSWORD", "TestPass123!")
+    db_path = tmp_path / "actions.db"
+    app = create_app(str(db_path), _bot_snapshot)
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE web_users SET password_changed_at = '2025-01-01 00:00:00' WHERE email = ?",
+            ("admin@example.com",),
+        )
+        conn.commit()
+
+    client = app.test_client()
+    login_response = client.post(
+        "/login",
+        data={"username": "admin@example.com", "password": "TestPass123!"},
+        follow_redirects=True,
+    )
+
+    assert login_response.status_code == 200
+    assert b"older than 90 days" in login_response.data
+    assert b"Account" in login_response.data
+
+    csrf_token = _extract_csrf_token(login_response.data)
+    blocked_response = client.post(
+        "/admin/account",
+        data={
+            "display_name": "Admin",
+            "email": "admin@example.com",
+            "current_password": "TestPass123!",
+            "new_password": "",
+            "confirm_new_password": "",
+        },
+        headers={"X-CSRF-Token": csrf_token},
+        follow_redirects=True,
+    )
+
+    assert blocked_response.status_code == 200
+    assert b"Password rotation is required every 90 days" in blocked_response.data
+
+    updated_response = client.post(
+        "/admin/account",
+        data={
+            "display_name": "Admin",
+            "email": "admin@example.com",
+            "current_password": "TestPass123!",
+            "new_password": "UpdatedPass123!",
+            "confirm_new_password": "UpdatedPass123!",
+        },
+        headers={"X-CSRF-Token": csrf_token},
+        follow_redirects=True,
+    )
+
+    assert updated_response.status_code == 200
+    assert b"Account updated." in updated_response.data
+
+
+def test_users_add_rejects_weak_password(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_USERNAME", "admin@example.com")
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_PASSWORD", "TestPass123!")
+    app = create_app(str(tmp_path / "actions.db"), _bot_snapshot)
+    client = app.test_client()
+    csrf_token = _login(client)
+
+    response = _add_user(
+        client,
+        csrf_token,
+        email="weak@example.com",
+        password="weakpass",
+        is_admin=False,
+        display_name="Weak",
+    )
+
+    assert response.status_code == 200
+    assert b"Password must be at least 12 characters." in response.data

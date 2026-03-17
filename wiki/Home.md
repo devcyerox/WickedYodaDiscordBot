@@ -7,6 +7,7 @@ This folder contains internal project wiki docs for bot operations and command b
 - [Command Reference](./Command-Reference.md) - active slash commands, parameters, and permission behavior.
 - [Multi-Guild and Env Setup](./Multi-Guild-and-Env.md) - required/optional env vars and multi-guild startup patterns.
 - [Web Admin Interface](./Web-Admin-Interface.md) - web GUI auth, pages, security controls, and operational notes.
+- [Security Hardening](./Security-Hardening.md) - implemented runtime, auth, storage, and verification controls.
 
 ## Web Admin Routes
 
@@ -24,7 +25,7 @@ This folder contains internal project wiki docs for bot operations and command b
   - `/admin/logs`
   - `/admin/wiki`
   - `/admin/account`
-- Admin-only:
+- Login required:
   - `/admin/users`
   - `/admin/command-permissions`
   - `/admin/tag-responses`
@@ -32,6 +33,11 @@ This folder contains internal project wiki docs for bot operations and command b
   - `/admin/settings`
   - `/admin/observability`
   - `/admin/bot-profile`
+- Admin write actions:
+  - `/admin/users/add`
+  - `/admin/users/update`
+  - `/admin/users/delete`
+  - `/admin/settings/save`
   - `/admin/restart` (only when `WEB_RESTART_ENABLED=true`)
 
 ## Maintenance Rule
