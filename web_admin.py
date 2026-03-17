@@ -471,26 +471,42 @@ def _ensure_users_table(db_path: str) -> None:
             CREATE TABLE IF NOT EXISTS web_users (
                 email TEXT PRIMARY KEY,
                 password_hash TEXT NOT NULL,
+                display_name TEXT NOT NULL DEFAULT '',
                 is_admin INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL
             )
             """
         )
+        columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(web_users)").fetchall()}
+        if "display_name" not in columns:
+            conn.execute("ALTER TABLE web_users ADD COLUMN display_name TEXT NOT NULL DEFAULT ''")
         conn.commit()
 
 
-def _upsert_user(db_path: str, email: str, password_hash: str, is_admin: bool) -> None:
+def _upsert_user(db_path: str, email: str, password_hash: str, is_admin: bool, display_name: str | None = None) -> None:
     _ensure_users_table(db_path)
+    normalized_display_name = display_name.strip() if isinstance(display_name, str) else None
     with sqlite3.connect(db_path) as conn:
         conn.execute(
             """
-            INSERT INTO web_users (email, password_hash, is_admin, created_at)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO web_users (email, password_hash, display_name, is_admin, created_at)
+            VALUES (?, ?, COALESCE(?, ''), ?, ?)
             ON CONFLICT(email) DO UPDATE SET
                 password_hash = excluded.password_hash,
+                display_name = CASE
+                    WHEN ? IS NULL THEN web_users.display_name
+                    ELSE excluded.display_name
+                END,
                 is_admin = excluded.is_admin
             """,
-            (email.lower(), password_hash, int(is_admin), datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")),
+            (
+                email.lower(),
+                password_hash,
+                normalized_display_name,
+                int(is_admin),
+                datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S"),
+                normalized_display_name,
+            ),
         )
         conn.commit()
 
@@ -499,7 +515,10 @@ def _get_user(db_path: str, email: str) -> dict | None:
     _ensure_users_table(db_path)
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
-        row = conn.execute("SELECT email, password_hash, is_admin, created_at FROM web_users WHERE email = ?", (email.lower(),)).fetchone()
+        row = conn.execute(
+            "SELECT email, password_hash, display_name, is_admin, created_at FROM web_users WHERE email = ?",
+            (email.lower(),),
+        ).fetchone()
     return dict(row) if row else None
 
 
@@ -507,7 +526,7 @@ def _list_users(db_path: str) -> list[dict]:
     _ensure_users_table(db_path)
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
-        rows = conn.execute("SELECT email, is_admin, created_at FROM web_users ORDER BY email ASC").fetchall()
+        rows = conn.execute("SELECT email, display_name, is_admin, created_at FROM web_users ORDER BY email ASC").fetchall()
     return [dict(row) for row in rows]
 
 
@@ -517,6 +536,48 @@ def _delete_user(db_path: str, email: str) -> bool:
         cursor = conn.execute("DELETE FROM web_users WHERE email = ?", (email.lower(),))
         conn.commit()
     return cursor.rowcount > 0
+
+
+def _update_user_record(
+    db_path: str,
+    current_email: str,
+    *,
+    new_email: str,
+    display_name: str,
+    is_admin: bool,
+    password_hash: str | None = None,
+) -> tuple[bool, str]:
+    _ensure_users_table(db_path)
+    existing = _get_user(db_path, current_email)
+    if not existing:
+        return False, "User not found."
+    target_email = new_email.strip().lower()
+    if not _is_valid_email(target_email):
+        return False, "Please provide a valid email address."
+    if target_email != current_email.strip().lower():
+        conflict = _get_user(db_path, target_email)
+        if conflict is not None:
+            return False, "That email address is already in use."
+    resolved_password_hash = password_hash or str(existing.get("password_hash", "")).strip()
+    if not resolved_password_hash:
+        return False, "Password hash is missing."
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE web_users
+            SET email = ?, password_hash = ?, display_name = ?, is_admin = ?
+            WHERE email = ?
+            """,
+            (
+                target_email,
+                resolved_password_hash,
+                display_name.strip(),
+                int(is_admin),
+                current_email.strip().lower(),
+            ),
+        )
+        conn.commit()
+    return True, "User updated."
 
 
 def _is_valid_email(email: str) -> bool:
@@ -787,7 +848,6 @@ PAGE_TEMPLATE = """
           <li class="nav-item"><a class="nav-link" href="{{ url_for('status_page') }}">Status</a></li>
           <li class="nav-item"><a class="nav-link" href="{{ url_for('logs') }}">Logs</a></li>
           <li class="nav-item"><a class="nav-link" href="{{ url_for('documentation') }}">Documentation</a></li>
-          {% if session.get("is_admin") %}
           <li class="nav-item"><a class="nav-link" href="{{ url_for('users') }}">Users</a></li>
           <li class="nav-item"><a class="nav-link" href="{{ url_for('observability') }}">Observability</a></li>
           <li class="nav-item"><a class="nav-link" href="{{ url_for('bot_profile') }}">Bot Profile</a></li>
@@ -795,7 +855,6 @@ PAGE_TEMPLATE = """
           <li class="nav-item"><a class="nav-link" href="{{ url_for('command_permissions') }}">Command Permissions</a></li>
           <li class="nav-item"><a class="nav-link" href="{{ url_for('tag_responses') }}">Tag Responses</a></li>
           <li class="nav-item"><a class="nav-link" href="{{ url_for('settings') }}">Settings</a></li>
-          {% endif %}
           <li class="nav-item"><a class="nav-link" href="{{ url_for('account') }}">Account</a></li>
         </ul>
         <div class="nav-utility">
@@ -810,7 +869,6 @@ PAGE_TEMPLATE = """
             <option value="{{ url_for('logs') }}">Logs</option>
             <option value="{{ url_for('documentation') }}">Documentation</option>
             <option value="{{ url_for('account') }}">Account</option>
-            {% if session.get("is_admin") %}
             <option value="{{ url_for('users') }}">Users</option>
             <option value="{{ url_for('observability') }}">Observability</option>
             <option value="{{ url_for('bot_profile') }}">Bot Profile</option>
@@ -818,7 +876,6 @@ PAGE_TEMPLATE = """
             <option value="{{ url_for('command_permissions') }}">Command Permissions</option>
             <option value="{{ url_for('tag_responses') }}">Tag Responses</option>
             <option value="{{ url_for('settings') }}">Settings</option>
-            {% endif %}
           </select>
           {% if guild_options %}
           <form method="post" action="{{ url_for('select_guild') }}" class="guild-switch-form d-flex">
@@ -830,9 +887,9 @@ PAGE_TEMPLATE = """
             </select>
           </form>
           {% endif %}
-          {% if session.get("is_admin") and restart_enabled %}
+          {% if restart_enabled %}
           <form method="post" action="{{ url_for('restart_service') }}" class="restart-form" onsubmit="return confirm('WARNING: This restarts the container process. Continue?');">
-            <button class="btn btn-outline-danger btn-sm" type="submit">Restart</button>
+            <button class="btn btn-outline-danger btn-sm" type="submit" {% if not session.get("is_admin") %}disabled{% endif %}>Restart</button>
           </form>
           {% endif %}
           <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('logout') }}">Logout</a>
@@ -1175,11 +1232,11 @@ PAGE_TEMPLATE = """
           <div class="row g-2">
             <div class="col-12 col-lg-6">
               <label class="form-label" for="youtube_url">YouTube Channel URL</label>
-              <input class="form-control" id="youtube_url" name="youtube_url" placeholder="https://www.youtube.com/@channelname" required>
+              <input class="form-control" id="youtube_url" name="youtube_url" placeholder="https://www.youtube.com/@channelname" required {% if not session.get("is_admin") %}disabled{% endif %}>
             </div>
             <div class="col-12 col-lg-4">
               <label class="form-label" for="notify_channel_id">Discord Notify Channel</label>
-              <select class="form-select" id="notify_channel_id" name="notify_channel_id" required>
+              <select class="form-select" id="notify_channel_id" name="notify_channel_id" required {% if not session.get("is_admin") %}disabled{% endif %}>
                 <option value="">Select channel...</option>
                 {% for channel in notification_channels %}
                 <option value="{{ channel.id }}">{{ channel.name }} ({{ channel.id }})</option>
@@ -1187,7 +1244,7 @@ PAGE_TEMPLATE = """
               </select>
             </div>
             <div class="col-12 col-lg-2 d-flex align-items-end">
-              <button class="btn btn-primary w-100" type="submit">Add</button>
+              <button class="btn btn-primary w-100" type="submit" {% if not session.get("is_admin") %}disabled{% endif %}>Add</button>
             </div>
           </div>
         </form>
@@ -1219,7 +1276,7 @@ PAGE_TEMPLATE = """
                 </td>
                 <td>
                   <form method="post" action="{{ url_for('youtube_delete', subscription_id=row.id) }}">
-                    <button class="btn btn-sm btn-outline-danger" type="submit">Delete</button>
+                    <button class="btn btn-sm btn-outline-danger" type="submit" {% if not session.get("is_admin") %}disabled{% endif %}>Delete</button>
                   </form>
                 </td>
               </tr>
@@ -1359,7 +1416,7 @@ PAGE_TEMPLATE = """
                   </td>
                   <td class="small">{{ item.default_policy_label }}</td>
                   <td>
-                    <select class="form-select" name="mode__{{ item.key }}">
+                    <select class="form-select" name="mode__{{ item.key }}" {% if not session.get("is_admin") %}disabled{% endif %}>
                       <option value="default" {% if item.mode == "default" %}selected{% endif %}>Default</option>
                       <option value="public" {% if item.mode == "public" %}selected{% endif %}>Public</option>
                       <option value="custom_roles" {% if item.mode == "custom_roles" %}selected{% endif %}>Custom roles</option>
@@ -1367,20 +1424,20 @@ PAGE_TEMPLATE = """
                   </td>
                   <td>
                     {% if role_options %}
-                    <select class="form-select mb-2" name="role_ids__{{ item.key }}" multiple size="5">
+                    <select class="form-select mb-2" name="role_ids__{{ item.key }}" multiple size="5" {% if not session.get("is_admin") %}disabled{% endif %}>
                       {% for role in role_options %}
                       <option value="{{ role.id }}" {% if role.id|string in item.role_id_strings %}selected{% endif %}>{{ role.name }} ({{ role.id }})</option>
                       {% endfor %}
                     </select>
                     {% endif %}
-                    <input class="form-control" name="role_ids_text__{{ item.key }}" value="{{ item.role_ids_csv }}" placeholder="Comma-separated role IDs">
+                    <input class="form-control" name="role_ids_text__{{ item.key }}" value="{{ item.role_ids_csv }}" placeholder="Comma-separated role IDs" {% if not session.get("is_admin") %}disabled{% endif %}>
                   </td>
                 </tr>
                 {% endfor %}
               </tbody>
             </table>
           </div>
-          <button class="btn btn-primary" type="submit">Save Command Permissions</button>
+          <button class="btn btn-primary" type="submit" {% if not session.get("is_admin") %}disabled{% endif %}>Save Command Permissions</button>
         </form>
       </div>
     {% elif page == "tag_responses" %}
@@ -1389,9 +1446,9 @@ PAGE_TEMPLATE = """
         <p class="small text-secondary">Edit JSON mapping used by `/tag`, `/tags`, and `!tag` message shortcuts.</p>
         <form method="post" action="{{ url_for('tag_responses') }}">
           <div class="mb-3">
-            <textarea class="form-control font-monospace" rows="18" name="tag_json">{{ tag_json }}</textarea>
+            <textarea class="form-control font-monospace" rows="18" name="tag_json" {% if not session.get("is_admin") %}disabled{% endif %}>{{ tag_json }}</textarea>
           </div>
-          <button class="btn btn-primary" type="submit">Save Tag Responses</button>
+          <button class="btn btn-primary" type="submit" {% if not session.get("is_admin") %}disabled{% endif %}>Save Tag Responses</button>
         </form>
       </div>
     {% elif page == "users" %}
@@ -1399,23 +1456,27 @@ PAGE_TEMPLATE = """
         <h1 class="h5 mb-3">Users</h1>
         <form method="post" action="{{ url_for('users_add') }}">
           <div class="row g-2">
-            <div class="col-12 col-lg-4">
-              <label class="form-label" for="new_email">Email</label>
-              <input class="form-control" id="new_email" name="email" type="email" required>
+            <div class="col-12 col-lg-3">
+              <label class="form-label" for="new_display_name">Name</label>
+              <input class="form-control" id="new_display_name" name="display_name" {% if not session.get("is_admin") %}disabled{% endif %}>
             </div>
-            <div class="col-12 col-lg-4">
+            <div class="col-12 col-lg-3">
+              <label class="form-label" for="new_email">Email</label>
+              <input class="form-control" id="new_email" name="email" type="email" required {% if not session.get("is_admin") %}disabled{% endif %}>
+            </div>
+            <div class="col-12 col-lg-3">
               <label class="form-label" for="new_password">Password</label>
-              <input class="form-control" id="new_password" name="password" type="password" required>
+              <input class="form-control" id="new_password" name="password" type="password" required {% if not session.get("is_admin") %}disabled{% endif %}>
             </div>
             <div class="col-12 col-lg-2">
               <label class="form-label" for="new_is_admin">Role</label>
-              <select class="form-select" id="new_is_admin" name="is_admin">
+              <select class="form-select" id="new_is_admin" name="is_admin" {% if not session.get("is_admin") %}disabled{% endif %}>
                 <option value="0">Read-only</option>
                 <option value="1">Admin</option>
               </select>
             </div>
-            <div class="col-12 col-lg-2 d-flex align-items-end">
-              <button class="btn btn-primary w-100" type="submit">Add User</button>
+            <div class="col-12 col-lg-1 d-flex align-items-end">
+              <button class="btn btn-primary w-100" type="submit" {% if not session.get("is_admin") %}disabled{% endif %}>Add User</button>
             </div>
           </div>
         </form>
@@ -1423,18 +1484,36 @@ PAGE_TEMPLATE = """
       <div class="card card-soft p-3">
         <div class="table-wrap">
           <table class="table table-sm align-middle">
-            <thead><tr><th>Email</th><th>Role</th><th>Created</th><th>Action</th></tr></thead>
+            <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Created</th><th>Manage</th></tr></thead>
             <tbody>
               {% for row in users %}
               <tr>
+                <td>
+                  <form method="post" action="{{ url_for('users_update') }}" class="row g-2">
+                    <input type="hidden" name="current_email" value="{{ row.email }}">
+                    <div class="col-12">
+                      <input class="form-control form-control-sm" name="display_name" value="{{ row.display_name or '' }}" placeholder="Name" {% if not session.get("is_admin") %}disabled{% endif %}>
+                    </div>
+                    <div class="col-12">
+                      <input class="form-control form-control-sm" name="email" type="email" value="{{ row.email }}" {% if not session.get("is_admin") %}disabled{% endif %}>
+                    </div>
+                </td>
                 <td class="small">{{ row.email }}</td>
-                <td class="small">{{ "Admin" if row.is_admin else "Read-only" }}</td>
+                <td>
+                    <select class="form-select form-select-sm" name="is_admin" {% if not session.get("is_admin") %}disabled{% endif %}>
+                      <option value="0" {% if not row.is_admin %}selected{% endif %}>Read-only</option>
+                      <option value="1" {% if row.is_admin %}selected{% endif %}>Admin</option>
+                    </select>
+                </td>
                 <td class="small">{{ row.created_at }}</td>
                 <td>
+                    <input class="form-control form-control-sm mb-2" name="new_password" type="password" placeholder="Reset password" {% if not session.get("is_admin") %}disabled{% endif %}>
+                    <button class="btn btn-sm btn-primary me-2" type="submit" {% if not session.get("is_admin") %}disabled{% endif %}>Save</button>
+                  </form>
                   {% if row.email != session.get("user") %}
-                  <form method="post" action="{{ url_for('users_delete') }}">
+                  <form method="post" action="{{ url_for('users_delete') }}" class="mt-2">
                     <input type="hidden" name="email" value="{{ row.email }}">
-                    <button class="btn btn-sm btn-outline-danger" type="submit">Delete</button>
+                    <button class="btn btn-sm btn-outline-danger" type="submit" {% if not session.get("is_admin") %}disabled{% endif %}>Delete</button>
                   </form>
                   {% else %}
                   <span class="small text-secondary">Current user</span>
@@ -1442,7 +1521,7 @@ PAGE_TEMPLATE = """
                 </td>
               </tr>
               {% else %}
-              <tr><td colspan="4" class="text-secondary">No users available.</td></tr>
+              <tr><td colspan="5" class="text-secondary">No users available.</td></tr>
               {% endfor %}
             </tbody>
           </table>
@@ -1535,19 +1614,19 @@ PAGE_TEMPLATE = """
               <input type="hidden" name="action" value="identity">
               <div class="mb-3">
                 <label class="form-label" for="bot_name">Bot Username (optional)</label>
-                <input class="form-control" id="bot_name" name="bot_name" placeholder="WickedYodaBot">
+                <input class="form-control" id="bot_name" name="bot_name" placeholder="WickedYodaBot" {% if not session.get("is_admin") %}disabled{% endif %}>
                 <div class="form-text">Leave blank to keep current username.</div>
               </div>
               <div class="mb-3">
                 <label class="form-label" for="server_nickname">Server Nickname (optional)</label>
-                <input class="form-control" id="server_nickname" name="server_nickname" placeholder="WickedYoda's Little Helper">
+                <input class="form-control" id="server_nickname" name="server_nickname" placeholder="WickedYoda's Little Helper" {% if not session.get("is_admin") %}disabled{% endif %}>
                 <div class="form-text">Nickname applies only to selected guild.</div>
               </div>
               <div class="form-check mb-3">
-                <input class="form-check-input" type="checkbox" id="clear_server_nickname" name="clear_server_nickname" value="1">
+                <input class="form-check-input" type="checkbox" id="clear_server_nickname" name="clear_server_nickname" value="1" {% if not session.get("is_admin") %}disabled{% endif %}>
                 <label class="form-check-label" for="clear_server_nickname">Clear server nickname</label>
               </div>
-              <button class="btn btn-primary" type="submit">Update Bot Profile</button>
+              <button class="btn btn-primary" type="submit" {% if not session.get("is_admin") %}disabled{% endif %}>Update Bot Profile</button>
             </form>
           </div>
         </div>
@@ -1559,9 +1638,9 @@ PAGE_TEMPLATE = """
               <input type="hidden" name="action" value="avatar">
               <div class="mb-3">
                 <label class="form-label" for="avatar_file">Avatar Image</label>
-                <input class="form-control" id="avatar_file" name="avatar_file" type="file" accept=".png,.jpg,.jpeg,.webp,.gif,image/*" required>
+                <input class="form-control" id="avatar_file" name="avatar_file" type="file" accept=".png,.jpg,.jpeg,.webp,.gif,image/*" required {% if not session.get("is_admin") %}disabled{% endif %}>
               </div>
-              <button class="btn btn-primary" type="submit">Upload Avatar</button>
+              <button class="btn btn-primary" type="submit" {% if not session.get("is_admin") %}disabled{% endif %}>Upload Avatar</button>
             </form>
           </div>
         </div>
@@ -1571,14 +1650,27 @@ PAGE_TEMPLATE = """
         <h1 class="h5 mb-3">Account</h1>
         <form method="post" action="{{ url_for('account') }}">
           <div class="mb-3">
+            <label class="form-label" for="display_name">Name</label>
+            <input class="form-control" id="display_name" name="display_name" value="{{ account_user.display_name or '' }}">
+          </div>
+          <div class="mb-3">
+            <label class="form-label" for="account_email">Email</label>
+            <input class="form-control" id="account_email" name="email" type="email" value="{{ account_user.email }}">
+          </div>
+          <div class="mb-3">
             <label class="form-label" for="current_password">Current Password</label>
             <input class="form-control" id="current_password" name="current_password" type="password" required>
           </div>
           <div class="mb-3">
             <label class="form-label" for="new_password">New Password</label>
-            <input class="form-control" id="new_password" name="new_password" type="password" required>
+            <input class="form-control" id="new_password" name="new_password" type="password">
+            <div class="form-text">Leave blank to keep the current password.</div>
           </div>
-          <button class="btn btn-primary" type="submit">Update Password</button>
+          <div class="mb-3">
+            <label class="form-label" for="confirm_new_password">Confirm New Password</label>
+            <input class="form-control" id="confirm_new_password" name="confirm_new_password" type="password">
+          </div>
+          <button class="btn btn-primary" type="submit">Update Account</button>
         </form>
       </div>
     {% elif page == "guild_settings" %}
@@ -1587,7 +1679,7 @@ PAGE_TEMPLATE = """
         <form method="post" action="{{ url_for('guild_settings') }}">
           <div class="mb-3">
             <label class="form-label" for="bot_log_channel_id">Bot Log Channel</label>
-            <select class="form-select" id="bot_log_channel_id" name="bot_log_channel_id">
+            <select class="form-select" id="bot_log_channel_id" name="bot_log_channel_id" {% if not session.get("is_admin") %}disabled{% endif %}>
               <option value="">Use global default (env Bot_Log_Channel)</option>
               {% for channel in notification_channels %}
               <option value="{{ channel.id }}" {% if selected_log_channel_id == channel.id|string %}selected{% endif %}>
@@ -1597,7 +1689,7 @@ PAGE_TEMPLATE = """
             </select>
             <div class="form-text">This guild-specific channel receives bot action logs and overrides the global env value.</div>
           </div>
-          <button class="btn btn-primary" type="submit">Save Guild Settings</button>
+          <button class="btn btn-primary" type="submit" {% if not session.get("is_admin") %}disabled{% endif %}>Save Guild Settings</button>
         </form>
       </div>
     {% elif page == "settings" %}
@@ -1609,22 +1701,22 @@ PAGE_TEMPLATE = """
             <div class="col-12 col-lg-6">
               <label class="form-label" for="field_{{ item.key }}"><code>{{ item.key }}</code></label>
               {% if item.options %}
-              <select class="form-select" id="field_{{ item.key }}" name="{{ item.key }}">
+              <select class="form-select" id="field_{{ item.key }}" name="{{ item.key }}" {% if not session.get("is_admin") %}disabled{% endif %}>
                 {% for option in item.options %}
                 <option value="{{ option }}" {% if option == item.value %}selected{% endif %}>{{ option }}</option>
                 {% endfor %}
               </select>
               {% elif item.is_sensitive %}
-              <input class="form-control" id="field_{{ item.key }}" name="{{ item.key }}" value="{{ item.masked_value }}" autocomplete="off">
+              <input class="form-control" id="field_{{ item.key }}" name="{{ item.key }}" value="{{ item.masked_value }}" autocomplete="off" {% if not session.get("is_admin") %}disabled{% endif %}>
               <div class="form-text">Leave as `********` to keep existing value.</div>
               {% else %}
-              <input class="form-control" id="field_{{ item.key }}" name="{{ item.key }}" value="{{ item.value }}">
+              <input class="form-control" id="field_{{ item.key }}" name="{{ item.key }}" value="{{ item.value }}" {% if not session.get("is_admin") %}disabled{% endif %}>
               {% endif %}
             </div>
             {% endfor %}
           </div>
           <div class="mt-3 d-flex gap-2">
-            <button class="btn btn-primary" type="submit">Save Settings</button>
+            <button class="btn btn-primary" type="submit" {% if not session.get("is_admin") %}disabled{% endif %}>Save Settings</button>
             <span class="small text-secondary align-self-center">Changes are written to env file; restart container to apply bot runtime changes.</span>
           </div>
         </form>
@@ -2251,6 +2343,13 @@ def create_app(
 
         return wrapped
 
+    def _current_user_is_admin() -> bool:
+        return bool(session.get("is_admin"))
+
+    def _reject_read_only_write(redirect_endpoint: str):
+        flash("Read-only accounts can view this page but cannot make changes.", "warning")
+        return redirect(url_for(redirect_endpoint))
+
     @app.before_request
     def mark_request_start():
         request.environ["wickedyoda_request_start"] = time.perf_counter()
@@ -2494,12 +2593,14 @@ def create_app(
         )
 
     @app.route("/admin/bot-profile", methods=["GET", "POST"])
-    @admin_required
+    @login_required
     def bot_profile():
         selected_guild_id, _, _ = _selected_guild_context()
         profile_payload = _call_get_bot_profile(selected_guild_id)
 
         if request.method == "POST":
+            if not _current_user_is_admin():
+                return _reject_read_only_write("bot_profile")
             action = str(request.form.get("action", "identity")).strip().lower()
             if action == "identity":
                 payload = {
@@ -2590,7 +2691,7 @@ def create_app(
             flash("Guild context updated.", "success")
 
         next_endpoint = request.form.get("next_endpoint", "").strip()
-        login_allowed_endpoints = {
+        allowed_endpoints = {
             "home",
             "guilds_page",
             "dashboard",
@@ -2603,8 +2704,6 @@ def create_app(
             "account",
             "observability",
             "public_status_everything",
-        }
-        admin_only_endpoints = {
             "users",
             "command_permissions",
             "tag_responses",
@@ -2612,10 +2711,7 @@ def create_app(
             "settings",
             "bot_profile",
         }
-        allowed_endpoints = login_allowed_endpoints | admin_only_endpoints
         if next_endpoint in allowed_endpoints:
-            if next_endpoint in admin_only_endpoints and not bool(session.get("is_admin")):
-                return redirect(url_for("home"))
             return redirect(url_for(next_endpoint))
         return redirect(url_for("home"))
 
@@ -2667,6 +2763,8 @@ def create_app(
     @app.post("/admin/youtube/add")
     @login_required
     def youtube_add():
+        if not _current_user_is_admin():
+            return _reject_read_only_write("youtube_subscriptions")
         selected_guild_id, _, _ = _selected_guild_context()
         source_url = request.form.get("youtube_url", "").strip()
         selected_channel_id = request.form.get("notify_channel_id", "").strip()
@@ -2716,6 +2814,8 @@ def create_app(
     @app.post("/admin/youtube/<int:subscription_id>/delete")
     @login_required
     def youtube_delete(subscription_id: int):
+        if not _current_user_is_admin():
+            return _reject_read_only_write("youtube_subscriptions")
         selected_guild_id, _, _ = _selected_guild_context()
         catalog_payload = _call_get_discord_catalog(selected_guild_id)
         channel_ids: list[int] = []
@@ -2837,7 +2937,7 @@ def create_app(
         )
 
     @app.route("/admin/command-permissions", methods=["GET", "POST"])
-    @admin_required
+    @login_required
     def command_permissions():
         selected_guild_id, _, _ = _selected_guild_context()
         permissions_payload = _call_get_command_permissions(selected_guild_id)
@@ -2847,6 +2947,8 @@ def create_app(
             role_options = catalog_payload.get("roles", []) or []
 
         if request.method == "POST":
+            if not _current_user_is_admin():
+                return _reject_read_only_write("command_permissions")
             command_updates: dict[str, dict] = {}
             for command_key in request.form.getlist("command_key"):
                 command_updates[command_key] = {
@@ -2890,10 +2992,12 @@ def create_app(
         )
 
     @app.route("/admin/tag-responses", methods=["GET", "POST"])
-    @admin_required
+    @login_required
     def tag_responses():
         selected_guild_id, _, _ = _selected_guild_context()
         if request.method == "POST":
+            if not _current_user_is_admin():
+                return _reject_read_only_write("tag_responses")
             raw_json = request.form.get("tag_json", "")
             try:
                 payload = json.loads(raw_json)
@@ -2927,7 +3031,7 @@ def create_app(
         )
 
     @app.route("/admin/guild-settings", methods=["GET", "POST"])
-    @admin_required
+    @login_required
     def guild_settings():
         selected_guild_id, _, _ = _selected_guild_context()
         catalog_payload = _call_get_discord_catalog(selected_guild_id)
@@ -2938,6 +3042,8 @@ def create_app(
                 channel_options = [item for item in raw_channels if isinstance(item, dict)]
 
         if request.method == "POST":
+            if not _current_user_is_admin():
+                return _reject_read_only_write("guild_settings")
             payload = {"bot_log_channel_id": request.form.get("bot_log_channel_id", "").strip()}
             result = _call_save_guild_settings(payload, str(session.get("user", "")), selected_guild_id)
             if isinstance(result, dict) and result.get("ok"):
@@ -2964,7 +3070,7 @@ def create_app(
         )
 
     @app.get("/admin/users")
-    @admin_required
+    @login_required
     def users():
         return _render_page(
             "users",
@@ -2976,6 +3082,7 @@ def create_app(
     @admin_required
     def users_add():
         email = request.form.get("email", "").strip().lower()
+        display_name = request.form.get("display_name", "").strip()
         password = request.form.get("password", "")
         is_admin = request.form.get("is_admin", "0").strip() == "1"
 
@@ -2986,8 +3093,63 @@ def create_app(
             flash("Password must be at least 8 characters.", "danger")
             return redirect(url_for("users"))
 
-        _upsert_user(db_path, email, generate_password_hash(password), is_admin=is_admin)
+        _upsert_user(
+            db_path,
+            email,
+            generate_password_hash(password),
+            is_admin=is_admin,
+            display_name=display_name,
+        )
         flash("User saved.", "success")
+        return redirect(url_for("users"))
+
+    @app.post("/admin/users/update")
+    @admin_required
+    def users_update():
+        current_email = request.form.get("current_email", "").strip().lower()
+        new_email = request.form.get("email", "").strip().lower()
+        display_name = request.form.get("display_name", "").strip()
+        new_password = request.form.get("new_password", "")
+        is_admin = request.form.get("is_admin", "0").strip() == "1"
+        current_user = str(session.get("user", "")).strip().lower()
+
+        if not current_email:
+            flash("Current email is required.", "danger")
+            return redirect(url_for("users"))
+        user = _get_user(db_path, current_email)
+        if not user:
+            flash("User not found.", "warning")
+            return redirect(url_for("users"))
+        if current_email == current_user and not is_admin:
+            flash("You cannot make your own account read-only.", "danger")
+            return redirect(url_for("users"))
+        if bool(user.get("is_admin")) and not is_admin:
+            admin_count = sum(1 for item in _list_users(db_path) if bool(item.get("is_admin")))
+            if admin_count <= 1:
+                flash("At least one admin user must remain.", "danger")
+                return redirect(url_for("users"))
+        password_hash = None
+        if new_password:
+            if len(new_password) < 8:
+                flash("Reset password must be at least 8 characters.", "danger")
+                return redirect(url_for("users"))
+            password_hash = generate_password_hash(new_password)
+
+        ok, message = _update_user_record(
+            db_path,
+            current_email,
+            new_email=new_email or current_email,
+            display_name=display_name,
+            is_admin=is_admin,
+            password_hash=password_hash,
+        )
+        if not ok:
+            flash(message, "danger")
+            return redirect(url_for("users"))
+        if current_email == current_user:
+            session["user"] = (new_email or current_email).lower()
+            session["is_admin"] = is_admin
+        flash(message, "success")
         return redirect(url_for("users"))
 
     @app.post("/admin/users/delete")
@@ -3020,35 +3182,46 @@ def create_app(
     @app.route("/admin/account", methods=["GET", "POST"])
     @login_required
     def account():
+        current_user = str(session.get("user", "")).strip().lower()
+        user = _get_user(db_path, current_user)
+        if not user:
+            _clear_auth_session()
+            flash("Session expired. Please log in again.", "warning")
+            return redirect(url_for("login"))
         if request.method == "POST":
             current_password = request.form.get("current_password", "")
             new_password = request.form.get("new_password", "")
-            current_user = str(session.get("user", "")).strip().lower()
-            user = _get_user(db_path, current_user)
-            if not user:
-                _clear_auth_session()
-                flash("Session expired. Please log in again.", "warning")
-                return redirect(url_for("login"))
+            confirm_new_password = request.form.get("confirm_new_password", "")
+            updated_email = request.form.get("email", "").strip().lower()
+            display_name = request.form.get("display_name", "").strip()
             if not check_password_hash(str(user["password_hash"]), current_password):
                 flash("Current password is incorrect.", "danger")
                 return redirect(url_for("account"))
-            if len(new_password) < 8:
+            if new_password and len(new_password) < 8:
                 flash("New password must be at least 8 characters.", "danger")
                 return redirect(url_for("account"))
-
-            _upsert_user(
+            if new_password and new_password != confirm_new_password:
+                flash("New password confirmation does not match.", "danger")
+                return redirect(url_for("account"))
+            ok, message = _update_user_record(
                 db_path,
                 current_user,
-                generate_password_hash(new_password),
+                new_email=updated_email or current_user,
+                display_name=display_name,
                 is_admin=bool(user.get("is_admin")),
+                password_hash=generate_password_hash(new_password) if new_password else None,
             )
-            flash("Password updated.", "success")
+            if not ok:
+                flash(message, "danger")
+                return redirect(url_for("account"))
+            session["user"] = (updated_email or current_user).lower()
+            flash("Account updated.", "success")
             return redirect(url_for("account"))
 
-        return _render_page("account", "Web Admin Account")
+        return _render_page("account", "Web Admin Account", account_user=user)
 
     @app.get("/admin/settings")
-    @admin_required
+    @login_required
     def settings():
         settings_view = _build_settings_fields()
         return _render_page(
@@ -3058,8 +3231,10 @@ def create_app(
         )
 
     @app.post("/admin/settings/save")
-    @admin_required
+    @login_required
     def settings_save():
+        if not _current_user_is_admin():
+            return _reject_read_only_write("settings")
         settings_fields = _build_settings_fields()
         allowed_keys = [item["key"] for item in settings_fields]
         current_values = {item["key"]: item["value"] for item in settings_fields}
