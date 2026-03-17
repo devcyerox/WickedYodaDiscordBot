@@ -645,6 +645,7 @@ PAGE_TEMPLATE = """
         var(--bg);
       min-height: 100vh;
       color: var(--fg);
+      overflow-x: hidden;
     }
     .card-soft {
       border: 1px solid var(--border);
@@ -655,6 +656,15 @@ PAGE_TEMPLATE = """
     .brand { font-weight: 700; letter-spacing: .2px; color: var(--fg); }
     a { color: var(--link); }
     .navbar { background: var(--header) !important; border-bottom-color: var(--border) !important; }
+    .navbar-collapse { gap: .75rem; }
+    .navbar-toggler { border-color: var(--border); }
+    .navbar-toggler:focus { box-shadow: 0 0 0 .2rem rgba(37, 99, 235, .2); }
+    .navbar-toggler-icon {
+      background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 30 30'%3e%3cpath stroke='rgba(30,41,59,0.92)' stroke-linecap='round' stroke-miterlimit='10' stroke-width='2' d='M4 7h22M4 15h22M4 23h22'/%3e%3c/svg%3e");
+    }
+    body[data-theme="black"] .navbar-toggler-icon {
+      background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 30 30'%3e%3cpath stroke='rgba(231,237,247,0.92)' stroke-linecap='round' stroke-miterlimit='10' stroke-width='2' d='M4 7h22M4 15h22M4 23h22'/%3e%3c/svg%3e");
+    }
     .nav-link { color: var(--fg); }
     .nav-link:hover { color: var(--link); }
     .text-secondary, .small.text-secondary { color: var(--muted) !important; }
@@ -662,6 +672,7 @@ PAGE_TEMPLATE = """
       background: var(--input-bg);
       color: var(--input-fg);
       border-color: var(--border);
+      font-size: 16px;
     }
     .form-control:focus, .form-select:focus, textarea:focus {
       background: var(--input-bg);
@@ -682,12 +693,75 @@ PAGE_TEMPLATE = """
       font-weight: 600;
     }
     .theme-btn.active { background: var(--btn-bg); color: #fff; }
-    .table-wrap { overflow-x: auto; }
+    .nav-utility { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
+    .guild-switch-form { min-width: 220px; }
+    .table-wrap {
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+      border-radius: 12px;
+    }
+    .table-wrap table { min-width: 640px; }
     .status-pill { text-transform: capitalize; }
     .go-page-select { min-width: 180px; max-width: 40vw; }
+    .mobile-pre {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+      max-height: 60vh;
+      overflow: auto;
+    }
+    .documentation-sidebar {
+      max-height: 56vh;
+      overflow: auto;
+    }
+    .documentation-link {
+      background: transparent;
+      color: var(--fg);
+      border-color: var(--border);
+    }
+    .documentation-link:hover {
+      background: rgba(37, 99, 235, .08);
+      color: var(--fg);
+    }
+    .documentation-link.active {
+      background: var(--btn-bg);
+      border-color: var(--btn-bg);
+      color: #fff;
+    }
+    .documentation-link.active .text-secondary,
+    .documentation-link.active .small {
+      color: rgba(255, 255, 255, 0.78) !important;
+    }
     @media (max-width: 900px) {
-      .theme-switch, .go-page-select { width: 100%; max-width: 100%; }
+      .navbar-brand {
+        max-width: calc(100% - 60px);
+        font-size: 1rem;
+        line-height: 1.2;
+        white-space: normal;
+      }
+      .navbar-collapse { padding-top: .75rem; }
+      .navbar-nav { gap: .15rem; }
+      .nav-link { padding: .65rem .15rem; }
+      .nav-utility {
+        width: 100%;
+        flex-direction: column;
+        align-items: stretch;
+      }
+      .nav-utility > * { width: 100%; }
+      .theme-switch, .go-page-select, .guild-switch-form, .guild-switch-form .form-select { width: 100%; max-width: 100%; }
       .theme-btn { flex: 1; min-height: 42px; }
+      .btn-sm, .nav-utility .btn { min-height: 42px; }
+      .guild-card-action { width: 100%; }
+      .table-wrap table { min-width: 560px; }
+      .mobile-pre { max-height: 48vh; font-size: .875rem; }
+      .documentation-sidebar { max-height: none; }
+      .list-group-item { padding: .9rem .95rem; }
+    }
+    @media (max-width: 576px) {
+      .container-fluid, .container { padding-left: .9rem !important; padding-right: .9rem !important; }
+      main.container { padding-top: 1rem !important; padding-bottom: 1.25rem !important; }
+      .card-soft { border-radius: 12px; }
+      .table-wrap table { min-width: 520px; }
     }
   </style>
 </head>
@@ -724,7 +798,7 @@ PAGE_TEMPLATE = """
           {% endif %}
           <li class="nav-item"><a class="nav-link" href="{{ url_for('account') }}">Account</a></li>
         </ul>
-        <div class="d-flex align-items-center gap-2">
+        <div class="nav-utility">
           <select id="nav-page-select" class="form-select form-select-sm go-page-select">
             <option value="">Go to page...</option>
             <option value="{{ url_for('home') }}">Home</option>
@@ -747,7 +821,7 @@ PAGE_TEMPLATE = """
             {% endif %}
           </select>
           {% if guild_options %}
-          <form method="post" action="{{ url_for('select_guild') }}" class="d-flex">
+          <form method="post" action="{{ url_for('select_guild') }}" class="guild-switch-form d-flex">
             <input type="hidden" name="next_endpoint" value="{{ 'documentation' if request.endpoint == 'documentation_page' else (request.endpoint or 'home') }}">
             <select class="form-select form-select-sm" name="guild_id" onchange="this.form.submit()">
               {% for guild in guild_options %}
@@ -757,7 +831,7 @@ PAGE_TEMPLATE = """
           </form>
           {% endif %}
           {% if session.get("is_admin") and restart_enabled %}
-          <form method="post" action="{{ url_for('restart_service') }}" onsubmit="return confirm('WARNING: This restarts the container process. Continue?');">
+          <form method="post" action="{{ url_for('restart_service') }}" class="restart-form" onsubmit="return confirm('WARNING: This restarts the container process. Continue?');">
             <button class="btn btn-outline-danger btn-sm" type="submit">Restart</button>
           </form>
           {% endif %}
@@ -1172,7 +1246,7 @@ PAGE_TEMPLATE = """
         </form>
       </div>
       <div class="card card-soft p-3">
-        <pre class="small mb-0" style="white-space: pre-wrap; max-height: 60vh; overflow-y: auto;">{{ log_preview }}</pre>
+        <pre class="small mb-0 mobile-pre">{{ log_preview }}</pre>
       </div>
     {% elif page == "guilds" %}
       <div class="card card-soft p-3 mb-3">
@@ -1198,7 +1272,7 @@ PAGE_TEMPLATE = """
             <form method="post" action="{{ url_for('select_guild') }}">
               <input type="hidden" name="guild_id" value="{{ guild.id }}">
               <input type="hidden" name="next_endpoint" value="dashboard">
-              <button class="btn btn-primary btn-sm" type="submit" {% if guild.selected %}disabled{% endif %}>
+              <button class="btn btn-primary btn-sm guild-card-action" type="submit" {% if guild.selected %}disabled{% endif %}>
                 {% if guild.selected %}Currently Selected{% else %}Manage This Server{% endif %}
               </button>
             </form>
@@ -1228,9 +1302,9 @@ PAGE_TEMPLATE = """
         <div class="col-12 col-lg-4">
           <div class="card card-soft p-3 h-100">
             <h2 class="h6 mb-3">Pages</h2>
-            <div class="list-group list-group-flush">
+            <div class="list-group list-group-flush documentation-sidebar">
               {% for item in documentation_pages %}
-              <a class="list-group-item list-group-item-action {% if item.slug == selected_doc_slug %}active{% endif %}" href="{{ url_for('documentation_page', page_slug=item.slug) }}">
+              <a class="list-group-item list-group-item-action documentation-link {% if item.slug == selected_doc_slug %}active{% endif %}" href="{{ url_for('documentation_page', page_slug=item.slug) }}">
                 <div class="fw-semibold">{{ item.label }}</div>
                 <div class="small {% if item.slug == selected_doc_slug %}text-white-50{% else %}text-secondary{% endif %}">{{ item.filename }}</div>
               </a>
@@ -1241,7 +1315,7 @@ PAGE_TEMPLATE = """
         <div class="col-12 col-lg-8">
           <div class="card card-soft p-3">
             <h2 class="h6 mb-3">{{ documentation_title }}</h2>
-            <pre class="small mb-0" style="white-space: pre-wrap;">{{ documentation_content }}</pre>
+            <pre class="small mb-0 mobile-pre">{{ documentation_content }}</pre>
           </div>
         </div>
       </div>
