@@ -2315,6 +2315,10 @@ PAGE_TEMPLATE = """
         <form method="post" action="{{ url_for('users_add') }}">
           <div class="row g-2">
             <div class="col-12 col-lg-2">
+              <label class="form-label" for="new_display_name">Display Name</label>
+              <input class="form-control" id="new_display_name" name="display_name" {% if not session.get("is_admin") %}disabled{% endif %}>
+            </div>
+            <div class="col-12 col-lg-2">
               <label class="form-label" for="new_first_name">First Name</label>
               <input class="form-control" id="new_first_name" name="first_name" {% if not session.get("is_admin") %}disabled{% endif %}>
             </div>
@@ -2353,6 +2357,9 @@ PAGE_TEMPLATE = """
                 <td>
                   <form method="post" action="{{ url_for('users_update') }}" class="row g-2">
                     <input type="hidden" name="current_email" value="{{ row.email }}">
+                    <div class="col-12">
+                      <input class="form-control form-control-sm" name="display_name" value="{{ row.display_name or '' }}" placeholder="Display name" {% if not session.get("is_admin") %}disabled{% endif %}>
+                    </div>
                     <div class="col-12 col-md-6">
                       <input class="form-control form-control-sm" name="first_name" value="{{ row.first_name or '' }}" placeholder="First name" {% if not session.get("is_admin") %}disabled{% endif %}>
                     </div>
@@ -2521,6 +2528,10 @@ PAGE_TEMPLATE = """
             <form method="post" action="{{ url_for('account') }}">
               <input type="hidden" name="action" value="profile">
               <div class="row g-2">
+                <div class="col-12">
+                  <label class="form-label" for="account_display_name">Display Name</label>
+                  <input class="form-control" id="account_display_name" name="display_name" value="{{ account_user.display_name or '' }}">
+                </div>
                 <div class="col-12 col-md-6">
                   <label class="form-label" for="account_first_name">First Name</label>
                   <input class="form-control" id="account_first_name" name="first_name" value="{{ account_user.first_name or '' }}">
@@ -4330,6 +4341,7 @@ def create_app(
     @admin_required
     def users_add():
         email = request.form.get("email", "").strip().lower()
+        display_name = request.form.get("display_name", "").strip()
         first_name = request.form.get("first_name", "").strip()
         last_name = request.form.get("last_name", "").strip()
         password = request.form.get("password", "")
@@ -4348,7 +4360,7 @@ def create_app(
             email,
             generate_password_hash(password),
             is_admin=is_admin,
-            display_name="",
+            display_name=display_name,
             first_name=first_name,
             last_name=last_name,
             password_changed_at=datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S"),
@@ -4361,6 +4373,7 @@ def create_app(
     def users_update():
         current_email = request.form.get("current_email", "").strip().lower()
         new_email = request.form.get("email", "").strip().lower()
+        display_name = request.form.get("display_name", "").strip()
         first_name = request.form.get("first_name", "").strip()
         last_name = request.form.get("last_name", "").strip()
         new_password = request.form.get("new_password", "")
@@ -4394,7 +4407,7 @@ def create_app(
             db_path,
             current_email,
             new_email=new_email or current_email,
-            display_name="" if (first_name or last_name) else str(user.get("display_name", "")),
+            display_name=display_name if display_name else ("" if (first_name or last_name) else str(user.get("display_name", ""))),
             first_name=first_name,
             last_name=last_name,
             is_admin=is_admin,
@@ -4446,23 +4459,56 @@ def create_app(
             flash("Session expired. Please log in again.", "warning")
             return redirect(url_for("login"))
         if request.method == "POST":
-            action = request.form.get("action", "profile").strip().lower()
+            action = request.form.get("action", "").strip().lower()
             current_password = request.form.get("current_password", "")
             new_password = request.form.get("new_password", "")
             confirm_new_password = request.form.get("confirm_new_password", "")
             updated_email = request.form.get("email", "").strip().lower()
+            display_name = request.form.get("display_name", "").strip()
             first_name = request.form.get("first_name", "").strip()
             last_name = request.form.get("last_name", "").strip()
             password_rotation_required = bool(session.get("password_rotation_required"))
             if not check_password_hash(str(user["password_hash"]), current_password):
                 flash("Current password is incorrect.", "danger")
                 return redirect(url_for("account"))
+            if not action:
+                if password_rotation_required and not new_password:
+                    flash(f"Password rotation is required every {PASSWORD_ROTATION_DAYS} days. Set a new password now.", "danger")
+                    return redirect(url_for("account"))
+                if new_password and new_password == current_password:
+                    flash("New password must be different from the current password.", "danger")
+                    return redirect(url_for("account"))
+                password_policy_error = _password_policy_error(new_password) if new_password else None
+                if password_policy_error:
+                    flash(password_policy_error, "danger")
+                    return redirect(url_for("account"))
+                if confirm_new_password and new_password != confirm_new_password:
+                    flash("New password confirmation does not match.", "danger")
+                    return redirect(url_for("account"))
+                ok, message = _update_user_record(
+                    db_path,
+                    current_user,
+                    new_email=updated_email or current_user,
+                    display_name=display_name if display_name else ("" if (first_name or last_name) else str(user.get("display_name", ""))),
+                    first_name=first_name,
+                    last_name=last_name,
+                    is_admin=bool(user.get("is_admin")),
+                    password_hash=generate_password_hash(new_password) if new_password else None,
+                )
+                if not ok:
+                    flash(message, "danger")
+                    return redirect(url_for("account"))
+                session["user"] = (updated_email or current_user).lower()
+                if new_password:
+                    session["password_rotation_required"] = False
+                flash("Account updated.", "success")
+                return redirect(url_for("account"))
             if action == "profile":
                 ok, message = _update_user_record(
                     db_path,
                     current_user,
                     new_email=updated_email or current_user,
-                    display_name="" if (first_name or last_name) else str(user.get("display_name", "")),
+                    display_name=display_name if display_name else ("" if (first_name or last_name) else str(user.get("display_name", ""))),
                     first_name=first_name,
                     last_name=last_name,
                     is_admin=bool(user.get("is_admin")),
