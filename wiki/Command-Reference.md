@@ -1,8 +1,10 @@
 # Command Reference
 
-Last Updated: 2026-03-02
+Last Updated: 2026-03-18
 
 Guild-scoped slash commands currently registered in `bot.py`.
+
+This page documents slash commands only. Background feed automation configured in the web GUI is documented in [Feed Integrations](./Feed-Integrations.md).
 
 Response visibility for most slash commands is controlled by `COMMAND_RESPONSES_EPHEMERAL`:
 - `false` (default): bot responses are public in-channel

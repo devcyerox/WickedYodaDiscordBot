@@ -1,6 +1,6 @@
 # Multi-Guild and Env Setup
 
-Last Updated: 2026-03-02
+Last Updated: 2026-03-18
 
 ## Required vs Optional Vars
 
@@ -11,6 +11,7 @@ Last Updated: 2026-03-02
   - `GUILD_ID`
   - `Bot_Log_Channel`
   - Web/admin integration vars (`WEB_*`)
+  - Feed integration timeouts (`YOUTUBE_REQUEST_TIMEOUT_SECONDS`, `WORDPRESS_REQUEST_TIMEOUT_SECONDS`, `LINKEDIN_REQUEST_TIMEOUT_SECONDS`)
 
 ## How Guild Selection Works
 
@@ -29,6 +30,17 @@ Last Updated: 2026-03-02
 - Primary mode is per-guild log channel from `/admin/guild-settings`.
 - Fallback mode uses global `Bot_Log_Channel` if set.
 - If neither is configured, Discord log-channel posting is skipped, but file/SQLite logging still runs.
+
+## Guild-Scoped Feed Automation
+
+Feed subscriptions are configured per guild from the web GUI. The selected guild in the top nav controls which server you are editing for:
+
+- Reddit feeds
+- WordPress feeds
+- LinkedIn feeds
+- YouTube feeds
+
+Feed source URLs, selected notify channels, and last-seen state do not cross between guilds.
 
 ## Recommended Multi-Guild Example
 

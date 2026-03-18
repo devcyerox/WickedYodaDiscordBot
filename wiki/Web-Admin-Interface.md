@@ -1,6 +1,6 @@
 # Web Admin Interface
 
-Last Updated: 2026-03-17
+Last Updated: 2026-03-18
 
 The web admin is served by `web_admin.py` and is mobile-friendly.
 
@@ -32,11 +32,18 @@ The web admin is served by `web_admin.py` and is mobile-friendly.
 
 ## Key Pages
 
+- Home: `/admin/home`
+- Servers: `/admin/guilds`
 - Dashboard: `/admin`
+- Status: `/admin/status`
 - Actions: `/admin/actions`
+- Reddit feeds: `/admin/reddit`
+- WordPress feeds: `/admin/wordpress`
+- LinkedIn feeds: `/admin/linkedin`
 - YouTube subscriptions: `/admin/youtube`
 - Logs: `/admin/logs`
-- Wiki viewer: `/admin/wiki`
+- Documentation viewer: `/admin/documentation`
+- Wiki redirect: `/admin/wiki`
 - Account management: `/admin/account`
 - Users: `/admin/users` (login required, admin writes only)
 - Command permissions: `/admin/command-permissions` (login required, admin writes only)
@@ -53,6 +60,36 @@ The web admin is served by `web_admin.py` and is mobile-friendly.
 
 - `/status` redirects to `/status/everything`
 - `/status/everything` shows public status/health summary without login.
+
+## Account Self-Service
+
+Users can manage their own profile from `/admin/account`:
+
+- change email
+- change first name
+- change last name
+- change password
+
+Profile changes require the current password. If the email is changed, the active session is updated to the new email.
+
+## Feed Automation Pages
+
+The web GUI includes guild-scoped automation pages for:
+
+- Reddit
+- WordPress
+- LinkedIn
+- YouTube
+
+Each feed page allows:
+
+- source/profile/site input
+- target Discord channel selection
+- polling schedule selection
+- listing existing feed subscriptions
+- deletion of existing feed subscriptions
+
+See [Feed Integrations](./Feed-Integrations.md) for feed-specific behavior and limitations.
 
 ## Restart Control
 
