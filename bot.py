@@ -63,6 +63,37 @@ def env_int(name: str, default: int) -> int:
         raise RuntimeError(f"Environment variable {name} must be an integer.") from exc
 
 
+def apply_best_effort_permissions(path: str, mode: int) -> None:
+    try:
+        os.chmod(path, mode)
+    except OSError:
+        return
+
+
+def ensure_private_directory(path: str) -> None:
+    os.makedirs(path, exist_ok=True)
+    apply_best_effort_permissions(path, 0o700)
+
+
+def secure_sqlite_sidecars(path: str) -> None:
+    for suffix in ("", "-wal", "-shm"):
+        candidate = path if not suffix else f"{path}{suffix}"
+        if os.path.exists(candidate):
+            apply_best_effort_permissions(candidate, 0o600)
+
+
+def connect_sqlite(path: str, timeout: int = 10) -> sqlite3.Connection:
+    directory = os.path.dirname(path)
+    if directory:
+        ensure_private_directory(directory)
+    conn = sqlite3.connect(path, timeout=timeout)
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute(f"PRAGMA busy_timeout = {max(1, timeout) * 1000}")
+    secure_sqlite_sidecars(path)
+    return conn
+
+
 DISCORD_TOKEN = required_env("DISCORD_TOKEN")
 MANAGED_GUILD_IDS_RAW = os.getenv("MANAGED_GUILD_IDS", "").strip()
 
@@ -729,10 +760,11 @@ def resolve_action_db_path() -> str:
         try:
             directory = os.path.dirname(path)
             if directory:
-                os.makedirs(directory, exist_ok=True)
-            with sqlite3.connect(path, timeout=5) as conn:
+                ensure_private_directory(directory)
+            with connect_sqlite(path, timeout=5) as conn:
                 conn.execute("PRAGMA user_version = 1")
                 conn.commit()
+            secure_sqlite_sidecars(path)
             if path != preferred_path:
                 logger.warning("Action DB path %s is not writable; using fallback %s", preferred_path, path)
             return path
@@ -764,7 +796,7 @@ def resolve_log_dir(db_path: str) -> str:
 
     for candidate in candidates:
         try:
-            os.makedirs(candidate, exist_ok=True)
+            ensure_private_directory(candidate)
             test_path = os.path.join(candidate, ".wickedyoda-log-write-test")
             with open(test_path, "a", encoding="utf-8"):
                 pass
@@ -790,6 +822,7 @@ def add_file_handler(target_logger: logging.Logger, path: str, level: int) -> No
     file_handler.setLevel(level)
     file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
     target_logger.addHandler(file_handler)
+    apply_best_effort_permissions(path, 0o600)
 
 
 def configure_runtime_logging(log_dir: str) -> tuple[str, str, str]:
@@ -828,11 +861,11 @@ class ActionStore:
         self._lock = threading.Lock()
         directory = os.path.dirname(db_path)
         if directory:
-            os.makedirs(directory, exist_ok=True)
+            ensure_private_directory(directory)
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
-        return sqlite3.connect(self.db_path, timeout=10)
+        return connect_sqlite(self.db_path, timeout=10)
 
     def _initialize(self) -> None:
         with self._connect() as conn:

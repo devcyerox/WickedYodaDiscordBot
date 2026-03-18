@@ -3,6 +3,8 @@ import re
 import sqlite3
 from pathlib import Path
 
+from werkzeug.security import generate_password_hash
+
 from web_admin import create_app
 
 
@@ -24,13 +26,31 @@ def _extract_csrf_token(response_body: bytes) -> str:
 
 
 def _login(client) -> str:
+    return _login_as(client, "admin@example.com", "TestPass123!")
+
+
+def _login_as(client, username: str, password: str) -> str:
     response = client.post(
         "/login",
-        data={"username": "admin@example.com", "password": "TestPass123!"},
+        data={"username": username, "password": password},
         follow_redirects=True,
     )
     assert response.status_code == 200
     return _extract_csrf_token(response.data)
+
+
+def _add_user(client, csrf_token: str, *, email: str, password: str, is_admin: bool, display_name: str = ""):
+    return client.post(
+        "/admin/users/add",
+        data={
+            "email": email,
+            "password": password,
+            "is_admin": "1" if is_admin else "0",
+            "display_name": display_name,
+        },
+        headers={"X-CSRF-Token": csrf_token},
+        follow_redirects=True,
+    )
 
 
 def test_healthz_route(tmp_path: Path, monkeypatch) -> None:
@@ -596,3 +616,342 @@ def test_guild_settings_save_not_blocked_by_same_origin_policy(tmp_path: Path, m
 
     assert response.status_code == 200
     assert b"Guild settings updated." in response.data
+
+
+def test_account_can_update_own_email_name_and_password(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_USERNAME", "admin@example.com")
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_PASSWORD", "TestPass123!")
+    app = create_app(str(tmp_path / "actions.db"), _bot_snapshot)
+    client = app.test_client()
+    csrf_token = _login(client)
+
+    response = client.post(
+        "/admin/account",
+        data={
+            "display_name": "Admin Prime",
+            "email": "admin2@example.com",
+            "current_password": "TestPass123!",
+            "new_password": "NewPass1234!",
+            "confirm_new_password": "NewPass1234!",
+        },
+        headers={"X-CSRF-Token": csrf_token},
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert b"Account updated." in response.data
+    assert b"Admin Prime" in response.data
+    assert b"admin2@example.com" in response.data
+
+    client.get("/logout")
+    relogin_response = client.post(
+        "/login",
+        data={"username": "admin2@example.com", "password": "NewPass1234!"},
+        follow_redirects=True,
+    )
+
+    assert relogin_response.status_code == 200
+    assert b"Control Center" in relogin_response.data
+
+
+def test_admin_can_update_other_user_email_name_and_password(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_USERNAME", "admin@example.com")
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_PASSWORD", "TestPass123!")
+    app = create_app(str(tmp_path / "actions.db"), _bot_snapshot)
+    client = app.test_client()
+    csrf_token = _login(client)
+
+    add_response = _add_user(
+        client,
+        csrf_token,
+        email="viewer@example.com",
+        password="ViewerPass123!",
+        is_admin=False,
+        display_name="Viewer",
+    )
+
+    assert add_response.status_code == 200
+    assert b"User saved." in add_response.data
+
+    update_response = client.post(
+        "/admin/users/update",
+        data={
+            "current_email": "viewer@example.com",
+            "display_name": "Updated Viewer",
+            "email": "viewer2@example.com",
+            "new_password": "ViewerReset123!",
+            "is_admin": "0",
+        },
+        headers={"X-CSRF-Token": csrf_token},
+        follow_redirects=True,
+    )
+
+    assert update_response.status_code == 200
+    assert b"User updated." in update_response.data
+    assert b"Updated Viewer" in update_response.data
+    assert b"viewer2@example.com" in update_response.data
+
+    client.get("/logout")
+    relogin_response = client.post(
+        "/login",
+        data={"username": "viewer2@example.com", "password": "ViewerReset123!"},
+        follow_redirects=True,
+    )
+
+    assert relogin_response.status_code == 200
+    assert b"Control Center" in relogin_response.data
+
+
+def test_admin_cannot_make_self_read_only(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_USERNAME", "admin@example.com")
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_PASSWORD", "TestPass123!")
+    app = create_app(str(tmp_path / "actions.db"), _bot_snapshot)
+    client = app.test_client()
+    csrf_token = _login(client)
+
+    response = client.post(
+        "/admin/users/update",
+        data={
+            "current_email": "admin@example.com",
+            "display_name": "Admin",
+            "email": "admin@example.com",
+            "is_admin": "0",
+        },
+        headers={"X-CSRF-Token": csrf_token},
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert b"You cannot make your own account read-only." in response.data
+
+
+def test_read_only_user_can_view_portal_but_cannot_modify_it(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_USERNAME", "admin@example.com")
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_PASSWORD", "TestPass123!")
+    monkeypatch.setenv("GUILD_ID", "123456789012345678")
+
+    def get_discord_catalog(_guild_id: int) -> dict:
+        return {
+            "ok": True,
+            "channels": [{"id": 111222333444555666, "name": "#bot-logs"}],
+            "roles": [{"id": 777888999000111222, "name": "Moderators"}],
+        }
+
+    def get_command_permissions(_guild_id: int) -> dict:
+        return {
+            "ok": True,
+            "commands": [
+                {
+                    "key": "ping",
+                    "label": "/ping",
+                    "description": "Health check",
+                    "default_policy_label": "Public (all members)",
+                    "mode": "default",
+                    "role_ids": [],
+                }
+            ],
+        }
+
+    def save_command_permissions(_payload: dict, _actor: str, guild_id: int) -> dict:
+        return get_command_permissions(guild_id) | {"message": "Command permissions updated.", "ok": True}
+
+    def get_tag_responses(_guild_id: int) -> dict:
+        return {"ok": True, "mapping": {"hello": "world"}}
+
+    def save_tag_responses(mapping: dict, _actor: str, _guild_id: int) -> dict:
+        return {"ok": True, "mapping": mapping, "message": "Tag responses updated."}
+
+    def get_guild_settings(_guild_id: int) -> dict:
+        return {"ok": True, "bot_log_channel_id": ""}
+
+    def save_guild_settings(_payload: dict, _actor: str, _guild_id: int) -> dict:
+        return {"ok": True, "bot_log_channel_id": 111222333444555666, "message": "Guild settings updated."}
+
+    def get_bot_profile(_guild_id: int) -> dict:
+        return {
+            "ok": True,
+            "id": 123,
+            "name": "WickedYodaBot",
+            "global_name": "WickedYodaBot",
+            "avatar_url": "",
+            "guild_name": "Test Guild",
+            "server_nickname": "",
+        }
+
+    app = create_app(
+        str(tmp_path / "actions.db"),
+        _bot_snapshot,
+        get_discord_catalog=get_discord_catalog,
+        get_command_permissions=get_command_permissions,
+        save_command_permissions=save_command_permissions,
+        get_tag_responses=get_tag_responses,
+        save_tag_responses=save_tag_responses,
+        get_guild_settings=get_guild_settings,
+        save_guild_settings=save_guild_settings,
+        get_bot_profile=get_bot_profile,
+    )
+    client = app.test_client()
+    admin_csrf = _login(client)
+    add_response = _add_user(
+        client,
+        admin_csrf,
+        email="readonly@example.com",
+        password="Readonly123!",
+        is_admin=False,
+        display_name="Read Only",
+    )
+
+    assert add_response.status_code == 200
+    assert b"User saved." in add_response.data
+
+    client.get("/logout")
+    readonly_csrf = _login_as(client, "readonly@example.com", "Readonly123!")
+
+    for path in (
+        "/admin/users",
+        "/admin/command-permissions",
+        "/admin/tag-responses",
+        "/admin/guild-settings",
+        "/admin/settings",
+        "/admin/bot-profile",
+    ):
+        response = client.get(path)
+        assert response.status_code == 200
+
+    users_response = client.get("/admin/users")
+    assert b"Read-only account" in users_response.data
+    assert b"disabled" in users_response.data
+
+    select_response = client.post(
+        "/admin/select-guild",
+        data={"guild_id": "123456789012345678", "next_endpoint": "users"},
+        headers={"X-CSRF-Token": readonly_csrf},
+        follow_redirects=False,
+    )
+    assert select_response.status_code == 302
+    assert "/admin/users" in select_response.headers["Location"]
+
+    settings_response = client.post(
+        "/admin/settings/save",
+        data={"WEB_PORT": "8001"},
+        headers={"X-CSRF-Token": readonly_csrf},
+        follow_redirects=True,
+    )
+    command_response = client.post(
+        "/admin/command-permissions",
+        data={"command_key": "ping", "mode__ping": "public", "role_ids_text__ping": ""},
+        headers={"X-CSRF-Token": readonly_csrf},
+        follow_redirects=True,
+    )
+
+    assert settings_response.status_code == 200
+    assert b"Read-only accounts can view this page but cannot make changes." in settings_response.data
+    assert command_response.status_code == 200
+    assert b"Read-only accounts can view this page but cannot make changes." in command_response.data
+
+
+def test_login_upgrades_legacy_password_hash(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_USERNAME", "admin@example.com")
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_PASSWORD", "TestPass123!")
+    db_path = tmp_path / "actions.db"
+    app = create_app(str(db_path), _bot_snapshot)
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE web_users SET password_hash = ? WHERE email = ?",
+            (generate_password_hash("TestPass123!", method="pbkdf2:sha256"), "admin@example.com"),
+        )
+        conn.commit()
+
+    client = app.test_client()
+    response = client.post(
+        "/login",
+        data={"username": "admin@example.com", "password": "TestPass123!"},
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    with sqlite3.connect(db_path) as conn:
+        upgraded_hash = conn.execute(
+            "SELECT password_hash FROM web_users WHERE email = ?",
+            ("admin@example.com",),
+        ).fetchone()[0]
+    assert upgraded_hash.startswith("scrypt:")
+
+
+def test_password_rotation_forces_account_update(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_USERNAME", "admin@example.com")
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_PASSWORD", "TestPass123!")
+    db_path = tmp_path / "actions.db"
+    app = create_app(str(db_path), _bot_snapshot)
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE web_users SET password_changed_at = '2025-01-01 00:00:00' WHERE email = ?",
+            ("admin@example.com",),
+        )
+        conn.commit()
+
+    client = app.test_client()
+    login_response = client.post(
+        "/login",
+        data={"username": "admin@example.com", "password": "TestPass123!"},
+        follow_redirects=True,
+    )
+
+    assert login_response.status_code == 200
+    assert b"older than 90 days" in login_response.data
+    assert b"Account" in login_response.data
+
+    csrf_token = _extract_csrf_token(login_response.data)
+    blocked_response = client.post(
+        "/admin/account",
+        data={
+            "display_name": "Admin",
+            "email": "admin@example.com",
+            "current_password": "TestPass123!",
+            "new_password": "",
+            "confirm_new_password": "",
+        },
+        headers={"X-CSRF-Token": csrf_token},
+        follow_redirects=True,
+    )
+
+    assert blocked_response.status_code == 200
+    assert b"Password rotation is required every 90 days" in blocked_response.data
+
+    updated_response = client.post(
+        "/admin/account",
+        data={
+            "display_name": "Admin",
+            "email": "admin@example.com",
+            "current_password": "TestPass123!",
+            "new_password": "UpdatedPass123!",
+            "confirm_new_password": "UpdatedPass123!",
+        },
+        headers={"X-CSRF-Token": csrf_token},
+        follow_redirects=True,
+    )
+
+    assert updated_response.status_code == 200
+    assert b"Account updated." in updated_response.data
+
+
+def test_users_add_rejects_weak_password(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_USERNAME", "admin@example.com")
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_PASSWORD", "TestPass123!")
+    app = create_app(str(tmp_path / "actions.db"), _bot_snapshot)
+    client = app.test_client()
+    csrf_token = _login(client)
+
+    response = _add_user(
+        client,
+        csrf_token,
+        email="weak@example.com",
+        password="weakpass",
+        is_admin=False,
+        display_name="Weak",
+    )
+
+    assert response.status_code == 200
+    assert b"Password must be at least 12 characters." in response.data
