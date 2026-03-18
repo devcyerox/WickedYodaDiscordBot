@@ -2737,7 +2737,7 @@ def create_app(
         audit_logger = app.logger
 
     admin_user = os.getenv("WEB_ADMIN_DEFAULT_USERNAME", "admin@example.com").strip().lower()
-    admin_password = os.getenv("WEB_ADMIN_DEFAULT_PASSWORD", "")
+    admin_password: str | None = os.getenv("WEB_ADMIN_DEFAULT_PASSWORD", "")
     admin_password_hash = os.getenv("WEB_ADMIN_DEFAULT_PASSWORD_HASH", "")
     generated_one_time_admin_password = False
     existing_admin_user = _get_user(db_path, admin_user)
@@ -2758,7 +2758,7 @@ def create_app(
                     admin_user,
                     password_policy_error,
                 )
-                admin_password = ""
+                admin_password = None
             else:
                 admin_password_hash = generate_password_hash(admin_password)
     elif admin_password_hash.startswith(("pbkdf2:", "scrypt:")):
