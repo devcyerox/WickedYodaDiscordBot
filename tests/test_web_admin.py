@@ -3,6 +3,7 @@ import re
 import sqlite3
 from pathlib import Path
 
+import pytest
 from werkzeug.security import generate_password_hash
 
 from web_admin import create_app
@@ -201,6 +202,34 @@ def test_account_password_update_allows_login_with_new_password(tmp_path: Path, 
 
     assert login_response.status_code == 200
     assert b"Control Center" in login_response.data
+
+
+def test_existing_admin_user_ignores_weak_default_password_env(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_USERNAME", "admin@example.com")
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_PASSWORD", "StrongPass123!")
+    db_path = tmp_path / "actions.db"
+    app = create_app(str(db_path), _bot_snapshot)
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_PASSWORD", "short")
+
+    app = create_app(str(db_path), _bot_snapshot)
+    client = app.test_client()
+
+    response = client.post(
+        "/login",
+        data={"username": "admin@example.com", "password": "StrongPass123!"},
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert b"Control Center" in response.data
+
+
+def test_new_install_rejects_weak_default_password_env(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_USERNAME", "admin@example.com")
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_PASSWORD", "short")
+
+    with pytest.raises(RuntimeError, match="WEB_ADMIN_DEFAULT_PASSWORD does not meet policy"):
+        create_app(str(tmp_path / "actions.db"), _bot_snapshot)
 
 
 def test_login_allows_forwarded_host_origin_match(tmp_path: Path, monkeypatch) -> None:

@@ -2740,22 +2740,32 @@ def create_app(
     admin_password = os.getenv("WEB_ADMIN_DEFAULT_PASSWORD", "")
     admin_password_hash = os.getenv("WEB_ADMIN_DEFAULT_PASSWORD_HASH", "")
     generated_one_time_admin_password = False
+    existing_admin_user = _get_user(db_path, admin_user)
 
     if not admin_password_hash:
         if not admin_password:
             admin_password = secrets.token_urlsafe(16)
             generated_one_time_admin_password = True
             app.logger.warning("WEB_ADMIN_DEFAULT_PASSWORD not set. Generated one-time random admin password for this run.")
-        password_policy_error = _password_policy_error(admin_password)
-        if password_policy_error:
-            raise RuntimeError(f"WEB_ADMIN_DEFAULT_PASSWORD does not meet policy: {password_policy_error}")
-        admin_password_hash = generate_password_hash(admin_password)
+            admin_password_hash = generate_password_hash(admin_password)
+        else:
+            password_policy_error = _password_policy_error(admin_password)
+            if password_policy_error:
+                if existing_admin_user is None:
+                    raise RuntimeError(f"WEB_ADMIN_DEFAULT_PASSWORD does not meet policy: {password_policy_error}")
+                app.logger.warning(
+                    "WEB_ADMIN_DEFAULT_PASSWORD is set but does not meet policy; ignoring it for existing admin user %s: %s",
+                    admin_user,
+                    password_policy_error,
+                )
+                admin_password = ""
+            else:
+                admin_password_hash = generate_password_hash(admin_password)
     elif admin_password_hash.startswith(("pbkdf2:", "scrypt:")):
         pass
     else:
         admin_password_hash = generate_password_hash(admin_password_hash)
 
-    existing_admin_user = _get_user(db_path, admin_user)
     if existing_admin_user is None:
         _upsert_user(
             db_path,
