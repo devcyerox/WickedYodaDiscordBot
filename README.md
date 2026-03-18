@@ -8,6 +8,7 @@ Project wiki files live in [`wiki/`](wiki/).
 
 - [`wiki/Home.md`](wiki/Home.md) - wiki index and maintenance workflow
 - [`wiki/Command-Reference.md`](wiki/Command-Reference.md) - full slash command documentation
+- [`wiki/Feed-Integrations.md`](wiki/Feed-Integrations.md) - web-managed Reddit, WordPress, LinkedIn, and YouTube feeds
 - [`wiki/Multi-Guild-and-Env.md`](wiki/Multi-Guild-and-Env.md) - multi-guild behavior and environment variable patterns
 - [`wiki/Web-Admin-Interface.md`](wiki/Web-Admin-Interface.md) - web GUI authentication, pages, and security controls
 
@@ -38,6 +39,8 @@ Set these in `env.env`:
 - `YOUTUBE_NOTIFY_ENABLED` - enable background YouTube upload notifications
 - `YOUTUBE_POLL_INTERVAL_SECONDS` - polling interval for YouTube feed checks
 - `YOUTUBE_REQUEST_TIMEOUT_SECONDS` - timeout for YouTube URL/feed requests
+- `WORDPRESS_REQUEST_TIMEOUT_SECONDS` - timeout for WordPress feed discovery and polling
+- `LINKEDIN_REQUEST_TIMEOUT_SECONDS` - timeout for LinkedIn profile activity requests
 - `UPTIME_STATUS_ENABLED` - enable uptime status integration command (`/uptime`)
 - `UPTIME_STATUS_PAGE_URL` - public Uptime Kuma status page URL (example: `https://randy.wickedyoda.com/status/everything`)
 - `UPTIME_STATUS_TIMEOUT_SECONDS` - timeout for uptime API requests
@@ -114,16 +117,27 @@ SQLite storage is internal to the container at `/app/data/mod_actions.db`.
 - Theme switcher (Light/Black) is available in the top nav and persists per browser.
 - Login includes optional "Keep me signed in" mode (5-day max), inactivity timeout, and IP-based login attempt throttling.
 - Pages:
+  - Home (`/admin/home`)
+  - Servers (`/admin/guilds`)
   - Dashboard (`/admin`)
+  - Status (`/admin/status`)
   - Action history (`/admin/actions`)
+  - Reddit feeds (`/admin/reddit`)
+  - WordPress feeds (`/admin/wordpress`)
+  - LinkedIn feeds (`/admin/linkedin`)
   - YouTube subscriptions (`/admin/youtube`)
   - Observability (`/admin/observability`, login required)
   - Bot profile (`/admin/bot-profile`, admin only)
     - Includes bot username/nickname updates and avatar upload
   - Guild settings (`/admin/guild-settings`, admin only)
   - Logs viewer (`/admin/logs`)
-  - Wiki viewer (`/admin/wiki`)
-  - Account password management (`/admin/account`)
+  - Documentation viewer (`/admin/documentation`)
+  - Wiki redirect (`/admin/wiki`)
+  - Account self-service (`/admin/account`)
+    - change email
+    - change first name
+    - change last name
+    - change password
   - User management (`/admin/users`, admin only)
   - Command permissions (`/admin/command-permissions`, admin only)
   - Tag responses (`/admin/tag-responses`, admin only)
@@ -139,6 +153,24 @@ Settings are editable from the GUI and saved back to `env.env` (or `WEB_ENV_FILE
 - Add a YouTube channel URL and select the Discord channel to notify.
 - The bot stores subscriptions in SQLite and polls YouTube feeds.
 - On new uploads, it posts a notification embed in the selected Discord channel(s).
+
+## Feed Automation
+
+The web GUI also manages background notifications for:
+
+- Reddit
+- WordPress
+- LinkedIn
+- YouTube
+
+Each feed integration supports:
+
+- source/profile/site input
+- selected Discord target channel
+- schedule selection (`5m`, `10m`, `15m`, `30m`, `1h`, `3h`, `6h`)
+- stored last-seen state in SQLite
+
+LinkedIn support is experimental and depends on public activity being accessible without authentication.
 
 ## Verification And Security Checks
 

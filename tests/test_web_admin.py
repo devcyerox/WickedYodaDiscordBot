@@ -3,6 +3,7 @@ import re
 import sqlite3
 from pathlib import Path
 
+import pytest
 from werkzeug.security import generate_password_hash
 
 from web_admin import create_app
@@ -135,6 +136,102 @@ def test_login_and_home_access(tmp_path: Path, monkeypatch) -> None:
     assert b"Control Center" in response.data
 
 
+def test_account_profile_update_changes_email_and_names(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_USERNAME", "admin@example.com")
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_PASSWORD", "TestPass123!")
+    db_path = tmp_path / "actions.db"
+    app = create_app(str(db_path), _bot_snapshot)
+    client = app.test_client()
+    csrf_token = _login(client)
+
+    response = client.post(
+        "/admin/account",
+        data={
+            "action": "profile",
+            "email": "owner@example.com",
+            "first_name": "Wicked",
+            "last_name": "Yoda",
+            "current_password": "TestPass123!",
+        },
+        headers={"X-CSRF-Token": csrf_token},
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert b"Profile updated." in response.data
+    assert b'value="Wicked"' in response.data
+    assert b'value="Yoda"' in response.data
+    assert b'value="owner@example.com"' in response.data
+
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT email, first_name, last_name FROM web_users WHERE email = ?",
+            ("owner@example.com",),
+        ).fetchone()
+
+    assert row == ("owner@example.com", "Wicked", "Yoda")
+
+
+def test_account_password_update_allows_login_with_new_password(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_USERNAME", "admin@example.com")
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_PASSWORD", "TestPass123!")
+    app = create_app(str(tmp_path / "actions.db"), _bot_snapshot)
+    client = app.test_client()
+    csrf_token = _login(client)
+
+    response = client.post(
+        "/admin/account",
+        data={
+            "action": "password",
+            "current_password": "TestPass123!",
+            "new_password": "UpdatedPass123!",
+        },
+        headers={"X-CSRF-Token": csrf_token},
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert b"Password updated." in response.data
+
+    client.get("/logout", follow_redirects=True)
+    login_response = client.post(
+        "/login",
+        data={"username": "admin@example.com", "password": "UpdatedPass123!"},
+        follow_redirects=True,
+    )
+
+    assert login_response.status_code == 200
+    assert b"Control Center" in login_response.data
+
+
+def test_existing_admin_user_ignores_weak_default_password_env(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_USERNAME", "admin@example.com")
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_PASSWORD", "StrongPass123!")
+    db_path = tmp_path / "actions.db"
+    app = create_app(str(db_path), _bot_snapshot)
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_PASSWORD", "short")
+
+    app = create_app(str(db_path), _bot_snapshot)
+    client = app.test_client()
+
+    response = client.post(
+        "/login",
+        data={"username": "admin@example.com", "password": "StrongPass123!"},
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert b"Control Center" in response.data
+
+
+def test_new_install_rejects_weak_default_password_env(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_USERNAME", "admin@example.com")
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_PASSWORD", "short")
+
+    with pytest.raises(RuntimeError, match="WEB_ADMIN_DEFAULT_PASSWORD does not meet policy"):
+        create_app(str(tmp_path / "actions.db"), _bot_snapshot)
+
+
 def test_login_allows_forwarded_host_origin_match(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("WEB_ADMIN_DEFAULT_USERNAME", "admin@example.com")
     monkeypatch.setenv("WEB_ADMIN_DEFAULT_PASSWORD", "TestPass123!")
@@ -254,18 +351,32 @@ def test_youtube_subscription_add_and_render(tmp_path: Path, monkeypatch) -> Non
             "last_published_at": "2026-03-02T00:00:00+00:00",
         }
 
+    def community_resolver(_url: str) -> dict:
+        return {
+            "last_community_post_id": "Ugkxyz123",
+            "last_community_post_title": "Example community update",
+            "last_community_published_at": "2026-03-03T00:00:00+00:00",
+        }
+
     app = create_app(
         str(tmp_path / "actions.db"),
         _bot_snapshot,
         get_notification_channels=channel_options,
         resolve_youtube_subscription=resolver,
+        resolve_youtube_community_seed=community_resolver,
     )
     client = app.test_client()
     csrf_token = _login(client)
 
     response = client.post(
         "/admin/youtube/add",
-        data={"youtube_url": "https://www.youtube.com/@example", "notify_channel_id": "9999"},
+        data={
+            "youtube_url": "https://www.youtube.com/@example",
+            "notify_channel_id": "9999",
+            "poll_interval_seconds": "3600",
+            "include_uploads": "1",
+            "include_community_posts": "1",
+        },
         headers={"X-CSRF-Token": csrf_token},
         follow_redirects=True,
     )
@@ -274,6 +385,133 @@ def test_youtube_subscription_add_and_render(tmp_path: Path, monkeypatch) -> Non
     assert b"YouTube subscription saved." in response.data
     assert b"Example Channel" in response.data
     assert b"#alerts" in response.data
+    assert b"1 hour" in response.data
+    assert b"Uploads + Posts" in response.data
+
+
+def test_reddit_feed_add_and_render(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_USERNAME", "admin@example.com")
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_PASSWORD", "TestPass123!")
+
+    def channel_options() -> list[dict]:
+        return [{"id": 9999, "name": "#alerts"}]
+
+    app = create_app(
+        str(tmp_path / "actions.db"),
+        _bot_snapshot,
+        get_notification_channels=channel_options,
+    )
+    client = app.test_client()
+    csrf_token = _login(client)
+
+    response = client.post(
+        "/admin/reddit/add",
+        data={
+            "reddit_source": "r/python",
+            "notify_channel_id": "9999",
+            "poll_interval_seconds": "600",
+        },
+        headers={"X-CSRF-Token": csrf_token},
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert b"Reddit feed saved." in response.data
+    assert b"r/python" in response.data
+    assert b"#alerts" in response.data
+    assert b"10 minutes" in response.data
+
+
+def test_wordpress_feed_add_and_render(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_USERNAME", "admin@example.com")
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_PASSWORD", "TestPass123!")
+
+    def channel_options() -> list[dict]:
+        return [{"id": 9999, "name": "#announcements"}]
+
+    def wordpress_resolver(_url: str) -> dict:
+        return {
+            "site_url": "https://wickedyoda.com",
+            "feed_url": "https://wickedyoda.com/feed/",
+            "site_title": "WickedYoda",
+            "last_post_id": "post-123",
+            "last_post_title": "New Release Notes",
+            "last_post_url": "https://wickedyoda.com/new-release-notes",
+            "last_published_at": "2026-03-17T00:00:00+00:00",
+        }
+
+    app = create_app(
+        str(tmp_path / "actions.db"),
+        _bot_snapshot,
+        get_notification_channels=channel_options,
+        resolve_wordpress_feed=wordpress_resolver,
+    )
+    client = app.test_client()
+    csrf_token = _login(client)
+
+    response = client.post(
+        "/admin/wordpress/add",
+        data={
+            "wordpress_site_url": "wickedyoda.com",
+            "notify_channel_id": "9999",
+            "poll_interval_seconds": "1800",
+        },
+        headers={"X-CSRF-Token": csrf_token},
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert b"WordPress feed saved." in response.data
+    assert b"WickedYoda" in response.data
+    assert b"#announcements" in response.data
+    assert b"30 minutes" in response.data
+    assert b"New Release Notes" in response.data
+
+
+def test_linkedin_feed_add_and_render(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_USERNAME", "admin@example.com")
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_PASSWORD", "TestPass123!")
+
+    def channel_options() -> list[dict]:
+        return [{"id": 9999, "name": "#announcements"}]
+
+    def linkedin_resolver(_url: str) -> dict:
+        return {
+            "profile_url": "https://www.linkedin.com/in/wickedyoda",
+            "activity_url": "https://www.linkedin.com/in/wickedyoda/recent-activity/all",
+            "profile_label": "WickedYoda",
+            "last_post_id": "1234567890",
+            "last_post_title": "Shipping a new update",
+            "last_post_url": "https://www.linkedin.com/feed/update/urn:li:activity:1234567890",
+            "last_published_at": "2026-03-17T00:00:00+00:00",
+        }
+
+    app = create_app(
+        str(tmp_path / "actions.db"),
+        _bot_snapshot,
+        get_notification_channels=channel_options,
+        resolve_linkedin_feed=linkedin_resolver,
+    )
+    client = app.test_client()
+    csrf_token = _login(client)
+
+    response = client.post(
+        "/admin/linkedin/add",
+        data={
+            "linkedin_profile_url": "https://www.linkedin.com/in/wickedyoda",
+            "notify_channel_id": "9999",
+            "poll_interval_seconds": "900",
+        },
+        headers={"X-CSRF-Token": csrf_token},
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert b"LinkedIn feed saved." in response.data
+    assert b"WickedYoda" in response.data
+    assert b"#announcements" in response.data
+    assert b"15 minutes" in response.data
+    assert b"Shipping a new update" in response.data
 
 
 def test_settings_save_updates_env_file(tmp_path: Path, monkeypatch) -> None:

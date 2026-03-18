@@ -10,7 +10,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from functools import wraps
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 from flask import Flask, flash, redirect, render_template_string, request, session, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
@@ -24,6 +24,15 @@ SENSITIVE_ENV_KEYS = {
 SESSION_SAMESITE_OPTIONS = ("Lax", "Strict", "None")
 BOOL_SELECT_OPTIONS = ("false", "true")
 LOG_FILE_OPTIONS = ("bot.log", "bot_log.log", "container_errors.log", "web_gui_audit.log")
+FEED_INTERVAL_OPTIONS = (
+    (300, "5 minutes"),
+    (600, "10 minutes"),
+    (900, "15 minutes"),
+    (1800, "30 minutes"),
+    (3600, "1 hour"),
+    (10800, "3 hours"),
+    (21600, "6 hours"),
+)
 AUTH_MODE_STANDARD = "standard"
 AUTH_MODE_REMEMBER = "remember"
 REMEMBER_LOGIN_DAYS = 5
@@ -100,6 +109,84 @@ def _is_sensitive_key(key: str) -> bool:
         return True
     upper_key = key.upper()
     return "TOKEN" in upper_key or "PASSWORD" in upper_key or "SECRET" in upper_key
+
+
+def _normalize_feed_interval(raw_value: str | int | None, default: int = 300) -> int:
+    allowed = {value for value, _label in FEED_INTERVAL_OPTIONS}
+    if isinstance(raw_value, int):
+        return raw_value if raw_value in allowed else default
+    candidate = str(raw_value or "").strip()
+    if candidate.isdigit():
+        parsed = int(candidate)
+        if parsed in allowed:
+            return parsed
+    return default
+
+
+def _feed_interval_label(seconds: int | str | None) -> str:
+    normalized = _normalize_feed_interval(seconds)
+    for value, label in FEED_INTERVAL_OPTIONS:
+        if value == normalized:
+            return label
+    return "5 minutes"
+
+
+def _normalize_reddit_source(raw_value: str) -> tuple[str, str]:
+    candidate = str(raw_value or "").strip()
+    if not candidate:
+        raise ValueError("Reddit forum is required.")
+    if candidate.startswith("r/"):
+        candidate = candidate[2:]
+    if "://" in candidate:
+        parsed = urlparse(candidate)
+        host = parsed.netloc.lower()
+        if host.startswith("www."):
+            host = host[4:]
+        if host != "reddit.com":
+            raise ValueError("Reddit URL must be on reddit.com.")
+        parts = [part for part in parsed.path.split("/") if part]
+        if len(parts) < 2 or parts[0].lower() != "r":
+            raise ValueError("Reddit URL must point to a subreddit like /r/example.")
+        candidate = parts[1]
+    normalized = candidate.strip().lower()
+    if not normalized or not normalized.replace("_", "").isalnum():
+        raise ValueError("Reddit forum must be a valid subreddit name.")
+    return normalized, f"https://www.reddit.com/r/{normalized}"
+
+
+def _normalize_wordpress_source(raw_value: str) -> str:
+    candidate = str(raw_value or "").strip()
+    if not candidate:
+        raise ValueError("WordPress site URL is required.")
+    if "://" not in candidate:
+        candidate = f"https://{candidate}"
+    parsed = urlparse(candidate)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("WordPress site URL must be a valid http(s) URL.")
+    path = parsed.path.rstrip("/")
+    normalized = urlunparse((parsed.scheme, parsed.netloc, path or "/", "", "", ""))
+    return normalized.rstrip("/") if normalized != f"{parsed.scheme}://{parsed.netloc}/" else normalized
+
+
+def _normalize_linkedin_source(raw_value: str) -> str:
+    candidate = str(raw_value or "").strip()
+    if not candidate:
+        raise ValueError("LinkedIn profile URL is required.")
+    if "://" not in candidate:
+        candidate = f"https://{candidate}"
+    parsed = urlparse(candidate)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("LinkedIn profile URL must be a valid http(s) URL.")
+    host = parsed.netloc.lower()
+    if host.startswith("www."):
+        host = host[4:]
+    if host != "linkedin.com":
+        raise ValueError("LinkedIn URL must be on linkedin.com.")
+    path = parsed.path.rstrip("/")
+    valid_prefixes = ("/in/", "/company/", "/school/", "/showcase/")
+    if not any(path.startswith(prefix) for prefix in valid_prefixes):
+        raise ValueError("LinkedIn URL must point to a public profile or company page.")
+    return urlunparse((parsed.scheme, parsed.netloc, path, "", "", ""))
 
 
 def _apply_best_effort_permissions(path: Path, mode: int) -> None:
@@ -207,11 +294,120 @@ def _ensure_youtube_subscriptions_table(db_path: str) -> None:
                 channel_title TEXT NOT NULL,
                 target_channel_id INTEGER NOT NULL,
                 target_channel_name TEXT NOT NULL,
+                poll_interval_seconds INTEGER NOT NULL DEFAULT 300,
+                include_uploads INTEGER NOT NULL DEFAULT 1,
+                include_community_posts INTEGER NOT NULL DEFAULT 0,
                 last_video_id TEXT,
                 last_video_title TEXT,
                 last_published_at TEXT,
+                last_community_post_id TEXT,
+                last_community_post_title TEXT,
+                last_community_published_at TEXT,
+                last_checked_at TEXT,
                 enabled INTEGER NOT NULL DEFAULT 1,
                 UNIQUE(channel_id, target_channel_id)
+            )
+            """
+        )
+        columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(youtube_subscriptions)").fetchall()}
+        migrations = {
+            "poll_interval_seconds": "ALTER TABLE youtube_subscriptions ADD COLUMN poll_interval_seconds INTEGER NOT NULL DEFAULT 300",
+            "include_uploads": "ALTER TABLE youtube_subscriptions ADD COLUMN include_uploads INTEGER NOT NULL DEFAULT 1",
+            "include_community_posts": "ALTER TABLE youtube_subscriptions ADD COLUMN include_community_posts INTEGER NOT NULL DEFAULT 0",
+            "last_community_post_id": "ALTER TABLE youtube_subscriptions ADD COLUMN last_community_post_id TEXT",
+            "last_community_post_title": "ALTER TABLE youtube_subscriptions ADD COLUMN last_community_post_title TEXT",
+            "last_community_published_at": "ALTER TABLE youtube_subscriptions ADD COLUMN last_community_published_at TEXT",
+            "last_checked_at": "ALTER TABLE youtube_subscriptions ADD COLUMN last_checked_at TEXT",
+        }
+        for column, statement in migrations.items():
+            if column not in columns:
+                conn.execute(statement)
+        conn.execute(
+            "UPDATE youtube_subscriptions SET poll_interval_seconds = 300 WHERE poll_interval_seconds IS NULL OR poll_interval_seconds <= 0"
+        )
+        conn.commit()
+
+
+def _ensure_reddit_feeds_table(db_path: str) -> None:
+    directory = os.path.dirname(db_path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    with _sqlite_connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS reddit_feeds (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL,
+                subreddit_name TEXT NOT NULL,
+                source_url TEXT NOT NULL,
+                target_channel_id INTEGER NOT NULL,
+                target_channel_name TEXT NOT NULL,
+                poll_interval_seconds INTEGER NOT NULL DEFAULT 300,
+                last_post_id TEXT,
+                last_post_title TEXT,
+                last_post_url TEXT,
+                last_published_at TEXT,
+                last_checked_at TEXT,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                UNIQUE(subreddit_name, target_channel_id)
+            )
+            """
+        )
+        conn.commit()
+
+
+def _ensure_wordpress_feeds_table(db_path: str) -> None:
+    directory = os.path.dirname(db_path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    with _sqlite_connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS wordpress_feeds (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL,
+                site_url TEXT NOT NULL,
+                feed_url TEXT NOT NULL,
+                site_title TEXT NOT NULL,
+                target_channel_id INTEGER NOT NULL,
+                target_channel_name TEXT NOT NULL,
+                poll_interval_seconds INTEGER NOT NULL DEFAULT 300,
+                last_post_id TEXT,
+                last_post_title TEXT,
+                last_post_url TEXT,
+                last_published_at TEXT,
+                last_checked_at TEXT,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                UNIQUE(feed_url, target_channel_id)
+            )
+            """
+        )
+        conn.commit()
+
+
+def _ensure_linkedin_feeds_table(db_path: str) -> None:
+    directory = os.path.dirname(db_path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    with _sqlite_connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS linkedin_feeds (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL,
+                profile_url TEXT NOT NULL,
+                activity_url TEXT NOT NULL,
+                profile_label TEXT NOT NULL,
+                target_channel_id INTEGER NOT NULL,
+                target_channel_name TEXT NOT NULL,
+                poll_interval_seconds INTEGER NOT NULL DEFAULT 300,
+                last_post_id TEXT,
+                last_post_title TEXT,
+                last_post_url TEXT,
+                last_published_at TEXT,
+                last_checked_at TEXT,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                UNIQUE(activity_url, target_channel_id)
             )
             """
         )
@@ -240,8 +436,79 @@ def _fetch_youtube_subscriptions(db_path: str, limit: int = 300, channel_ids: li
     _ensure_youtube_subscriptions_table(db_path)
     query = """
         SELECT id, created_at, source_url, channel_id, channel_title, target_channel_id,
-               target_channel_name, last_video_id, last_video_title, last_published_at, enabled
+               target_channel_name, poll_interval_seconds, include_uploads, include_community_posts,
+               last_video_id, last_video_title, last_published_at, last_community_post_id,
+               last_community_post_title, last_community_published_at, last_checked_at, enabled
         FROM youtube_subscriptions
+    """
+    params: list[object] = []
+    if channel_ids is not None:
+        if not channel_ids:
+            return []
+        placeholders = ",".join(["?"] * len(channel_ids))
+        query += f" WHERE target_channel_id IN ({placeholders})"
+        params.extend(channel_ids)
+    query += " ORDER BY id DESC LIMIT ?"
+    params.append(limit)
+    with _sqlite_connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(query, tuple(params)).fetchall()
+    return [dict(row) for row in rows]
+
+
+def _fetch_reddit_feeds(db_path: str, limit: int = 300, channel_ids: list[int] | None = None) -> list[dict]:
+    _ensure_reddit_feeds_table(db_path)
+    query = """
+        SELECT id, created_at, subreddit_name, source_url, target_channel_id, target_channel_name,
+               poll_interval_seconds, last_post_id, last_post_title, last_post_url, last_published_at,
+               last_checked_at, enabled
+        FROM reddit_feeds
+    """
+    params: list[object] = []
+    if channel_ids is not None:
+        if not channel_ids:
+            return []
+        placeholders = ",".join(["?"] * len(channel_ids))
+        query += f" WHERE target_channel_id IN ({placeholders})"
+        params.extend(channel_ids)
+    query += " ORDER BY id DESC LIMIT ?"
+    params.append(limit)
+    with _sqlite_connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(query, tuple(params)).fetchall()
+    return [dict(row) for row in rows]
+
+
+def _fetch_wordpress_feeds(db_path: str, limit: int = 300, channel_ids: list[int] | None = None) -> list[dict]:
+    _ensure_wordpress_feeds_table(db_path)
+    query = """
+        SELECT id, created_at, site_url, feed_url, site_title, target_channel_id, target_channel_name,
+               poll_interval_seconds, last_post_id, last_post_title, last_post_url, last_published_at,
+               last_checked_at, enabled
+        FROM wordpress_feeds
+    """
+    params: list[object] = []
+    if channel_ids is not None:
+        if not channel_ids:
+            return []
+        placeholders = ",".join(["?"] * len(channel_ids))
+        query += f" WHERE target_channel_id IN ({placeholders})"
+        params.extend(channel_ids)
+    query += " ORDER BY id DESC LIMIT ?"
+    params.append(limit)
+    with _sqlite_connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(query, tuple(params)).fetchall()
+    return [dict(row) for row in rows]
+
+
+def _fetch_linkedin_feeds(db_path: str, limit: int = 300, channel_ids: list[int] | None = None) -> list[dict]:
+    _ensure_linkedin_feeds_table(db_path)
+    query = """
+        SELECT id, created_at, profile_url, activity_url, profile_label, target_channel_id, target_channel_name,
+               poll_interval_seconds, last_post_id, last_post_title, last_post_url, last_published_at,
+               last_checked_at, enabled
+        FROM linkedin_feeds
     """
     params: list[object] = []
     if channel_ids is not None:
@@ -266,9 +533,15 @@ def _upsert_youtube_subscription(
     channel_title: str,
     target_channel_id: int,
     target_channel_name: str,
+    poll_interval_seconds: int,
+    include_uploads: bool,
+    include_community_posts: bool,
     last_video_id: str,
     last_video_title: str,
     last_published_at: str,
+    last_community_post_id: str = "",
+    last_community_post_title: str = "",
+    last_community_published_at: str = "",
 ) -> None:
     _ensure_youtube_subscriptions_table(db_path)
     with _sqlite_connect(db_path) as conn:
@@ -276,15 +549,23 @@ def _upsert_youtube_subscription(
             """
             INSERT INTO youtube_subscriptions (
                 created_at, source_url, channel_id, channel_title, target_channel_id,
-                target_channel_name, last_video_id, last_video_title, last_published_at, enabled
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                target_channel_name, poll_interval_seconds, include_uploads, include_community_posts,
+                last_video_id, last_video_title, last_published_at, last_community_post_id,
+                last_community_post_title, last_community_published_at, enabled
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
             ON CONFLICT(channel_id, target_channel_id) DO UPDATE SET
                 source_url=excluded.source_url,
                 channel_title=excluded.channel_title,
                 target_channel_name=excluded.target_channel_name,
+                poll_interval_seconds=excluded.poll_interval_seconds,
+                include_uploads=excluded.include_uploads,
+                include_community_posts=excluded.include_community_posts,
                 last_video_id=excluded.last_video_id,
                 last_video_title=excluded.last_video_title,
                 last_published_at=excluded.last_published_at,
+                last_community_post_id=excluded.last_community_post_id,
+                last_community_post_title=excluded.last_community_post_title,
+                last_community_published_at=excluded.last_community_published_at,
                 enabled=1
             """,
             (
@@ -294,8 +575,161 @@ def _upsert_youtube_subscription(
                 channel_title,
                 target_channel_id,
                 target_channel_name,
+                _normalize_feed_interval(poll_interval_seconds),
+                int(include_uploads),
+                int(include_community_posts),
                 last_video_id,
                 last_video_title,
+                last_published_at,
+                last_community_post_id,
+                last_community_post_title,
+                last_community_published_at,
+            ),
+        )
+        conn.commit()
+
+
+def _upsert_reddit_feed(
+    db_path: str,
+    *,
+    subreddit_name: str,
+    source_url: str,
+    target_channel_id: int,
+    target_channel_name: str,
+    poll_interval_seconds: int,
+    last_post_id: str = "",
+    last_post_title: str = "",
+    last_post_url: str = "",
+    last_published_at: str = "",
+) -> None:
+    _ensure_reddit_feeds_table(db_path)
+    with _sqlite_connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO reddit_feeds (
+                created_at, subreddit_name, source_url, target_channel_id, target_channel_name,
+                poll_interval_seconds, last_post_id, last_post_title, last_post_url, last_published_at, enabled
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+            ON CONFLICT(subreddit_name, target_channel_id) DO UPDATE SET
+                source_url=excluded.source_url,
+                target_channel_name=excluded.target_channel_name,
+                poll_interval_seconds=excluded.poll_interval_seconds,
+                last_post_id=excluded.last_post_id,
+                last_post_title=excluded.last_post_title,
+                last_post_url=excluded.last_post_url,
+                last_published_at=excluded.last_published_at,
+                enabled=1
+            """,
+            (
+                datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S"),
+                subreddit_name,
+                source_url,
+                target_channel_id,
+                target_channel_name,
+                _normalize_feed_interval(poll_interval_seconds),
+                last_post_id,
+                last_post_title,
+                last_post_url,
+                last_published_at,
+            ),
+        )
+        conn.commit()
+
+
+def _upsert_wordpress_feed(
+    db_path: str,
+    *,
+    site_url: str,
+    feed_url: str,
+    site_title: str,
+    target_channel_id: int,
+    target_channel_name: str,
+    poll_interval_seconds: int,
+    last_post_id: str = "",
+    last_post_title: str = "",
+    last_post_url: str = "",
+    last_published_at: str = "",
+) -> None:
+    _ensure_wordpress_feeds_table(db_path)
+    with _sqlite_connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO wordpress_feeds (
+                created_at, site_url, feed_url, site_title, target_channel_id, target_channel_name,
+                poll_interval_seconds, last_post_id, last_post_title, last_post_url, last_published_at, enabled
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+            ON CONFLICT(feed_url, target_channel_id) DO UPDATE SET
+                site_url=excluded.site_url,
+                site_title=excluded.site_title,
+                target_channel_name=excluded.target_channel_name,
+                poll_interval_seconds=excluded.poll_interval_seconds,
+                last_post_id=excluded.last_post_id,
+                last_post_title=excluded.last_post_title,
+                last_post_url=excluded.last_post_url,
+                last_published_at=excluded.last_published_at,
+                enabled=1
+            """,
+            (
+                datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S"),
+                site_url,
+                feed_url,
+                site_title,
+                target_channel_id,
+                target_channel_name,
+                _normalize_feed_interval(poll_interval_seconds),
+                last_post_id,
+                last_post_title,
+                last_post_url,
+                last_published_at,
+            ),
+        )
+        conn.commit()
+
+
+def _upsert_linkedin_feed(
+    db_path: str,
+    *,
+    profile_url: str,
+    activity_url: str,
+    profile_label: str,
+    target_channel_id: int,
+    target_channel_name: str,
+    poll_interval_seconds: int,
+    last_post_id: str = "",
+    last_post_title: str = "",
+    last_post_url: str = "",
+    last_published_at: str = "",
+) -> None:
+    _ensure_linkedin_feeds_table(db_path)
+    with _sqlite_connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO linkedin_feeds (
+                created_at, profile_url, activity_url, profile_label, target_channel_id, target_channel_name,
+                poll_interval_seconds, last_post_id, last_post_title, last_post_url, last_published_at, enabled
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+            ON CONFLICT(activity_url, target_channel_id) DO UPDATE SET
+                profile_url=excluded.profile_url,
+                profile_label=excluded.profile_label,
+                target_channel_name=excluded.target_channel_name,
+                poll_interval_seconds=excluded.poll_interval_seconds,
+                last_post_id=excluded.last_post_id,
+                last_post_title=excluded.last_post_title,
+                last_post_url=excluded.last_post_url,
+                last_published_at=excluded.last_published_at,
+                enabled=1
+            """,
+            (
+                datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S"),
+                profile_url,
+                activity_url,
+                profile_label,
+                target_channel_id,
+                target_channel_name,
+                _normalize_feed_interval(poll_interval_seconds),
+                last_post_id,
+                last_post_title,
+                last_post_url,
                 last_published_at,
             ),
         )
@@ -306,6 +740,30 @@ def _delete_youtube_subscription(db_path: str, subscription_id: int) -> bool:
     _ensure_youtube_subscriptions_table(db_path)
     with _sqlite_connect(db_path) as conn:
         cursor = conn.execute("DELETE FROM youtube_subscriptions WHERE id = ?", (subscription_id,))
+        conn.commit()
+    return cursor.rowcount > 0
+
+
+def _delete_reddit_feed(db_path: str, feed_id: int) -> bool:
+    _ensure_reddit_feeds_table(db_path)
+    with _sqlite_connect(db_path) as conn:
+        cursor = conn.execute("DELETE FROM reddit_feeds WHERE id = ?", (feed_id,))
+        conn.commit()
+    return cursor.rowcount > 0
+
+
+def _delete_wordpress_feed(db_path: str, feed_id: int) -> bool:
+    _ensure_wordpress_feeds_table(db_path)
+    with _sqlite_connect(db_path) as conn:
+        cursor = conn.execute("DELETE FROM wordpress_feeds WHERE id = ?", (feed_id,))
+        conn.commit()
+    return cursor.rowcount > 0
+
+
+def _delete_linkedin_feed(db_path: str, feed_id: int) -> bool:
+    _ensure_linkedin_feeds_table(db_path)
+    with _sqlite_connect(db_path) as conn:
+        cursor = conn.execute("DELETE FROM linkedin_feeds WHERE id = ?", (feed_id,))
         conn.commit()
     return cursor.rowcount > 0
 
@@ -554,6 +1012,8 @@ def _ensure_users_table(db_path: str) -> None:
                 email TEXT PRIMARY KEY,
                 password_hash TEXT NOT NULL,
                 display_name TEXT NOT NULL DEFAULT '',
+                first_name TEXT NOT NULL DEFAULT '',
+                last_name TEXT NOT NULL DEFAULT '',
                 is_admin INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 password_changed_at TEXT NOT NULL
@@ -563,10 +1023,21 @@ def _ensure_users_table(db_path: str) -> None:
         columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(web_users)").fetchall()}
         if "display_name" not in columns:
             conn.execute("ALTER TABLE web_users ADD COLUMN display_name TEXT NOT NULL DEFAULT ''")
+        if "first_name" not in columns:
+            conn.execute("ALTER TABLE web_users ADD COLUMN first_name TEXT NOT NULL DEFAULT ''")
+        if "last_name" not in columns:
+            conn.execute("ALTER TABLE web_users ADD COLUMN last_name TEXT NOT NULL DEFAULT ''")
         if "password_changed_at" not in columns:
             conn.execute("ALTER TABLE web_users ADD COLUMN password_changed_at TEXT")
             conn.execute("UPDATE web_users SET password_changed_at = COALESCE(password_changed_at, created_at)")
         conn.commit()
+
+
+def _build_display_name(display_name: str | None, first_name: str | None, last_name: str | None) -> str:
+    candidate = (display_name or "").strip()
+    if candidate:
+        return candidate
+    return " ".join(part.strip() for part in (first_name or "", last_name or "") if part and part.strip()).strip()
 
 
 def _upsert_user(
@@ -575,24 +1046,27 @@ def _upsert_user(
     password_hash: str,
     is_admin: bool,
     display_name: str | None = None,
+    first_name: str = "",
+    last_name: str = "",
     *,
     password_changed_at: str | None = None,
 ) -> None:
     _ensure_users_table(db_path)
-    normalized_display_name = display_name.strip() if isinstance(display_name, str) else None
+    normalized_first_name = first_name.strip()
+    normalized_last_name = last_name.strip()
+    normalized_display_name = _build_display_name(display_name, normalized_first_name, normalized_last_name)
     created_at = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
     resolved_password_changed_at = password_changed_at or created_at
     with _sqlite_connect(db_path) as conn:
         conn.execute(
             """
-            INSERT INTO web_users (email, password_hash, display_name, is_admin, created_at, password_changed_at)
-            VALUES (?, ?, COALESCE(?, ''), ?, ?, ?)
+            INSERT INTO web_users (email, password_hash, display_name, first_name, last_name, is_admin, created_at, password_changed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(email) DO UPDATE SET
                 password_hash = excluded.password_hash,
-                display_name = CASE
-                    WHEN ? IS NULL THEN web_users.display_name
-                    ELSE excluded.display_name
-                END,
+                display_name = excluded.display_name,
+                first_name = excluded.first_name,
+                last_name = excluded.last_name,
                 password_changed_at = CASE
                     WHEN ? IS NULL THEN web_users.password_changed_at
                     ELSE excluded.password_changed_at
@@ -603,10 +1077,11 @@ def _upsert_user(
                 email.lower(),
                 password_hash,
                 normalized_display_name,
+                normalized_first_name,
+                normalized_last_name,
                 int(is_admin),
                 created_at,
                 resolved_password_changed_at,
-                normalized_display_name,
                 password_changed_at,
             ),
         )
@@ -618,7 +1093,7 @@ def _get_user(db_path: str, email: str) -> dict | None:
     with _sqlite_connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute(
-            "SELECT email, password_hash, display_name, is_admin, created_at, password_changed_at FROM web_users WHERE email = ?",
+            "SELECT email, password_hash, display_name, first_name, last_name, is_admin, created_at, password_changed_at FROM web_users WHERE email = ?",
             (email.lower(),),
         ).fetchone()
     return dict(row) if row else None
@@ -628,7 +1103,9 @@ def _list_users(db_path: str) -> list[dict]:
     _ensure_users_table(db_path)
     with _sqlite_connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
-        rows = conn.execute("SELECT email, display_name, is_admin, created_at FROM web_users ORDER BY email ASC").fetchall()
+        rows = conn.execute(
+            "SELECT email, display_name, first_name, last_name, is_admin, created_at FROM web_users ORDER BY email ASC"
+        ).fetchall()
     return [dict(row) for row in rows]
 
 
@@ -646,6 +1123,8 @@ def _update_user_record(
     *,
     new_email: str,
     display_name: str,
+    first_name: str = "",
+    last_name: str = "",
     is_admin: bool,
     password_hash: str | None = None,
 ) -> tuple[bool, str]:
@@ -672,13 +1151,15 @@ def _update_user_record(
         conn.execute(
             """
             UPDATE web_users
-            SET email = ?, password_hash = ?, display_name = ?, is_admin = ?, password_changed_at = ?
+            SET email = ?, password_hash = ?, display_name = ?, first_name = ?, last_name = ?, is_admin = ?, password_changed_at = ?
             WHERE email = ?
             """,
             (
                 target_email,
                 resolved_password_hash,
-                display_name.strip(),
+                _build_display_name(display_name, first_name, last_name),
+                first_name.strip(),
+                last_name.strip(),
                 int(is_admin),
                 password_changed_at,
                 current_email.strip().lower(),
@@ -971,6 +1452,9 @@ PAGE_TEMPLATE = """
           <li class="nav-item"><a class="nav-link" href="{{ url_for('guilds_page') }}">Servers</a></li>
           <li class="nav-item"><a class="nav-link" href="{{ url_for('dashboard') }}">Dashboard</a></li>
           <li class="nav-item"><a class="nav-link" href="{{ url_for('actions') }}">Actions</a></li>
+          <li class="nav-item"><a class="nav-link" href="{{ url_for('reddit_feeds') }}">Reddit</a></li>
+          <li class="nav-item"><a class="nav-link" href="{{ url_for('wordpress_feeds') }}">WordPress</a></li>
+          <li class="nav-item"><a class="nav-link" href="{{ url_for('linkedin_feeds') }}">LinkedIn</a></li>
           <li class="nav-item"><a class="nav-link" href="{{ url_for('youtube_subscriptions') }}">YouTube</a></li>
           <li class="nav-item"><a class="nav-link" href="{{ url_for('status_page') }}">Status</a></li>
           <li class="nav-item"><a class="nav-link" href="{{ url_for('logs') }}">Logs</a></li>
@@ -991,6 +1475,9 @@ PAGE_TEMPLATE = """
             <option value="{{ url_for('guilds_page') }}">Servers</option>
             <option value="{{ url_for('dashboard') }}">Dashboard</option>
             <option value="{{ url_for('actions') }}">Actions</option>
+            <option value="{{ url_for('reddit_feeds') }}">Reddit</option>
+            <option value="{{ url_for('wordpress_feeds') }}">WordPress</option>
+            <option value="{{ url_for('linkedin_feeds') }}">LinkedIn</option>
             <option value="{{ url_for('youtube_subscriptions') }}">YouTube</option>
             <option value="{{ url_for('status_page') }}">Status</option>
             <option value="{{ url_for('logs') }}">Logs</option>
@@ -1357,11 +1844,11 @@ PAGE_TEMPLATE = """
         <h1 class="h5 mb-3">YouTube Notifications</h1>
         <form method="post" action="{{ url_for('youtube_add') }}">
           <div class="row g-2">
-            <div class="col-12 col-lg-6">
+            <div class="col-12 col-xl-4">
               <label class="form-label" for="youtube_url">YouTube Channel URL</label>
               <input class="form-control" id="youtube_url" name="youtube_url" placeholder="https://www.youtube.com/@channelname" required {% if not session.get("is_admin") %}disabled{% endif %}>
             </div>
-            <div class="col-12 col-lg-4">
+            <div class="col-12 col-md-6 col-xl-3">
               <label class="form-label" for="notify_channel_id">Discord Notify Channel</label>
               <select class="form-select" id="notify_channel_id" name="notify_channel_id" required {% if not session.get("is_admin") %}disabled{% endif %}>
                 <option value="">Select channel...</option>
@@ -1370,7 +1857,26 @@ PAGE_TEMPLATE = """
                 {% endfor %}
               </select>
             </div>
-            <div class="col-12 col-lg-2 d-flex align-items-end">
+            <div class="col-12 col-md-6 col-xl-2">
+              <label class="form-label" for="youtube_interval">Schedule</label>
+              <select class="form-select" id="youtube_interval" name="poll_interval_seconds" {% if not session.get("is_admin") %}disabled{% endif %}>
+                {% for option in feed_interval_options %}
+                <option value="{{ option.value }}">{{ option.label }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="col-12 col-xl-2">
+              <label class="form-label d-block">Notify On</label>
+              <div class="form-check">
+                <input class="form-check-input" type="checkbox" id="youtube_include_uploads" name="include_uploads" value="1" checked {% if not session.get("is_admin") %}disabled{% endif %}>
+                <label class="form-check-label" for="youtube_include_uploads">Uploads / Shorts</label>
+              </div>
+              <div class="form-check">
+                <input class="form-check-input" type="checkbox" id="youtube_include_posts" name="include_community_posts" value="1" {% if not session.get("is_admin") %}disabled{% endif %}>
+                <label class="form-check-label" for="youtube_include_posts">Community Posts</label>
+              </div>
+            </div>
+            <div class="col-12 col-xl-1 d-flex align-items-end">
               <button class="btn btn-primary w-100" type="submit" {% if not session.get("is_admin") %}disabled{% endif %}>Add</button>
             </div>
           </div>
@@ -1383,7 +1889,7 @@ PAGE_TEMPLATE = """
         <h2 class="h6 mb-3">Current Subscriptions</h2>
         <div class="table-wrap">
           <table class="table table-sm align-middle">
-            <thead><tr><th>Created (UTC)</th><th>YouTube Channel</th><th>Notify Channel</th><th>Last Video</th><th>Action</th></tr></thead>
+            <thead><tr><th>Created (UTC)</th><th>YouTube Channel</th><th>Notify Channel</th><th>Schedule</th><th>Notify On</th><th>Last Update</th><th>Action</th></tr></thead>
             <tbody>
               {% for row in subscriptions %}
               <tr>
@@ -1394,9 +1900,18 @@ PAGE_TEMPLATE = """
                 </td>
                 <td class="small">{{ row.target_channel_name }} ({{ row.target_channel_id }})</td>
                 <td class="small">
+                  {{ row.interval_label }}
+                </td>
+                <td class="small">
+                  {% if row.include_uploads %}Uploads{% endif %}{% if row.include_uploads and row.include_community_posts %} + {% endif %}{% if row.include_community_posts %}Posts{% endif %}
+                </td>
+                <td class="small">
                   {% if row.last_video_id %}
                     {{ row.last_video_title or row.last_video_id }}<br>
                     <span class="text-secondary">{{ row.last_published_at or '-' }}</span>
+                  {% elif row.last_community_post_id %}
+                    {{ row.last_community_post_title or row.last_community_post_id }}<br>
+                    <span class="text-secondary">{{ row.last_community_published_at or '-' }}</span>
                   {% else %}
                     -
                   {% endif %}
@@ -1408,7 +1923,223 @@ PAGE_TEMPLATE = """
                 </td>
               </tr>
               {% else %}
-              <tr><td colspan="5" class="text-secondary">No YouTube subscriptions yet.</td></tr>
+              <tr><td colspan="7" class="text-secondary">No YouTube subscriptions yet.</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    {% elif page == "reddit" %}
+      <div class="card card-soft p-3 mb-3">
+        <h1 class="h5 mb-3">Reddit Feeds</h1>
+        <form method="post" action="{{ url_for('reddit_add') }}">
+          <div class="row g-2">
+            <div class="col-12 col-xl-4">
+              <label class="form-label" for="reddit_source">Reddit Forum</label>
+              <input class="form-control" id="reddit_source" name="reddit_source" placeholder="r/python or https://www.reddit.com/r/python" required {% if not session.get("is_admin") %}disabled{% endif %}>
+            </div>
+            <div class="col-12 col-md-6 col-xl-4">
+              <label class="form-label" for="reddit_channel_id">Discord Notify Channel</label>
+              <select class="form-select" id="reddit_channel_id" name="notify_channel_id" required {% if not session.get("is_admin") %}disabled{% endif %}>
+                <option value="">Select channel...</option>
+                {% for channel in notification_channels %}
+                <option value="{{ channel.id }}">{{ channel.name }} ({{ channel.id }})</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="col-12 col-md-6 col-xl-3">
+              <label class="form-label" for="reddit_interval">Schedule</label>
+              <select class="form-select" id="reddit_interval" name="poll_interval_seconds" {% if not session.get("is_admin") %}disabled{% endif %}>
+                {% for option in feed_interval_options %}
+                <option value="{{ option.value }}">{{ option.label }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="col-12 col-xl-1 d-flex align-items-end">
+              <button class="btn btn-primary w-100" type="submit" {% if not session.get("is_admin") %}disabled{% endif %}>Add</button>
+            </div>
+          </div>
+        </form>
+        {% if not notification_channels %}
+        <p class="small text-danger mt-2 mb-0">No text channels found. Verify bot guild/channel permissions and refresh.</p>
+        {% endif %}
+      </div>
+      <div class="card card-soft p-3">
+        <h2 class="h6 mb-3">Current Reddit Feeds</h2>
+        <div class="table-wrap">
+          <table class="table table-sm align-middle">
+            <thead><tr><th>Created (UTC)</th><th>Subreddit</th><th>Notify Channel</th><th>Schedule</th><th>Last Post</th><th>Action</th></tr></thead>
+            <tbody>
+              {% for row in reddit_feeds %}
+              <tr>
+                <td class="small">{{ row.created_at }}</td>
+                <td class="small">
+                  <div class="fw-semibold">r/{{ row.subreddit_name }}</div>
+                  <div><a href="{{ row.source_url }}" target="_blank" rel="noreferrer">{{ row.source_url }}</a></div>
+                </td>
+                <td class="small">{{ row.target_channel_name }} ({{ row.target_channel_id }})</td>
+                <td class="small">{{ row.interval_label }}</td>
+                <td class="small">
+                  {% if row.last_post_id %}
+                    <a href="{{ row.last_post_url }}" target="_blank" rel="noreferrer">{{ row.last_post_title or row.last_post_id }}</a><br>
+                    <span class="text-secondary">{{ row.last_published_at or '-' }}</span>
+                  {% else %}
+                    -
+                  {% endif %}
+                </td>
+                <td>
+                  <form method="post" action="{{ url_for('reddit_delete', feed_id=row.id) }}">
+                    <button class="btn btn-sm btn-outline-danger" type="submit" {% if not session.get("is_admin") %}disabled{% endif %}>Delete</button>
+                  </form>
+                </td>
+              </tr>
+              {% else %}
+              <tr><td colspan="6" class="text-secondary">No Reddit feeds yet.</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    {% elif page == "wordpress" %}
+      <div class="card card-soft p-3 mb-3">
+        <h1 class="h5 mb-3">WordPress Notifications</h1>
+        <form method="post" action="{{ url_for('wordpress_add') }}">
+          <div class="row g-2">
+            <div class="col-12 col-xl-4">
+              <label class="form-label" for="wordpress_site_url">WordPress Site URL</label>
+              <input class="form-control" id="wordpress_site_url" name="wordpress_site_url" placeholder="https://wickedyoda.com" required {% if not session.get("is_admin") %}disabled{% endif %}>
+            </div>
+            <div class="col-12 col-md-6 col-xl-4">
+              <label class="form-label" for="wordpress_channel_id">Discord Notify Channel</label>
+              <select class="form-select" id="wordpress_channel_id" name="notify_channel_id" required {% if not session.get("is_admin") %}disabled{% endif %}>
+                <option value="">Select channel...</option>
+                {% for channel in notification_channels %}
+                <option value="{{ channel.id }}">{{ channel.name }} ({{ channel.id }})</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="col-12 col-md-6 col-xl-3">
+              <label class="form-label" for="wordpress_interval">Schedule</label>
+              <select class="form-select" id="wordpress_interval" name="poll_interval_seconds" {% if not session.get("is_admin") %}disabled{% endif %}>
+                {% for option in feed_interval_options %}
+                <option value="{{ option.value }}">{{ option.label }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="col-12 col-xl-1 d-flex align-items-end">
+              <button class="btn btn-primary w-100" type="submit" {% if not session.get("is_admin") %}disabled{% endif %}>Add</button>
+            </div>
+          </div>
+        </form>
+        {% if not notification_channels %}
+        <p class="small text-danger mt-2 mb-0">No text channels found. Verify bot guild/channel permissions and refresh.</p>
+        {% endif %}
+      </div>
+      <div class="card card-soft p-3">
+        <h2 class="h6 mb-3">Current WordPress Feeds</h2>
+        <div class="table-wrap">
+          <table class="table table-sm align-middle">
+            <thead><tr><th>Created (UTC)</th><th>Site</th><th>Notify Channel</th><th>Schedule</th><th>Last Post</th><th>Action</th></tr></thead>
+            <tbody>
+              {% for row in wordpress_feeds %}
+              <tr>
+                <td class="small">{{ row.created_at }}</td>
+                <td class="small">
+                  <div class="fw-semibold">{{ row.site_title }}</div>
+                  <div><a href="{{ row.site_url }}" target="_blank" rel="noreferrer">{{ row.site_url }}</a></div>
+                  <div class="text-secondary">{{ row.feed_url }}</div>
+                </td>
+                <td class="small">{{ row.target_channel_name }} ({{ row.target_channel_id }})</td>
+                <td class="small">{{ row.interval_label }}</td>
+                <td class="small">
+                  {% if row.last_post_id %}
+                    <a href="{{ row.last_post_url }}" target="_blank" rel="noreferrer">{{ row.last_post_title or row.last_post_id }}</a><br>
+                    <span class="text-secondary">{{ row.last_published_at or '-' }}</span>
+                  {% else %}
+                    -
+                  {% endif %}
+                </td>
+                <td>
+                  <form method="post" action="{{ url_for('wordpress_delete', feed_id=row.id) }}">
+                    <button class="btn btn-sm btn-outline-danger" type="submit" {% if not session.get("is_admin") %}disabled{% endif %}>Delete</button>
+                  </form>
+                </td>
+              </tr>
+              {% else %}
+              <tr><td colspan="6" class="text-secondary">No WordPress feeds yet.</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    {% elif page == "linkedin" %}
+      <div class="card card-soft p-3 mb-3">
+        <h1 class="h5 mb-2">LinkedIn Notifications</h1>
+        <p class="small text-secondary mb-3">Experimental. Works only for public LinkedIn profiles/pages where recent activity is accessible without login.</p>
+        <form method="post" action="{{ url_for('linkedin_add') }}">
+          <div class="row g-2">
+            <div class="col-12 col-xl-4">
+              <label class="form-label" for="linkedin_profile_url">LinkedIn Profile/Page URL</label>
+              <input class="form-control" id="linkedin_profile_url" name="linkedin_profile_url" placeholder="https://www.linkedin.com/in/example" required {% if not session.get("is_admin") %}disabled{% endif %}>
+            </div>
+            <div class="col-12 col-md-6 col-xl-4">
+              <label class="form-label" for="linkedin_channel_id">Discord Notify Channel</label>
+              <select class="form-select" id="linkedin_channel_id" name="notify_channel_id" required {% if not session.get("is_admin") %}disabled{% endif %}>
+                <option value="">Select channel...</option>
+                {% for channel in notification_channels %}
+                <option value="{{ channel.id }}">{{ channel.name }} ({{ channel.id }})</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="col-12 col-md-6 col-xl-3">
+              <label class="form-label" for="linkedin_interval">Schedule</label>
+              <select class="form-select" id="linkedin_interval" name="poll_interval_seconds" {% if not session.get("is_admin") %}disabled{% endif %}>
+                {% for option in feed_interval_options %}
+                <option value="{{ option.value }}">{{ option.label }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="col-12 col-xl-1 d-flex align-items-end">
+              <button class="btn btn-primary w-100" type="submit" {% if not session.get("is_admin") %}disabled{% endif %}>Add</button>
+            </div>
+          </div>
+        </form>
+        {% if not notification_channels %}
+        <p class="small text-danger mt-2 mb-0">No text channels found. Verify bot guild/channel permissions and refresh.</p>
+        {% endif %}
+      </div>
+      <div class="card card-soft p-3">
+        <h2 class="h6 mb-3">Current LinkedIn Feeds</h2>
+        <div class="table-wrap">
+          <table class="table table-sm align-middle">
+            <thead><tr><th>Created (UTC)</th><th>Profile</th><th>Notify Channel</th><th>Schedule</th><th>Last Post</th><th>Action</th></tr></thead>
+            <tbody>
+              {% for row in linkedin_feeds %}
+              <tr>
+                <td class="small">{{ row.created_at }}</td>
+                <td class="small">
+                  <div class="fw-semibold">{{ row.profile_label }}</div>
+                  <div><a href="{{ row.profile_url }}" target="_blank" rel="noreferrer">{{ row.profile_url }}</a></div>
+                  <div class="text-secondary">{{ row.activity_url }}</div>
+                </td>
+                <td class="small">{{ row.target_channel_name }} ({{ row.target_channel_id }})</td>
+                <td class="small">{{ row.interval_label }}</td>
+                <td class="small">
+                  {% if row.last_post_id %}
+                    <a href="{{ row.last_post_url }}" target="_blank" rel="noreferrer">{{ row.last_post_title or row.last_post_id }}</a><br>
+                    <span class="text-secondary">{{ row.last_published_at or '-' }}</span>
+                  {% else %}
+                    -
+                  {% endif %}
+                </td>
+                <td>
+                  <form method="post" action="{{ url_for('linkedin_delete', feed_id=row.id) }}">
+                    <button class="btn btn-sm btn-outline-danger" type="submit" {% if not session.get("is_admin") %}disabled{% endif %}>Delete</button>
+                  </form>
+                </td>
+              </tr>
+              {% else %}
+              <tr><td colspan="6" class="text-secondary">No LinkedIn feeds yet.</td></tr>
               {% endfor %}
             </tbody>
           </table>
@@ -1583,9 +2314,17 @@ PAGE_TEMPLATE = """
         <h1 class="h5 mb-3">Users</h1>
         <form method="post" action="{{ url_for('users_add') }}">
           <div class="row g-2">
-            <div class="col-12 col-lg-3">
-              <label class="form-label" for="new_display_name">Name</label>
+            <div class="col-12 col-lg-2">
+              <label class="form-label" for="new_display_name">Display Name</label>
               <input class="form-control" id="new_display_name" name="display_name" {% if not session.get("is_admin") %}disabled{% endif %}>
+            </div>
+            <div class="col-12 col-lg-2">
+              <label class="form-label" for="new_first_name">First Name</label>
+              <input class="form-control" id="new_first_name" name="first_name" {% if not session.get("is_admin") %}disabled{% endif %}>
+            </div>
+            <div class="col-12 col-lg-2">
+              <label class="form-label" for="new_last_name">Last Name</label>
+              <input class="form-control" id="new_last_name" name="last_name" {% if not session.get("is_admin") %}disabled{% endif %}>
             </div>
             <div class="col-12 col-lg-3">
               <label class="form-label" for="new_email">Email</label>
@@ -1619,7 +2358,13 @@ PAGE_TEMPLATE = """
                   <form method="post" action="{{ url_for('users_update') }}" class="row g-2">
                     <input type="hidden" name="current_email" value="{{ row.email }}">
                     <div class="col-12">
-                      <input class="form-control form-control-sm" name="display_name" value="{{ row.display_name or '' }}" placeholder="Name" {% if not session.get("is_admin") %}disabled{% endif %}>
+                      <input class="form-control form-control-sm" name="display_name" value="{{ row.display_name or '' }}" placeholder="Display name" {% if not session.get("is_admin") %}disabled{% endif %}>
+                    </div>
+                    <div class="col-12 col-md-6">
+                      <input class="form-control form-control-sm" name="first_name" value="{{ row.first_name or '' }}" placeholder="First name" {% if not session.get("is_admin") %}disabled{% endif %}>
+                    </div>
+                    <div class="col-12 col-md-6">
+                      <input class="form-control form-control-sm" name="last_name" value="{{ row.last_name or '' }}" placeholder="Last name" {% if not session.get("is_admin") %}disabled{% endif %}>
                     </div>
                     <div class="col-12">
                       <input class="form-control form-control-sm" name="email" type="email" value="{{ row.email }}" {% if not session.get("is_admin") %}disabled{% endif %}>
@@ -1775,30 +2520,58 @@ PAGE_TEMPLATE = """
     {% elif page == "account" %}
       <div class="card card-soft p-3">
         <h1 class="h5 mb-3">Account</h1>
-        <form method="post" action="{{ url_for('account') }}">
-          <div class="mb-3">
-            <label class="form-label" for="display_name">Name</label>
-            <input class="form-control" id="display_name" name="display_name" value="{{ account_user.display_name or '' }}">
+        {% if session.get("password_rotation_required") %}
+        <div class="alert alert-warning">Password rotation is required. Update your password before continuing.</div>
+        {% endif %}
+        <div class="row g-3">
+          <div class="col-12 col-xl-7">
+            <form method="post" action="{{ url_for('account') }}">
+              <input type="hidden" name="action" value="profile">
+              <div class="row g-2">
+                <div class="col-12">
+                  <label class="form-label" for="account_display_name">Display Name</label>
+                  <input class="form-control" id="account_display_name" name="display_name" value="{{ account_user.display_name or '' }}">
+                </div>
+                <div class="col-12 col-md-6">
+                  <label class="form-label" for="account_first_name">First Name</label>
+                  <input class="form-control" id="account_first_name" name="first_name" value="{{ account_user.first_name or '' }}">
+                </div>
+                <div class="col-12 col-md-6">
+                  <label class="form-label" for="account_last_name">Last Name</label>
+                  <input class="form-control" id="account_last_name" name="last_name" value="{{ account_user.last_name or '' }}">
+                </div>
+              </div>
+              <div class="mt-3">
+                <label class="form-label" for="account_email">Email</label>
+                <input class="form-control" id="account_email" name="email" type="email" value="{{ account_user.email or '' }}" required>
+              </div>
+              <div class="mt-3">
+                <label class="form-label" for="account_profile_password">Current Password</label>
+                <input class="form-control" id="account_profile_password" name="current_password" type="password" required>
+                <div class="form-text">Required to change your email or name.</div>
+              </div>
+              <button class="btn btn-primary mt-3" type="submit">Update Profile</button>
+            </form>
           </div>
-          <div class="mb-3">
-            <label class="form-label" for="account_email">Email</label>
-            <input class="form-control" id="account_email" name="email" type="email" value="{{ account_user.email }}">
+          <div class="col-12 col-xl-5">
+            <form method="post" action="{{ url_for('account') }}">
+              <input type="hidden" name="action" value="password">
+              <div class="mb-3">
+                <label class="form-label" for="current_password">Current Password</label>
+                <input class="form-control" id="current_password" name="current_password" type="password" required>
+              </div>
+              <div class="mb-3">
+                <label class="form-label" for="new_password">New Password</label>
+                <input class="form-control" id="new_password" name="new_password" type="password" {% if session.get("password_rotation_required") %}required{% endif %}>
+              </div>
+              <div class="mb-3">
+                <label class="form-label" for="confirm_new_password">Confirm New Password</label>
+                <input class="form-control" id="confirm_new_password" name="confirm_new_password" type="password" {% if session.get("password_rotation_required") %}required{% endif %}>
+              </div>
+              <button class="btn btn-primary" type="submit">Update Password</button>
+            </form>
           </div>
-          <div class="mb-3">
-            <label class="form-label" for="current_password">Current Password</label>
-            <input class="form-control" id="current_password" name="current_password" type="password" required>
-          </div>
-          <div class="mb-3">
-            <label class="form-label" for="new_password">New Password</label>
-            <input class="form-control" id="new_password" name="new_password" type="password">
-            <div class="form-text">Leave blank to keep the current password.</div>
-          </div>
-          <div class="mb-3">
-            <label class="form-label" for="confirm_new_password">Confirm New Password</label>
-            <input class="form-control" id="confirm_new_password" name="confirm_new_password" type="password">
-          </div>
-          <button class="btn btn-primary" type="submit">Update Account</button>
-        </form>
+        </div>
       </div>
     {% elif page == "guild_settings" %}
       <div class="card card-soft p-3">
@@ -1919,6 +2692,9 @@ def create_app(
     update_bot_avatar: Callable[[bytes, str, str, int], dict] | Callable[[bytes, str, str], dict] | None = None,
     request_restart: Callable[[str], dict] | None = None,
     resolve_youtube_subscription: Callable[[str], dict] | None = None,
+    resolve_youtube_community_seed: Callable[[str], dict] | None = None,
+    resolve_wordpress_feed: Callable[[str], dict] | None = None,
+    resolve_linkedin_feed: Callable[[str], dict] | None = None,
 ) -> Flask:
     app = Flask(__name__)
     configured_secret = os.getenv("WEB_ADMIN_SESSION_SECRET")
@@ -1964,22 +2740,32 @@ def create_app(
     admin_password = os.getenv("WEB_ADMIN_DEFAULT_PASSWORD", "")
     admin_password_hash = os.getenv("WEB_ADMIN_DEFAULT_PASSWORD_HASH", "")
     generated_one_time_admin_password = False
+    existing_admin_user = _get_user(db_path, admin_user)
 
     if not admin_password_hash:
         if not admin_password:
             admin_password = secrets.token_urlsafe(16)
             generated_one_time_admin_password = True
             app.logger.warning("WEB_ADMIN_DEFAULT_PASSWORD not set. Generated one-time random admin password for this run.")
-        password_policy_error = _password_policy_error(admin_password)
-        if password_policy_error:
-            raise RuntimeError(f"WEB_ADMIN_DEFAULT_PASSWORD does not meet policy: {password_policy_error}")
-        admin_password_hash = generate_password_hash(admin_password)
+            admin_password_hash = generate_password_hash(admin_password)
+        else:
+            password_policy_error = _password_policy_error(admin_password)
+            if password_policy_error:
+                if existing_admin_user is None:
+                    raise RuntimeError(f"WEB_ADMIN_DEFAULT_PASSWORD does not meet policy: {password_policy_error}")
+                app.logger.warning(
+                    "WEB_ADMIN_DEFAULT_PASSWORD is set but does not meet policy; ignoring it for existing admin user %s: %s",
+                    admin_user,
+                    password_policy_error,
+                )
+                admin_password = ""
+            else:
+                admin_password_hash = generate_password_hash(admin_password)
     elif admin_password_hash.startswith(("pbkdf2:", "scrypt:")):
         pass
     else:
         admin_password_hash = generate_password_hash(admin_password_hash)
 
-    existing_admin_user = _get_user(db_path, admin_user)
     if existing_admin_user is None:
         _upsert_user(
             db_path,
@@ -2102,6 +2888,7 @@ def create_app(
             selected_guild_name=selected_guild_name,
             guild_options=guild_options,
             restart_enabled=restart_enabled,
+            feed_interval_options=[{"value": value, "label": label} for value, label in FEED_INTERVAL_OPTIONS],
             **kwargs,
         )
 
@@ -2882,6 +3669,9 @@ def create_app(
             "dashboard",
             "status_page",
             "actions",
+            "reddit_feeds",
+            "wordpress_feeds",
+            "linkedin_feeds",
             "youtube_subscriptions",
             "logs",
             "wiki",
@@ -2938,11 +3728,14 @@ def create_app(
         if not channels:
             channels = _call_get_notification_channels(selected_guild_id)
         channel_ids = [int(item["id"]) for item in channels if str(item.get("id", "")).isdigit()]
+        subscriptions = _fetch_youtube_subscriptions(db_path, limit=300, channel_ids=channel_ids)
+        for row in subscriptions:
+            row["interval_label"] = _feed_interval_label(row.get("poll_interval_seconds"))
         return _render_page(
             "youtube",
             "YouTube Notifications",
             notification_channels=channels,
-            subscriptions=_fetch_youtube_subscriptions(db_path, limit=300, channel_ids=channel_ids),
+            subscriptions=subscriptions,
         )
 
     @app.post("/admin/youtube/add")
@@ -2953,6 +3746,9 @@ def create_app(
         selected_guild_id, _, _ = _selected_guild_context()
         source_url = request.form.get("youtube_url", "").strip()
         selected_channel_id = request.form.get("notify_channel_id", "").strip()
+        poll_interval_seconds = _normalize_feed_interval(request.form.get("poll_interval_seconds", "300"))
+        include_uploads = request.form.get("include_uploads", "").strip().lower() in {"1", "true", "yes", "on"}
+        include_community_posts = request.form.get("include_community_posts", "").strip().lower() in {"1", "true", "yes", "on"}
         catalog_payload = _call_get_discord_catalog(selected_guild_id)
         channels: list[dict] = []
         if isinstance(catalog_payload, dict) and catalog_payload.get("ok"):
@@ -2969,6 +3765,9 @@ def create_app(
         if selected_channel is None:
             flash("Please select a valid Discord channel.", "danger")
             return redirect(url_for("youtube_subscriptions"))
+        if not include_uploads and not include_community_posts:
+            flash("Select at least one YouTube notification type.", "danger")
+            return redirect(url_for("youtube_subscriptions"))
         if not callable(resolve_youtube_subscription):
             flash("YouTube resolver is not configured in the bot runtime.", "danger")
             return redirect(url_for("youtube_subscriptions"))
@@ -2978,6 +3777,9 @@ def create_app(
             channel_id = str(details.get("channel_id", "")).strip()
             if not channel_id:
                 raise ValueError("Resolved channel ID is empty.")
+            community_seed: dict = {}
+            if include_community_posts and callable(resolve_youtube_community_seed):
+                community_seed = resolve_youtube_community_seed(source_url)
             _upsert_youtube_subscription(
                 db_path,
                 source_url=str(details.get("source_url", source_url)),
@@ -2985,9 +3787,15 @@ def create_app(
                 channel_title=str(details.get("channel_title", "Unknown Channel")),
                 target_channel_id=int(selected_channel["id"]),
                 target_channel_name=str(selected_channel["name"]),
+                poll_interval_seconds=poll_interval_seconds,
+                include_uploads=include_uploads,
+                include_community_posts=include_community_posts,
                 last_video_id=str(details.get("last_video_id", "")),
                 last_video_title=str(details.get("last_video_title", "")),
                 last_published_at=str(details.get("last_published_at", "")),
+                last_community_post_id=str(community_seed.get("last_community_post_id", "")),
+                last_community_post_title=str(community_seed.get("last_community_post_title", "")),
+                last_community_published_at=str(community_seed.get("last_community_published_at", "")),
             )
         except Exception as exc:
             flash(f"Failed to add YouTube subscription: {exc}", "danger")
@@ -3019,6 +3827,282 @@ def create_app(
         else:
             flash("YouTube subscription not found.", "warning")
         return redirect(url_for("youtube_subscriptions"))
+
+    @app.get("/admin/reddit")
+    @login_required
+    def reddit_feeds():
+        selected_guild_id, _, _ = _selected_guild_context()
+        catalog_payload = _call_get_discord_catalog(selected_guild_id)
+        channels: list[dict] = []
+        if isinstance(catalog_payload, dict) and catalog_payload.get("ok"):
+            raw_channels = catalog_payload.get("channels", [])
+            if isinstance(raw_channels, list):
+                channels = [item for item in raw_channels if isinstance(item, dict)]
+        if not channels:
+            channels = _call_get_notification_channels(selected_guild_id)
+        channel_ids = [int(item["id"]) for item in channels if str(item.get("id", "")).isdigit()]
+        feeds = _fetch_reddit_feeds(db_path, limit=300, channel_ids=channel_ids)
+        for row in feeds:
+            row["interval_label"] = _feed_interval_label(row.get("poll_interval_seconds"))
+        return _render_page(
+            "reddit",
+            "Reddit Feeds",
+            notification_channels=channels,
+            reddit_feeds=feeds,
+        )
+
+    @app.post("/admin/reddit/add")
+    @login_required
+    def reddit_add():
+        if not _current_user_is_admin():
+            return _reject_read_only_write("reddit_feeds")
+        selected_guild_id, _, _ = _selected_guild_context()
+        reddit_source = request.form.get("reddit_source", "").strip()
+        selected_channel_id = request.form.get("notify_channel_id", "").strip()
+        poll_interval_seconds = _normalize_feed_interval(request.form.get("poll_interval_seconds", "300"))
+        catalog_payload = _call_get_discord_catalog(selected_guild_id)
+        channels: list[dict] = []
+        if isinstance(catalog_payload, dict) and catalog_payload.get("ok"):
+            raw_channels = catalog_payload.get("channels", [])
+            if isinstance(raw_channels, list):
+                channels = [item for item in raw_channels if isinstance(item, dict)]
+        if not channels:
+            channels = _call_get_notification_channels(selected_guild_id)
+        channel_map = {str(item.get("id", "")): item for item in channels}
+        selected_channel = channel_map.get(selected_channel_id)
+        if selected_channel is None:
+            flash("Please select a valid Discord channel.", "danger")
+            return redirect(url_for("reddit_feeds"))
+        try:
+            subreddit_name, source_url = _normalize_reddit_source(reddit_source)
+            _upsert_reddit_feed(
+                db_path,
+                subreddit_name=subreddit_name,
+                source_url=source_url,
+                target_channel_id=int(selected_channel["id"]),
+                target_channel_name=str(selected_channel["name"]),
+                poll_interval_seconds=poll_interval_seconds,
+            )
+        except Exception as exc:
+            flash(f"Failed to add Reddit feed: {exc}", "danger")
+            return redirect(url_for("reddit_feeds"))
+
+        flash("Reddit feed saved.", "success")
+        return redirect(url_for("reddit_feeds"))
+
+    @app.post("/admin/reddit/<int:feed_id>/delete")
+    @login_required
+    def reddit_delete(feed_id: int):
+        if not _current_user_is_admin():
+            return _reject_read_only_write("reddit_feeds")
+        selected_guild_id, _, _ = _selected_guild_context()
+        catalog_payload = _call_get_discord_catalog(selected_guild_id)
+        channel_ids: list[int] = []
+        if isinstance(catalog_payload, dict) and catalog_payload.get("ok"):
+            raw_channels = catalog_payload.get("channels", [])
+            if isinstance(raw_channels, list):
+                channel_ids = [int(item["id"]) for item in raw_channels if isinstance(item, dict) and str(item.get("id", "")).isdigit()]
+        if channel_ids:
+            visible_ids = {int(item["id"]) for item in _fetch_reddit_feeds(db_path, limit=1000, channel_ids=channel_ids)}
+            if feed_id not in visible_ids:
+                flash("Reddit feed was not found for the selected guild.", "warning")
+                return redirect(url_for("reddit_feeds"))
+        deleted = _delete_reddit_feed(db_path, feed_id)
+        if deleted:
+            flash("Reddit feed removed.", "success")
+        else:
+            flash("Reddit feed not found.", "warning")
+        return redirect(url_for("reddit_feeds"))
+
+    @app.get("/admin/wordpress")
+    @login_required
+    def wordpress_feeds():
+        selected_guild_id, _, _ = _selected_guild_context()
+        catalog_payload = _call_get_discord_catalog(selected_guild_id)
+        channels: list[dict] = []
+        if isinstance(catalog_payload, dict) and catalog_payload.get("ok"):
+            raw_channels = catalog_payload.get("channels", [])
+            if isinstance(raw_channels, list):
+                channels = [item for item in raw_channels if isinstance(item, dict)]
+        if not channels:
+            channels = _call_get_notification_channels(selected_guild_id)
+        channel_ids = [int(item["id"]) for item in channels if str(item.get("id", "")).isdigit()]
+        feeds = _fetch_wordpress_feeds(db_path, limit=300, channel_ids=channel_ids)
+        for row in feeds:
+            row["interval_label"] = _feed_interval_label(row.get("poll_interval_seconds"))
+        return _render_page(
+            "wordpress",
+            "WordPress Notifications",
+            notification_channels=channels,
+            wordpress_feeds=feeds,
+        )
+
+    @app.post("/admin/wordpress/add")
+    @login_required
+    def wordpress_add():
+        if not _current_user_is_admin():
+            return _reject_read_only_write("wordpress_feeds")
+        selected_guild_id, _, _ = _selected_guild_context()
+        wordpress_site_url = request.form.get("wordpress_site_url", "").strip()
+        selected_channel_id = request.form.get("notify_channel_id", "").strip()
+        poll_interval_seconds = _normalize_feed_interval(request.form.get("poll_interval_seconds", "300"))
+        catalog_payload = _call_get_discord_catalog(selected_guild_id)
+        channels: list[dict] = []
+        if isinstance(catalog_payload, dict) and catalog_payload.get("ok"):
+            raw_channels = catalog_payload.get("channels", [])
+            if isinstance(raw_channels, list):
+                channels = [item for item in raw_channels if isinstance(item, dict)]
+        if not channels:
+            channels = _call_get_notification_channels(selected_guild_id)
+        channel_map = {str(item.get("id", "")): item for item in channels}
+        selected_channel = channel_map.get(selected_channel_id)
+        if selected_channel is None:
+            flash("Please select a valid Discord channel.", "danger")
+            return redirect(url_for("wordpress_feeds"))
+        if not callable(resolve_wordpress_feed):
+            flash("WordPress resolver is not configured in the bot runtime.", "danger")
+            return redirect(url_for("wordpress_feeds"))
+        try:
+            normalized_site_url = _normalize_wordpress_source(wordpress_site_url)
+            details = resolve_wordpress_feed(normalized_site_url)
+            _upsert_wordpress_feed(
+                db_path,
+                site_url=str(details.get("site_url", normalized_site_url)),
+                feed_url=str(details.get("feed_url", "")),
+                site_title=str(details.get("site_title", "WordPress Site")),
+                target_channel_id=int(selected_channel["id"]),
+                target_channel_name=str(selected_channel["name"]),
+                poll_interval_seconds=poll_interval_seconds,
+                last_post_id=str(details.get("last_post_id", "")),
+                last_post_title=str(details.get("last_post_title", "")),
+                last_post_url=str(details.get("last_post_url", "")),
+                last_published_at=str(details.get("last_published_at", "")),
+            )
+        except Exception as exc:
+            flash(f"Failed to add WordPress feed: {exc}", "danger")
+            return redirect(url_for("wordpress_feeds"))
+
+        flash("WordPress feed saved.", "success")
+        return redirect(url_for("wordpress_feeds"))
+
+    @app.post("/admin/wordpress/<int:feed_id>/delete")
+    @login_required
+    def wordpress_delete(feed_id: int):
+        if not _current_user_is_admin():
+            return _reject_read_only_write("wordpress_feeds")
+        selected_guild_id, _, _ = _selected_guild_context()
+        catalog_payload = _call_get_discord_catalog(selected_guild_id)
+        channel_ids: list[int] = []
+        if isinstance(catalog_payload, dict) and catalog_payload.get("ok"):
+            raw_channels = catalog_payload.get("channels", [])
+            if isinstance(raw_channels, list):
+                channel_ids = [int(item["id"]) for item in raw_channels if isinstance(item, dict) and str(item.get("id", "")).isdigit()]
+        if channel_ids:
+            visible_ids = {int(item["id"]) for item in _fetch_wordpress_feeds(db_path, limit=1000, channel_ids=channel_ids)}
+            if feed_id not in visible_ids:
+                flash("WordPress feed was not found for the selected guild.", "warning")
+                return redirect(url_for("wordpress_feeds"))
+        deleted = _delete_wordpress_feed(db_path, feed_id)
+        if deleted:
+            flash("WordPress feed removed.", "success")
+        else:
+            flash("WordPress feed not found.", "warning")
+        return redirect(url_for("wordpress_feeds"))
+
+    @app.get("/admin/linkedin")
+    @login_required
+    def linkedin_feeds():
+        selected_guild_id, _, _ = _selected_guild_context()
+        catalog_payload = _call_get_discord_catalog(selected_guild_id)
+        channels: list[dict] = []
+        if isinstance(catalog_payload, dict) and catalog_payload.get("ok"):
+            raw_channels = catalog_payload.get("channels", [])
+            if isinstance(raw_channels, list):
+                channels = [item for item in raw_channels if isinstance(item, dict)]
+        if not channels:
+            channels = _call_get_notification_channels(selected_guild_id)
+        channel_ids = [int(item["id"]) for item in channels if str(item.get("id", "")).isdigit()]
+        feeds = _fetch_linkedin_feeds(db_path, limit=300, channel_ids=channel_ids)
+        for row in feeds:
+            row["interval_label"] = _feed_interval_label(row.get("poll_interval_seconds"))
+        return _render_page(
+            "linkedin",
+            "LinkedIn Notifications",
+            notification_channels=channels,
+            linkedin_feeds=feeds,
+        )
+
+    @app.post("/admin/linkedin/add")
+    @login_required
+    def linkedin_add():
+        if not _current_user_is_admin():
+            return _reject_read_only_write("linkedin_feeds")
+        selected_guild_id, _, _ = _selected_guild_context()
+        linkedin_profile_url = request.form.get("linkedin_profile_url", "").strip()
+        selected_channel_id = request.form.get("notify_channel_id", "").strip()
+        poll_interval_seconds = _normalize_feed_interval(request.form.get("poll_interval_seconds", "300"))
+        catalog_payload = _call_get_discord_catalog(selected_guild_id)
+        channels: list[dict] = []
+        if isinstance(catalog_payload, dict) and catalog_payload.get("ok"):
+            raw_channels = catalog_payload.get("channels", [])
+            if isinstance(raw_channels, list):
+                channels = [item for item in raw_channels if isinstance(item, dict)]
+        if not channels:
+            channels = _call_get_notification_channels(selected_guild_id)
+        channel_map = {str(item.get("id", "")): item for item in channels}
+        selected_channel = channel_map.get(selected_channel_id)
+        if selected_channel is None:
+            flash("Please select a valid Discord channel.", "danger")
+            return redirect(url_for("linkedin_feeds"))
+        if not callable(resolve_linkedin_feed):
+            flash("LinkedIn resolver is not configured in the bot runtime.", "danger")
+            return redirect(url_for("linkedin_feeds"))
+        try:
+            normalized_profile_url = _normalize_linkedin_source(linkedin_profile_url)
+            details = resolve_linkedin_feed(normalized_profile_url)
+            _upsert_linkedin_feed(
+                db_path,
+                profile_url=str(details.get("profile_url", normalized_profile_url)),
+                activity_url=str(details.get("activity_url", "")),
+                profile_label=str(details.get("profile_label", "LinkedIn Profile")),
+                target_channel_id=int(selected_channel["id"]),
+                target_channel_name=str(selected_channel["name"]),
+                poll_interval_seconds=poll_interval_seconds,
+                last_post_id=str(details.get("last_post_id", "")),
+                last_post_title=str(details.get("last_post_title", "")),
+                last_post_url=str(details.get("last_post_url", "")),
+                last_published_at=str(details.get("last_published_at", "")),
+            )
+        except Exception as exc:
+            flash(f"Failed to add LinkedIn feed: {exc}", "danger")
+            return redirect(url_for("linkedin_feeds"))
+
+        flash("LinkedIn feed saved.", "success")
+        return redirect(url_for("linkedin_feeds"))
+
+    @app.post("/admin/linkedin/<int:feed_id>/delete")
+    @login_required
+    def linkedin_delete(feed_id: int):
+        if not _current_user_is_admin():
+            return _reject_read_only_write("linkedin_feeds")
+        selected_guild_id, _, _ = _selected_guild_context()
+        catalog_payload = _call_get_discord_catalog(selected_guild_id)
+        channel_ids: list[int] = []
+        if isinstance(catalog_payload, dict) and catalog_payload.get("ok"):
+            raw_channels = catalog_payload.get("channels", [])
+            if isinstance(raw_channels, list):
+                channel_ids = [int(item["id"]) for item in raw_channels if isinstance(item, dict) and str(item.get("id", "")).isdigit()]
+        if channel_ids:
+            visible_ids = {int(item["id"]) for item in _fetch_linkedin_feeds(db_path, limit=1000, channel_ids=channel_ids)}
+            if feed_id not in visible_ids:
+                flash("LinkedIn feed was not found for the selected guild.", "warning")
+                return redirect(url_for("linkedin_feeds"))
+        deleted = _delete_linkedin_feed(db_path, feed_id)
+        if deleted:
+            flash("LinkedIn feed removed.", "success")
+        else:
+            flash("LinkedIn feed not found.", "warning")
+        return redirect(url_for("linkedin_feeds"))
 
     @app.get("/admin/logs")
     @login_required
@@ -3268,6 +4352,8 @@ def create_app(
     def users_add():
         email = request.form.get("email", "").strip().lower()
         display_name = request.form.get("display_name", "").strip()
+        first_name = request.form.get("first_name", "").strip()
+        last_name = request.form.get("last_name", "").strip()
         password = request.form.get("password", "")
         is_admin = request.form.get("is_admin", "0").strip() == "1"
 
@@ -3285,6 +4371,9 @@ def create_app(
             generate_password_hash(password),
             is_admin=is_admin,
             display_name=display_name,
+            first_name=first_name,
+            last_name=last_name,
+            password_changed_at=datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S"),
         )
         flash("User saved.", "success")
         return redirect(url_for("users"))
@@ -3295,6 +4384,8 @@ def create_app(
         current_email = request.form.get("current_email", "").strip().lower()
         new_email = request.form.get("email", "").strip().lower()
         display_name = request.form.get("display_name", "").strip()
+        first_name = request.form.get("first_name", "").strip()
+        last_name = request.form.get("last_name", "").strip()
         new_password = request.form.get("new_password", "")
         is_admin = request.form.get("is_admin", "0").strip() == "1"
         current_user = str(session.get("user", "")).strip().lower()
@@ -3326,7 +4417,9 @@ def create_app(
             db_path,
             current_email,
             new_email=new_email or current_email,
-            display_name=display_name,
+            display_name=display_name if display_name else ("" if (first_name or last_name) else str(user.get("display_name", ""))),
+            first_name=first_name,
+            last_name=last_name,
             is_admin=is_admin,
             password_hash=password_hash,
         )
@@ -3376,42 +4469,102 @@ def create_app(
             flash("Session expired. Please log in again.", "warning")
             return redirect(url_for("login"))
         if request.method == "POST":
+            action = request.form.get("action", "").strip().lower()
             current_password = request.form.get("current_password", "")
             new_password = request.form.get("new_password", "")
             confirm_new_password = request.form.get("confirm_new_password", "")
             updated_email = request.form.get("email", "").strip().lower()
             display_name = request.form.get("display_name", "").strip()
+            first_name = request.form.get("first_name", "").strip()
+            last_name = request.form.get("last_name", "").strip()
             password_rotation_required = bool(session.get("password_rotation_required"))
             if not check_password_hash(str(user["password_hash"]), current_password):
                 flash("Current password is incorrect.", "danger")
                 return redirect(url_for("account"))
+            if not action:
+                if password_rotation_required and not new_password:
+                    flash(f"Password rotation is required every {PASSWORD_ROTATION_DAYS} days. Set a new password now.", "danger")
+                    return redirect(url_for("account"))
+                if new_password and new_password == current_password:
+                    flash("New password must be different from the current password.", "danger")
+                    return redirect(url_for("account"))
+                password_policy_error = _password_policy_error(new_password) if new_password else None
+                if password_policy_error:
+                    flash(password_policy_error, "danger")
+                    return redirect(url_for("account"))
+                if confirm_new_password and new_password != confirm_new_password:
+                    flash("New password confirmation does not match.", "danger")
+                    return redirect(url_for("account"))
+                ok, message = _update_user_record(
+                    db_path,
+                    current_user,
+                    new_email=updated_email or current_user,
+                    display_name=display_name if display_name else ("" if (first_name or last_name) else str(user.get("display_name", ""))),
+                    first_name=first_name,
+                    last_name=last_name,
+                    is_admin=bool(user.get("is_admin")),
+                    password_hash=generate_password_hash(new_password) if new_password else None,
+                )
+                if not ok:
+                    flash(message, "danger")
+                    return redirect(url_for("account"))
+                session["user"] = (updated_email or current_user).lower()
+                if new_password:
+                    session["password_rotation_required"] = False
+                flash("Account updated.", "success")
+                return redirect(url_for("account"))
+            if action == "profile":
+                ok, message = _update_user_record(
+                    db_path,
+                    current_user,
+                    new_email=updated_email or current_user,
+                    display_name=display_name if display_name else ("" if (first_name or last_name) else str(user.get("display_name", ""))),
+                    first_name=first_name,
+                    last_name=last_name,
+                    is_admin=bool(user.get("is_admin")),
+                    password_hash=None,
+                )
+                if not ok:
+                    flash(message, "danger")
+                    return redirect(url_for("account"))
+                session["user"] = (updated_email or current_user).lower()
+                flash("Profile updated.", "success")
+                return redirect(url_for("account"))
+
+            if action != "password":
+                flash("Invalid account action.", "danger")
+                return redirect(url_for("account"))
             if password_rotation_required and not new_password:
                 flash(f"Password rotation is required every {PASSWORD_ROTATION_DAYS} days. Set a new password now.", "danger")
                 return redirect(url_for("account"))
-            if new_password and new_password == current_password:
+            if not new_password:
+                flash("New password is required.", "danger")
+                return redirect(url_for("account"))
+            if new_password == current_password:
                 flash("New password must be different from the current password.", "danger")
                 return redirect(url_for("account"))
-            password_policy_error = _password_policy_error(new_password) if new_password else None
+            password_policy_error = _password_policy_error(new_password)
             if password_policy_error:
                 flash(password_policy_error, "danger")
                 return redirect(url_for("account"))
-            if new_password and new_password != confirm_new_password:
+            if confirm_new_password and new_password != confirm_new_password:
                 flash("New password confirmation does not match.", "danger")
                 return redirect(url_for("account"))
             ok, message = _update_user_record(
                 db_path,
                 current_user,
-                new_email=updated_email or current_user,
-                display_name=display_name,
+                new_email=current_user,
+                display_name=str(user.get("display_name", "")),
+                first_name=str(user.get("first_name", "")),
+                last_name=str(user.get("last_name", "")),
                 is_admin=bool(user.get("is_admin")),
-                password_hash=generate_password_hash(new_password) if new_password else None,
+                password_hash=generate_password_hash(new_password),
             )
             if not ok:
                 flash(message, "danger")
                 return redirect(url_for("account"))
-            session["user"] = (updated_email or current_user).lower()
             session["password_rotation_required"] = False
-            flash("Account updated.", "success")
+            flash("Password updated.", "success")
             return redirect(url_for("account"))
 
         return _render_page("account", "Web Admin Account", account_user=user)
@@ -3477,6 +4630,9 @@ def start_web_admin(
     update_bot_avatar: Callable[[bytes, str, str, int], dict] | Callable[[bytes, str, str], dict] | None = None,
     request_restart: Callable[[str], dict] | None = None,
     resolve_youtube_subscription: Callable[[str], dict] | None = None,
+    resolve_youtube_community_seed: Callable[[str], dict] | None = None,
+    resolve_wordpress_feed: Callable[[str], dict] | None = None,
+    resolve_linkedin_feed: Callable[[str], dict] | None = None,
     host: str = "127.0.0.1",
     port: int = 8081,
     ssl_context: str | tuple[str, str] | None = None,
@@ -3498,6 +4654,9 @@ def start_web_admin(
         update_bot_avatar=update_bot_avatar,
         request_restart=request_restart,
         resolve_youtube_subscription=resolve_youtube_subscription,
+        resolve_youtube_community_seed=resolve_youtube_community_seed,
+        resolve_wordpress_feed=resolve_wordpress_feed,
+        resolve_linkedin_feed=resolve_linkedin_feed,
     )
 
     def run() -> None:
