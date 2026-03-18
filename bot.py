@@ -114,10 +114,14 @@ PUPPY_IMAGE_TIMEOUT_SECONDS = env_int("PUPPY_IMAGE_TIMEOUT_SECONDS", 8)
 YOUTUBE_NOTIFY_ENABLED = env_bool("YOUTUBE_NOTIFY_ENABLED", True)
 YOUTUBE_POLL_INTERVAL_SECONDS = env_int("YOUTUBE_POLL_INTERVAL_SECONDS", 300)
 YOUTUBE_REQUEST_TIMEOUT_SECONDS = env_int("YOUTUBE_REQUEST_TIMEOUT_SECONDS", 12)
+WORDPRESS_REQUEST_TIMEOUT_SECONDS = env_int("WORDPRESS_REQUEST_TIMEOUT_SECONDS", 12)
+LINKEDIN_REQUEST_TIMEOUT_SECONDS = env_int("LINKEDIN_REQUEST_TIMEOUT_SECONDS", 12)
 UPTIME_STATUS_ENABLED = env_bool("UPTIME_STATUS_ENABLED", True)
 UPTIME_STATUS_TIMEOUT_SECONDS = env_int("UPTIME_STATUS_TIMEOUT_SECONDS", 8)
 WEB_RESTART_ENABLED = env_bool("WEB_RESTART_ENABLED", False)
 WEB_AVATAR_MAX_UPLOAD_BYTES = max(1024, env_int("WEB_AVATAR_MAX_UPLOAD_BYTES", 2 * 1024 * 1024))
+FEED_INTERVAL_OPTIONS = {300, 600, 900, 1800, 3600, 10800, 21600}
+NOTIFICATION_LOOP_SECONDS = 60
 
 if WEB_TLS_ENABLED and bool(WEB_TLS_CERT_FILE) != bool(WEB_TLS_KEY_FILE):
     raise RuntimeError("WEB_TLS_CERT_FILE and WEB_TLS_KEY_FILE must both be set when using custom TLS certificates.")
@@ -168,6 +172,12 @@ YOUTUBE_CHANNEL_ID_META_PATTERNS = (
     re.compile(r'"externalId":"(UC[a-zA-Z0-9_-]{22})"'),
 )
 USER_ID_INPUT_PATTERN = re.compile(r"^\d{17,20}$")
+YOUTUBE_POST_ID_PATTERN = re.compile(r'"postId":"([^"]+)"')
+YOUTUBE_TEXT_PATTERN = re.compile(r'"text":"([^"]+)"')
+LINKEDIN_ACTIVITY_URN_PATTERN = re.compile(r"urn:li:activity:(\d{8,})")
+LINKEDIN_POST_URL_PATTERN = re.compile(r"https://www\.linkedin\.com/(?:feed/update/urn:li:activity:\d+|posts/[^\"'<>\s]+)")
+LINKEDIN_TEXT_PATTERN = re.compile(r'"text":"([^"]+)"')
+LINKEDIN_OG_TITLE_PATTERN = re.compile(r'<meta\s+property="og:title"\s+content="([^"]+)"', re.IGNORECASE)
 
 COMMAND_PERMISSION_MODE_DEFAULT = "default"
 COMMAND_PERMISSION_MODE_PUBLIC = "public"
@@ -253,6 +263,17 @@ def normalize_role_ids(values: list[str] | str | None) -> list[int]:
     return normalized
 
 
+def normalize_feed_interval_seconds(value: str | int | None, default: int = 300) -> int:
+    if isinstance(value, int):
+        return value if value in FEED_INTERVAL_OPTIONS else default
+    candidate = str(value or "").strip()
+    if candidate.isdigit():
+        parsed = int(candidate)
+        if parsed in FEED_INTERVAL_OPTIONS:
+            return parsed
+    return default
+
+
 def normalize_command_permission_rule(raw_rule: dict | None) -> dict[str, str | list[int]]:
     if not isinstance(raw_rule, dict):
         return {"mode": COMMAND_PERMISSION_MODE_DEFAULT, "role_ids": []}
@@ -300,6 +321,29 @@ def normalize_shortener_base_url(raw_url: str) -> str:
     return f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
 
 
+def normalize_reddit_source(raw_value: str) -> tuple[str, str]:
+    candidate = str(raw_value or "").strip()
+    if not candidate:
+        raise ValueError("Reddit forum is required.")
+    if candidate.startswith("r/"):
+        candidate = candidate[2:]
+    if "://" in candidate:
+        parsed = urllib.parse.urlparse(candidate)
+        host = parsed.netloc.lower()
+        if host.startswith("www."):
+            host = host[4:]
+        if host != "reddit.com":
+            raise ValueError("Reddit URL must be on reddit.com.")
+        parts = [part for part in parsed.path.split("/") if part]
+        if len(parts) < 2 or parts[0].lower() != "r":
+            raise ValueError("Reddit URL must point to a subreddit.")
+        candidate = parts[1]
+    subreddit_name = candidate.strip().lower()
+    if not subreddit_name or not subreddit_name.replace("_", "").isalnum():
+        raise ValueError("Reddit forum must be a valid subreddit name.")
+    return subreddit_name, f"https://www.reddit.com/r/{subreddit_name}"
+
+
 def normalize_status_page_url(raw_url: str) -> str:
     parsed = urllib.parse.urlparse(raw_url.strip())
     if parsed.scheme not in {"http", "https"}:
@@ -332,6 +376,10 @@ if YOUTUBE_POLL_INTERVAL_SECONDS <= 0:
     raise RuntimeError("YOUTUBE_POLL_INTERVAL_SECONDS must be a positive integer.")
 if YOUTUBE_REQUEST_TIMEOUT_SECONDS <= 0:
     raise RuntimeError("YOUTUBE_REQUEST_TIMEOUT_SECONDS must be a positive integer.")
+if WORDPRESS_REQUEST_TIMEOUT_SECONDS <= 0:
+    raise RuntimeError("WORDPRESS_REQUEST_TIMEOUT_SECONDS must be a positive integer.")
+if LINKEDIN_REQUEST_TIMEOUT_SECONDS <= 0:
+    raise RuntimeError("LINKEDIN_REQUEST_TIMEOUT_SECONDS must be a positive integer.")
 if UPTIME_STATUS_TIMEOUT_SECONDS <= 0:
     raise RuntimeError("UPTIME_STATUS_TIMEOUT_SECONDS must be a positive integer.")
 
@@ -352,6 +400,41 @@ def normalize_target_url(raw_url: str) -> str:
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError("Invalid URL. Use a valid http(s) URL.")
     return urllib.parse.urlunparse(parsed)
+
+
+def normalize_wordpress_site_url(raw_url: str) -> str:
+    value = raw_url.strip()
+    if not value:
+        raise ValueError("WordPress site URL is required.")
+    if "://" not in value:
+        value = f"https://{value}"
+    parsed = urllib.parse.urlparse(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("Invalid WordPress site URL.")
+    path = parsed.path.rstrip("/")
+    normalized = urllib.parse.urlunparse((parsed.scheme, parsed.netloc, path or "/", "", "", ""))
+    return normalized.rstrip("/") if normalized != f"{parsed.scheme}://{parsed.netloc}/" else normalized
+
+
+def normalize_linkedin_profile_url(raw_url: str) -> str:
+    value = raw_url.strip()
+    if not value:
+        raise ValueError("LinkedIn profile URL is required.")
+    if "://" not in value:
+        value = f"https://{value}"
+    parsed = urllib.parse.urlparse(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("Invalid LinkedIn URL.")
+    host = parsed.netloc.lower()
+    if host.startswith("www."):
+        host = host[4:]
+    if host != "linkedin.com":
+        raise ValueError("LinkedIn URL must be on linkedin.com.")
+    path = parsed.path.rstrip("/")
+    valid_prefixes = ("/in/", "/company/", "/school/", "/showcase/")
+    if not any(path.startswith(prefix) for prefix in valid_prefixes):
+        raise ValueError("LinkedIn URL must point to a public profile or page.")
+    return urllib.parse.urlunparse((parsed.scheme, parsed.netloc, path, "", "", ""))
 
 
 def normalize_short_reference(raw_value: str) -> str:
@@ -550,6 +633,21 @@ def resolve_youtube_channel_id(source_url: str) -> str:
 
 
 def fetch_latest_youtube_video(channel_id: str) -> dict:
+    entries = fetch_recent_youtube_uploads(channel_id, limit=1)
+    if not entries:
+        raise RuntimeError("YouTube feed has no entries.")
+    latest = entries[0]
+    return {
+        "channel_id": channel_id,
+        "channel_title": latest["channel_title"],
+        "video_id": latest["video_id"],
+        "video_title": latest["video_title"],
+        "video_url": latest["video_url"],
+        "published_at": latest["published_at"],
+    }
+
+
+def fetch_recent_youtube_uploads(channel_id: str, limit: int = 10) -> list[dict]:
     if not YOUTUBE_CHANNEL_ID_PATTERN.fullmatch(channel_id):
         raise RuntimeError("Invalid YouTube channel ID.")
     feed_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
@@ -567,31 +665,30 @@ def fetch_latest_youtube_video(channel_id: str) -> dict:
         "yt": "http://www.youtube.com/xml/schemas/2015",
     }
     channel_title = root.findtext("atom:title", default="Unknown Channel", namespaces=ns).strip()
-    entry = root.find("atom:entry", ns)
-    if entry is None:
+    entries: list[dict] = []
+    for entry in root.findall("atom:entry", ns)[: max(1, limit)]:
+        video_id = entry.findtext("yt:videoId", default="", namespaces=ns).strip()
+        video_title = entry.findtext("atom:title", default="Untitled", namespaces=ns).strip()
+        published_at = entry.findtext("atom:published", default="", namespaces=ns).strip()
+        link_el = entry.find("atom:link[@rel='alternate']", ns)
+        video_url = link_el.get("href", "").strip() if link_el is not None else ""
+        if not video_url and video_id:
+            video_url = f"https://www.youtube.com/watch?v={video_id}"
+        if not video_id or not video_url:
+            continue
+        entries.append(
+            {
+                "channel_id": channel_id,
+                "channel_title": channel_title,
+                "video_id": video_id,
+                "video_title": video_title,
+                "video_url": video_url,
+                "published_at": published_at,
+            }
+        )
+    if not entries:
         raise RuntimeError("YouTube feed has no entries.")
-
-    video_id = entry.findtext("yt:videoId", default="", namespaces=ns).strip()
-    video_title = entry.findtext("atom:title", default="Untitled", namespaces=ns).strip()
-    published_at = entry.findtext("atom:published", default="", namespaces=ns).strip()
-    link_el = entry.find("atom:link[@rel='alternate']", ns)
-    video_url = link_el.get("href", "").strip() if link_el is not None else ""
-    if not video_url and video_id:
-        video_url = f"https://www.youtube.com/watch?v={video_id}"
-
-    if not video_id:
-        raise RuntimeError("YouTube feed entry is missing video ID.")
-    if not video_url:
-        raise RuntimeError("YouTube feed entry is missing video URL.")
-
-    return {
-        "channel_id": channel_id,
-        "channel_title": channel_title,
-        "video_id": video_id,
-        "video_title": video_title,
-        "video_url": video_url,
-        "published_at": published_at,
-    }
+    return entries
 
 
 def resolve_youtube_subscription_seed(source_url: str) -> dict:
@@ -605,6 +702,331 @@ def resolve_youtube_subscription_seed(source_url: str) -> dict:
         "last_video_id": latest["video_id"],
         "last_video_title": latest["video_title"],
         "last_published_at": latest["published_at"],
+    }
+
+
+def _youtube_community_url(source_url: str) -> str:
+    normalized_url = normalize_youtube_channel_url(source_url)
+    parsed = urllib.parse.urlparse(normalized_url)
+    base_path = parsed.path.rstrip("/")
+    if base_path.endswith("/community") or base_path.endswith("/posts"):
+        path = base_path
+    else:
+        path = f"{base_path}/community"
+    return urllib.parse.urlunparse((parsed.scheme, parsed.netloc, path, "", "", ""))
+
+
+def _extract_youtube_text_window(body_text: str, anchor_index: int) -> str:
+    window = body_text[anchor_index : anchor_index + 900]
+    texts = [match.group(1) for match in YOUTUBE_TEXT_PATTERN.finditer(window)]
+    cleaned = []
+    for value in texts:
+        candidate = value.replace("\\n", " ").replace("\\u0026", "&").replace('\\"', '"').strip()
+        if candidate and candidate not in cleaned:
+            cleaned.append(candidate)
+        if len(cleaned) >= 3:
+            break
+    return " ".join(cleaned).strip() or "New community post"
+
+
+def fetch_recent_youtube_community_posts(source_url: str, limit: int = 10) -> list[dict]:
+    community_url = _youtube_community_url(source_url)
+    status, _, body_text = fetch_text_url(community_url, timeout_seconds=YOUTUBE_REQUEST_TIMEOUT_SECONDS, accept="text/html")
+    if status >= 400:
+        raise RuntimeError(f"YouTube community page returned HTTP {status}.")
+    posts: list[dict] = []
+    seen: set[str] = set()
+    for match in YOUTUBE_POST_ID_PATTERN.finditer(body_text):
+        post_id = match.group(1).strip()
+        if not post_id or post_id in seen:
+            continue
+        seen.add(post_id)
+        posts.append(
+            {
+                "post_id": post_id,
+                "post_title": truncate_log_text(_extract_youtube_text_window(body_text, match.start()), max_length=160),
+                "post_url": f"https://www.youtube.com/post/{post_id}",
+                "published_at": "",
+            }
+        )
+        if len(posts) >= max(1, limit):
+            break
+    return posts
+
+
+def resolve_youtube_community_seed(source_url: str) -> dict:
+    posts = fetch_recent_youtube_community_posts(source_url, limit=1)
+    if not posts:
+        return {}
+    latest = posts[0]
+    return {
+        "last_community_post_id": latest["post_id"],
+        "last_community_post_title": latest["post_title"],
+        "last_community_published_at": latest["published_at"],
+    }
+
+
+def fetch_recent_reddit_posts(subreddit_name: str, limit: int = 10) -> list[dict]:
+    normalized_name, source_url = normalize_reddit_source(subreddit_name)
+    api_url = f"https://www.reddit.com/r/{normalized_name}/new.json?limit={max(1, limit)}&raw_json=1"
+    status, _, body_text = fetch_text_url(api_url, timeout_seconds=UPTIME_STATUS_TIMEOUT_SECONDS, accept="application/json")
+    if status >= 400:
+        raise RuntimeError(f"Reddit feed returned HTTP {status}.")
+    try:
+        payload = json.loads(body_text)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("Reddit feed returned invalid JSON.") from exc
+    data = payload.get("data", {}) if isinstance(payload, dict) else {}
+    children = data.get("children", []) if isinstance(data, dict) else []
+    posts: list[dict] = []
+    for child in children:
+        child_data = child.get("data", {}) if isinstance(child, dict) else {}
+        post_id = str(child_data.get("name", "")).strip()
+        permalink = str(child_data.get("permalink", "")).strip()
+        title = str(child_data.get("title", "Untitled")).strip()
+        published_utc = child_data.get("created_utc")
+        published_at = ""
+        if isinstance(published_utc, (int, float)):
+            published_at = datetime.fromtimestamp(float(published_utc), tz=UTC).isoformat()
+        if not post_id:
+            continue
+        posts.append(
+            {
+                "post_id": post_id,
+                "post_title": title,
+                "post_url": urllib.parse.urljoin("https://www.reddit.com", permalink) if permalink else source_url,
+                "published_at": published_at,
+                "subreddit_name": normalized_name,
+                "source_url": source_url,
+            }
+        )
+    return posts
+
+
+def _xml_local_name(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1] if "}" in tag else tag
+
+
+def _find_xml_child_text(element: DefusedET.Element, candidate_names: tuple[str, ...]) -> str:
+    for child in list(element):
+        if _xml_local_name(child.tag) in candidate_names:
+            return (child.text or "").strip()
+    return ""
+
+
+def _find_xml_link(element: DefusedET.Element) -> str:
+    for child in list(element):
+        if _xml_local_name(child.tag) != "link":
+            continue
+        href = str(child.attrib.get("href", "")).strip()
+        if href:
+            return href
+        text = (child.text or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def discover_wordpress_feed_url(source_url: str) -> str:
+    normalized_url = normalize_wordpress_site_url(source_url)
+    candidate_urls: list[str] = []
+    lowered_path = urllib.parse.urlparse(normalized_url).path.lower()
+    if lowered_path.endswith("/feed") or lowered_path.endswith("/feed/") or lowered_path.endswith(".xml"):
+        candidate_urls.append(normalized_url)
+    else:
+        base = normalized_url.rstrip("/")
+        candidate_urls.extend([f"{base}/feed/", f"{base}/feed", f"{base}/index.php/feed/"])
+    seen: set[str] = set()
+    for candidate in candidate_urls:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        try:
+            status, headers, body_text = fetch_text_url(
+                candidate,
+                timeout_seconds=WORDPRESS_REQUEST_TIMEOUT_SECONDS,
+                accept="application/rss+xml, application/atom+xml, application/xml, text/xml, text/html",
+            )
+        except RuntimeError:
+            continue
+        content_type = headers.get("content-type", "").lower()
+        if status < 400 and (
+            "xml" in content_type or body_text.lstrip().startswith("<?xml") or "<rss" in body_text or "<feed" in body_text
+        ):
+            return candidate
+    status, _, body_text = fetch_text_url(normalized_url, timeout_seconds=WORDPRESS_REQUEST_TIMEOUT_SECONDS, accept="text/html")
+    if status >= 400:
+        raise RuntimeError(f"WordPress site returned HTTP {status}.")
+    link_patterns = (
+        re.compile(r'<link[^>]+type=["\']application/rss\+xml["\'][^>]+href=["\']([^"\']+)["\']', re.IGNORECASE),
+        re.compile(r'<link[^>]+href=["\']([^"\']+)["\'][^>]+type=["\']application/rss\+xml["\']', re.IGNORECASE),
+        re.compile(r'<link[^>]+type=["\']application/atom\+xml["\'][^>]+href=["\']([^"\']+)["\']', re.IGNORECASE),
+        re.compile(r'<link[^>]+href=["\']([^"\']+)["\'][^>]+type=["\']application/atom\+xml["\']', re.IGNORECASE),
+    )
+    for pattern in link_patterns:
+        match = pattern.search(body_text)
+        if match:
+            return urllib.parse.urljoin(normalized_url, match.group(1))
+    raise RuntimeError("Unable to discover a WordPress RSS/Atom feed from the site URL.")
+
+
+def fetch_recent_wordpress_posts(source_url: str, limit: int = 10) -> dict:
+    normalized_site_url = normalize_wordpress_site_url(source_url)
+    feed_url = discover_wordpress_feed_url(normalized_site_url)
+    status, _, body_text = fetch_text_url(
+        feed_url,
+        timeout_seconds=WORDPRESS_REQUEST_TIMEOUT_SECONDS,
+        accept="application/rss+xml, application/atom+xml, application/xml, text/xml",
+    )
+    if status >= 400:
+        raise RuntimeError(f"WordPress feed returned HTTP {status}.")
+    try:
+        root = DefusedET.fromstring(body_text)
+    except DefusedET.ParseError as exc:
+        raise RuntimeError("WordPress feed returned invalid XML.") from exc
+
+    root_name = _xml_local_name(root.tag).lower()
+    site_title = ""
+    posts: list[dict] = []
+    if root_name == "rss":
+        channel = next((child for child in list(root) if _xml_local_name(child.tag) == "channel"), None)
+        if channel is None:
+            raise RuntimeError("WordPress RSS feed is missing a channel element.")
+        site_title = _find_xml_child_text(channel, ("title",)) or urllib.parse.urlparse(normalized_site_url).netloc
+        for item in [child for child in list(channel) if _xml_local_name(child.tag) == "item"][: max(1, limit)]:
+            post_id = _find_xml_child_text(item, ("guid", "id", "link"))
+            post_url = _find_xml_child_text(item, ("link",)) or post_id or normalized_site_url
+            if not post_id:
+                post_id = post_url
+            posts.append(
+                {
+                    "post_id": post_id,
+                    "post_title": _find_xml_child_text(item, ("title",)) or "Untitled Post",
+                    "post_url": post_url,
+                    "published_at": _find_xml_child_text(item, ("pubDate", "published", "updated", "dc:date")),
+                }
+            )
+    elif root_name == "feed":
+        site_title = _find_xml_child_text(root, ("title",)) or urllib.parse.urlparse(normalized_site_url).netloc
+        entries = [child for child in list(root) if _xml_local_name(child.tag) == "entry"][: max(1, limit)]
+        for entry in entries:
+            post_id = _find_xml_child_text(entry, ("id",))
+            post_url = _find_xml_link(entry) or normalized_site_url
+            if not post_id:
+                post_id = post_url
+            posts.append(
+                {
+                    "post_id": post_id,
+                    "post_title": _find_xml_child_text(entry, ("title",)) or "Untitled Post",
+                    "post_url": post_url,
+                    "published_at": _find_xml_child_text(entry, ("published", "updated")),
+                }
+            )
+    else:
+        raise RuntimeError("Unsupported WordPress feed format.")
+
+    return {
+        "site_url": normalized_site_url,
+        "feed_url": feed_url,
+        "site_title": site_title,
+        "posts": posts,
+    }
+
+
+def resolve_wordpress_feed_seed(source_url: str) -> dict:
+    feed_payload = fetch_recent_wordpress_posts(source_url, limit=1)
+    latest = feed_payload["posts"][0] if feed_payload["posts"] else {}
+    return {
+        "site_url": feed_payload["site_url"],
+        "feed_url": feed_payload["feed_url"],
+        "site_title": feed_payload["site_title"],
+        "last_post_id": str(latest.get("post_id", "")),
+        "last_post_title": str(latest.get("post_title", "")),
+        "last_post_url": str(latest.get("post_url", "")),
+        "last_published_at": str(latest.get("published_at", "")),
+    }
+
+
+def linkedin_recent_activity_url(source_url: str) -> str:
+    normalized_url = normalize_linkedin_profile_url(source_url)
+    parsed = urllib.parse.urlparse(normalized_url)
+    path = parsed.path.rstrip("/")
+    if "/recent-activity/" in path:
+        activity_path = path
+    else:
+        activity_path = f"{path}/recent-activity/all"
+    return urllib.parse.urlunparse((parsed.scheme, parsed.netloc, activity_path, "", "", ""))
+
+
+def _extract_linkedin_text_window(body_text: str, anchor_index: int) -> str:
+    window = body_text[anchor_index : anchor_index + 1400]
+    texts = [match.group(1) for match in LINKEDIN_TEXT_PATTERN.finditer(window)]
+    cleaned: list[str] = []
+    for value in texts:
+        candidate = (
+            value.replace("\\n", " ").replace("\\u003C", "<").replace("\\u003E", ">").replace("\\u0026", "&").replace('\\"', '"').strip()
+        )
+        if candidate and candidate not in cleaned:
+            cleaned.append(candidate)
+        if len(cleaned) >= 3:
+            break
+    return truncate_log_text(" ".join(cleaned).strip() or "New LinkedIn post", max_length=160)
+
+
+def fetch_recent_linkedin_posts(source_url: str, limit: int = 10) -> dict:
+    profile_url = normalize_linkedin_profile_url(source_url)
+    activity_url = linkedin_recent_activity_url(profile_url)
+    status, _, body_text = fetch_text_url(activity_url, timeout_seconds=LINKEDIN_REQUEST_TIMEOUT_SECONDS, accept="text/html")
+    if status >= 400:
+        raise RuntimeError(f"LinkedIn activity page returned HTTP {status}.")
+    if "linkedin.com/checkpoint/challenge" in body_text or "Sign in to LinkedIn" in body_text:
+        raise RuntimeError("LinkedIn activity page requires authentication or blocked automated access.")
+
+    decoded_body = body_text.replace("\\/", "/").replace("\\u002F", "/").replace("&amp;", "&")
+    title_match = LINKEDIN_OG_TITLE_PATTERN.search(body_text)
+    default_label = urllib.parse.urlparse(profile_url).path.strip("/").split("/")[-1]
+    profile_label = title_match.group(1).strip() if title_match else default_label
+
+    posts: list[dict] = []
+    seen_ids: set[str] = set()
+    for match in LINKEDIN_ACTIVITY_URN_PATTERN.finditer(decoded_body):
+        activity_id = match.group(1).strip()
+        if not activity_id or activity_id in seen_ids:
+            continue
+        seen_ids.add(activity_id)
+        post_url_match = LINKEDIN_POST_URL_PATTERN.search(decoded_body, max(0, match.start() - 400), match.start() + 1400)
+        post_url = post_url_match.group(0) if post_url_match else f"https://www.linkedin.com/feed/update/urn:li:activity:{activity_id}"
+        posts.append(
+            {
+                "post_id": activity_id,
+                "post_title": _extract_linkedin_text_window(decoded_body, match.start()),
+                "post_url": post_url,
+                "published_at": "",
+            }
+        )
+        if len(posts) >= max(1, limit):
+            break
+    if not posts:
+        raise RuntimeError("No public LinkedIn posts were found for this profile/page.")
+    return {
+        "profile_url": profile_url,
+        "activity_url": activity_url,
+        "profile_label": profile_label,
+        "posts": posts,
+    }
+
+
+def resolve_linkedin_feed_seed(source_url: str) -> dict:
+    payload = fetch_recent_linkedin_posts(source_url, limit=1)
+    latest = payload["posts"][0] if payload["posts"] else {}
+    return {
+        "profile_url": payload["profile_url"],
+        "activity_url": payload["activity_url"],
+        "profile_label": payload["profile_label"],
+        "last_post_id": str(latest.get("post_id", "")),
+        "last_post_title": str(latest.get("post_title", "")),
+        "last_post_url": str(latest.get("post_url", "")),
+        "last_published_at": str(latest.get("published_at", "")),
     }
 
 
@@ -893,11 +1315,96 @@ class ActionStore:
                     channel_title TEXT NOT NULL,
                     target_channel_id INTEGER NOT NULL,
                     target_channel_name TEXT NOT NULL,
+                    poll_interval_seconds INTEGER NOT NULL DEFAULT 300,
+                    include_uploads INTEGER NOT NULL DEFAULT 1,
+                    include_community_posts INTEGER NOT NULL DEFAULT 0,
                     last_video_id TEXT,
                     last_video_title TEXT,
                     last_published_at TEXT,
+                    last_community_post_id TEXT,
+                    last_community_post_title TEXT,
+                    last_community_published_at TEXT,
+                    last_checked_at TEXT,
                     enabled INTEGER NOT NULL DEFAULT 1,
                     UNIQUE(channel_id, target_channel_id)
+                )
+                """
+            )
+            youtube_columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(youtube_subscriptions)").fetchall()}
+            youtube_migrations = {
+                "poll_interval_seconds": "ALTER TABLE youtube_subscriptions ADD COLUMN poll_interval_seconds INTEGER NOT NULL DEFAULT 300",
+                "include_uploads": "ALTER TABLE youtube_subscriptions ADD COLUMN include_uploads INTEGER NOT NULL DEFAULT 1",
+                "include_community_posts": "ALTER TABLE youtube_subscriptions ADD COLUMN include_community_posts INTEGER NOT NULL DEFAULT 0",
+                "last_community_post_id": "ALTER TABLE youtube_subscriptions ADD COLUMN last_community_post_id TEXT",
+                "last_community_post_title": "ALTER TABLE youtube_subscriptions ADD COLUMN last_community_post_title TEXT",
+                "last_community_published_at": "ALTER TABLE youtube_subscriptions ADD COLUMN last_community_published_at TEXT",
+                "last_checked_at": "ALTER TABLE youtube_subscriptions ADD COLUMN last_checked_at TEXT",
+            }
+            for column, statement in youtube_migrations.items():
+                if column not in youtube_columns:
+                    conn.execute(statement)
+            conn.execute(
+                "UPDATE youtube_subscriptions SET poll_interval_seconds = 300 WHERE poll_interval_seconds IS NULL OR poll_interval_seconds <= 0"
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS reddit_feeds (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL,
+                    subreddit_name TEXT NOT NULL,
+                    source_url TEXT NOT NULL,
+                    target_channel_id INTEGER NOT NULL,
+                    target_channel_name TEXT NOT NULL,
+                    poll_interval_seconds INTEGER NOT NULL DEFAULT 300,
+                    last_post_id TEXT,
+                    last_post_title TEXT,
+                    last_post_url TEXT,
+                    last_published_at TEXT,
+                    last_checked_at TEXT,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    UNIQUE(subreddit_name, target_channel_id)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS wordpress_feeds (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL,
+                    site_url TEXT NOT NULL,
+                    feed_url TEXT NOT NULL,
+                    site_title TEXT NOT NULL,
+                    target_channel_id INTEGER NOT NULL,
+                    target_channel_name TEXT NOT NULL,
+                    poll_interval_seconds INTEGER NOT NULL DEFAULT 300,
+                    last_post_id TEXT,
+                    last_post_title TEXT,
+                    last_post_url TEXT,
+                    last_published_at TEXT,
+                    last_checked_at TEXT,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    UNIQUE(feed_url, target_channel_id)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS linkedin_feeds (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL,
+                    profile_url TEXT NOT NULL,
+                    activity_url TEXT NOT NULL,
+                    profile_label TEXT NOT NULL,
+                    target_channel_id INTEGER NOT NULL,
+                    target_channel_name TEXT NOT NULL,
+                    poll_interval_seconds INTEGER NOT NULL DEFAULT 300,
+                    last_post_id TEXT,
+                    last_post_title TEXT,
+                    last_post_url TEXT,
+                    last_published_at TEXT,
+                    last_checked_at TEXT,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    UNIQUE(activity_url, target_channel_id)
                 )
                 """
             )
@@ -994,7 +1501,9 @@ class ActionStore:
     def list_youtube_subscriptions(self, enabled_only: bool = True) -> list[dict]:
         query = """
             SELECT id, created_at, source_url, channel_id, channel_title, target_channel_id,
-                   target_channel_name, last_video_id, last_video_title, last_published_at, enabled
+                   target_channel_name, poll_interval_seconds, include_uploads, include_community_posts,
+                   last_video_id, last_video_title, last_published_at, last_community_post_id,
+                   last_community_post_title, last_community_published_at, last_checked_at, enabled
             FROM youtube_subscriptions
         """
         params: tuple = ()
@@ -1007,22 +1516,215 @@ class ActionStore:
                 rows = conn.execute(query, params).fetchall()
         return [dict(row) for row in rows]
 
-    def update_youtube_last_video(
+    def update_youtube_subscription_state(
         self,
         subscription_id: int,
-        video_id: str,
-        video_title: str,
-        published_at: str,
+        *,
+        last_video_id: str | None = None,
+        last_video_title: str | None = None,
+        last_published_at: str | None = None,
+        last_community_post_id: str | None = None,
+        last_community_post_title: str | None = None,
+        last_community_published_at: str | None = None,
+        last_checked_at: str | None = None,
     ) -> None:
+        if all(
+            value is None
+            for value in (
+                last_video_id,
+                last_video_title,
+                last_published_at,
+                last_community_post_id,
+                last_community_post_title,
+                last_community_published_at,
+                last_checked_at,
+            )
+        ):
+            return
         with self._lock:
             with self._connect() as conn:
                 conn.execute(
                     """
                     UPDATE youtube_subscriptions
-                    SET last_video_id = ?, last_video_title = ?, last_published_at = ?
+                    SET
+                        last_video_id = COALESCE(?, last_video_id),
+                        last_video_title = COALESCE(?, last_video_title),
+                        last_published_at = COALESCE(?, last_published_at),
+                        last_community_post_id = COALESCE(?, last_community_post_id),
+                        last_community_post_title = COALESCE(?, last_community_post_title),
+                        last_community_published_at = COALESCE(?, last_community_published_at),
+                        last_checked_at = COALESCE(?, last_checked_at)
                     WHERE id = ?
                     """,
-                    (video_id, video_title, published_at, subscription_id),
+                    (
+                        last_video_id,
+                        last_video_title,
+                        last_published_at,
+                        last_community_post_id,
+                        last_community_post_title,
+                        last_community_published_at,
+                        last_checked_at,
+                        subscription_id,
+                    ),
+                )
+                conn.commit()
+
+    def list_reddit_feeds(self, enabled_only: bool = True) -> list[dict]:
+        query = """
+            SELECT id, created_at, subreddit_name, source_url, target_channel_id, target_channel_name,
+                   poll_interval_seconds, last_post_id, last_post_title, last_post_url, last_published_at,
+                   last_checked_at, enabled
+            FROM reddit_feeds
+        """
+        params: tuple = ()
+        if enabled_only:
+            query += " WHERE enabled = 1"
+        query += " ORDER BY id ASC"
+        with self._lock:
+            with self._connect() as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(query, params).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_wordpress_feeds(self, enabled_only: bool = True) -> list[dict]:
+        query = """
+            SELECT id, created_at, site_url, feed_url, site_title, target_channel_id, target_channel_name,
+                   poll_interval_seconds, last_post_id, last_post_title, last_post_url, last_published_at,
+                   last_checked_at, enabled
+            FROM wordpress_feeds
+        """
+        params: tuple = ()
+        if enabled_only:
+            query += " WHERE enabled = 1"
+        query += " ORDER BY id ASC"
+        with self._lock:
+            with self._connect() as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(query, params).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_linkedin_feeds(self, enabled_only: bool = True) -> list[dict]:
+        query = """
+            SELECT id, created_at, profile_url, activity_url, profile_label, target_channel_id, target_channel_name,
+                   poll_interval_seconds, last_post_id, last_post_title, last_post_url, last_published_at,
+                   last_checked_at, enabled
+            FROM linkedin_feeds
+        """
+        params: tuple = ()
+        if enabled_only:
+            query += " WHERE enabled = 1"
+        query += " ORDER BY id ASC"
+        with self._lock:
+            with self._connect() as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(query, params).fetchall()
+        return [dict(row) for row in rows]
+
+    def update_reddit_feed_state(
+        self,
+        feed_id: int,
+        *,
+        last_post_id: str | None = None,
+        last_post_title: str | None = None,
+        last_post_url: str | None = None,
+        last_published_at: str | None = None,
+        last_checked_at: str | None = None,
+    ) -> None:
+        if all(value is None for value in (last_post_id, last_post_title, last_post_url, last_published_at, last_checked_at)):
+            return
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    UPDATE reddit_feeds
+                    SET
+                        last_post_id = COALESCE(?, last_post_id),
+                        last_post_title = COALESCE(?, last_post_title),
+                        last_post_url = COALESCE(?, last_post_url),
+                        last_published_at = COALESCE(?, last_published_at),
+                        last_checked_at = COALESCE(?, last_checked_at)
+                    WHERE id = ?
+                    """,
+                    (
+                        last_post_id,
+                        last_post_title,
+                        last_post_url,
+                        last_published_at,
+                        last_checked_at,
+                        feed_id,
+                    ),
+                )
+                conn.commit()
+
+    def update_wordpress_feed_state(
+        self,
+        feed_id: int,
+        *,
+        last_post_id: str | None = None,
+        last_post_title: str | None = None,
+        last_post_url: str | None = None,
+        last_published_at: str | None = None,
+        last_checked_at: str | None = None,
+    ) -> None:
+        if all(value is None for value in (last_post_id, last_post_title, last_post_url, last_published_at, last_checked_at)):
+            return
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    UPDATE wordpress_feeds
+                    SET
+                        last_post_id = COALESCE(?, last_post_id),
+                        last_post_title = COALESCE(?, last_post_title),
+                        last_post_url = COALESCE(?, last_post_url),
+                        last_published_at = COALESCE(?, last_published_at),
+                        last_checked_at = COALESCE(?, last_checked_at)
+                    WHERE id = ?
+                    """,
+                    (
+                        last_post_id,
+                        last_post_title,
+                        last_post_url,
+                        last_published_at,
+                        last_checked_at,
+                        feed_id,
+                    ),
+                )
+                conn.commit()
+
+    def update_linkedin_feed_state(
+        self,
+        feed_id: int,
+        *,
+        last_post_id: str | None = None,
+        last_post_title: str | None = None,
+        last_post_url: str | None = None,
+        last_published_at: str | None = None,
+        last_checked_at: str | None = None,
+    ) -> None:
+        if all(value is None for value in (last_post_id, last_post_title, last_post_url, last_published_at, last_checked_at)):
+            return
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    UPDATE linkedin_feeds
+                    SET
+                        last_post_id = COALESCE(?, last_post_id),
+                        last_post_title = COALESCE(?, last_post_title),
+                        last_post_url = COALESCE(?, last_post_url),
+                        last_published_at = COALESCE(?, last_published_at),
+                        last_checked_at = COALESCE(?, last_checked_at)
+                    WHERE id = ?
+                    """,
+                    (
+                        last_post_id,
+                        last_post_title,
+                        last_post_url,
+                        last_published_at,
+                        last_checked_at,
+                        feed_id,
+                    ),
                 )
                 conn.commit()
 
@@ -1544,6 +2246,9 @@ class ModerationBot(commands.Bot):
                 update_bot_avatar=run_web_update_bot_avatar,
                 request_restart=run_web_request_restart,
                 resolve_youtube_subscription=lambda source_url: resolve_youtube_subscription_seed(source_url),
+                resolve_youtube_community_seed=lambda source_url: resolve_youtube_community_seed(source_url),
+                resolve_wordpress_feed=lambda source_url: resolve_wordpress_feed_seed(source_url),
+                resolve_linkedin_feed=lambda source_url: resolve_linkedin_feed_seed(source_url),
                 host=WEB_BIND_HOST,
                 port=WEB_PORT,
             )
@@ -1577,12 +2282,15 @@ class ModerationBot(commands.Bot):
                         update_bot_avatar=run_web_update_bot_avatar,
                         request_restart=run_web_request_restart,
                         resolve_youtube_subscription=lambda source_url: resolve_youtube_subscription_seed(source_url),
+                        resolve_youtube_community_seed=lambda source_url: resolve_youtube_community_seed(source_url),
+                        resolve_wordpress_feed=lambda source_url: resolve_wordpress_feed_seed(source_url),
+                        resolve_linkedin_feed=lambda source_url: resolve_linkedin_feed_seed(source_url),
                         host=WEB_BIND_HOST,
                         port=WEB_TLS_PORT,
                         ssl_context=ssl_context,
                     )
                     logger.info("Web admin HTTPS started at https://%s:%s", WEB_BIND_HOST, WEB_TLS_PORT)
-        if YOUTUBE_NOTIFY_ENABLED and self.youtube_monitor_task is None:
+        if self.youtube_monitor_task is None:
             self.youtube_monitor_task = self.loop.create_task(self.youtube_monitor_loop(), name="youtube-monitor")
 
     async def on_ready(self) -> None:
@@ -1709,13 +2417,17 @@ class ModerationBot(commands.Bot):
 
     async def youtube_monitor_loop(self) -> None:
         await self.wait_until_ready()
-        logger.info("YouTube notifier loop started. Poll interval: %ss", YOUTUBE_POLL_INTERVAL_SECONDS)
+        logger.info("Notification loop started. Tick interval: %ss", NOTIFICATION_LOOP_SECONDS)
         while not self.is_closed():
             try:
-                await self.poll_youtube_subscriptions()
+                if YOUTUBE_NOTIFY_ENABLED:
+                    await self.poll_youtube_subscriptions()
+                await self.poll_reddit_feeds()
+                await self.poll_wordpress_feeds()
+                await self.poll_linkedin_feeds()
             except Exception as exc:
-                logger.exception("YouTube notifier poll failed: %s", exc)
-            await asyncio.sleep(YOUTUBE_POLL_INTERVAL_SECONDS)
+                logger.exception("Notification poll failed: %s", exc)
+            await asyncio.sleep(NOTIFICATION_LOOP_SECONDS)
 
     async def poll_youtube_subscriptions(self) -> None:
         subscriptions = ACTION_STORE.list_youtube_subscriptions(enabled_only=True)
@@ -1727,54 +2439,337 @@ class ModerationBot(commands.Bot):
     async def _process_youtube_subscription(self, subscription: dict) -> None:
         subscription_id = int(subscription.get("id", 0))
         channel_id = str(subscription.get("channel_id", "")).strip()
+        source_url = str(subscription.get("source_url", "")).strip()
         target_channel_id = int(subscription.get("target_channel_id", 0))
         if subscription_id <= 0 or not channel_id or target_channel_id <= 0:
             return
-
-        try:
-            latest = await asyncio.to_thread(fetch_latest_youtube_video, channel_id)
-        except RuntimeError as exc:
-            logger.warning("Unable to fetch YouTube feed for %s: %s", channel_id, exc)
+        if not subscription_due(subscription.get("last_checked_at"), subscription.get("poll_interval_seconds")):
             return
 
-        last_video_id = str(subscription.get("last_video_id", "")).strip()
-        if latest["video_id"] == last_video_id:
+        checked_at = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
+        include_uploads = bool(subscription.get("include_uploads", 1))
+        include_community_posts = bool(subscription.get("include_community_posts", 0))
+        if not include_uploads and not include_community_posts:
+            ACTION_STORE.update_youtube_subscription_state(subscription_id, last_checked_at=checked_at)
             return
 
         notify_channel = await get_text_channel(self, target_channel_id)
         if notify_channel is None:
             logger.warning("Notify channel %s not found for YouTube subscription %s", target_channel_id, subscription_id)
+            ACTION_STORE.update_youtube_subscription_state(subscription_id, last_checked_at=checked_at)
             return
 
-        embed = discord.Embed(
-            title=f"New video from {latest['channel_title']}",
-            description=f"[{latest['video_title']}]({latest['video_url']})",
-            color=discord.Color.red(),
-        )
-        embed.set_footer(text="YouTube Notification")
-        await notify_channel.send(embed=embed)
+        youtube_updates: dict[str, str] = {"last_checked_at": checked_at}
+        if include_uploads:
+            try:
+                uploads = await asyncio.to_thread(fetch_recent_youtube_uploads, channel_id, 10)
+            except RuntimeError as exc:
+                logger.warning("Unable to fetch YouTube feed for %s: %s", channel_id, exc)
+                uploads = []
+            last_video_id = str(subscription.get("last_video_id", "")).strip()
+            new_uploads: list[dict] = []
+            for item in uploads:
+                if item["video_id"] == last_video_id:
+                    break
+                new_uploads.append(item)
+            for item in reversed(new_uploads):
+                upload_kind = "short" if "/shorts/" in item["video_url"] else "upload"
+                embed = discord.Embed(
+                    title=f"New {upload_kind} from {item['channel_title']}",
+                    description=f"[{item['video_title']}]({item['video_url']})",
+                    color=discord.Color.red(),
+                )
+                embed.set_footer(text="YouTube Notification")
+                await notify_channel.send(embed=embed)
+                await log_action(
+                    self,
+                    "YouTube Notification",
+                    (
+                        f"Action: `youtube_notify`\nStatus: **Success**\nGuild: {notify_channel.guild.id}\n"
+                        f"Target: {notify_channel.mention} ({notify_channel.id})\nReason: {item['channel_title']} - {item['video_title']}"
+                    ),
+                    discord.Color.red(),
+                    guild_id=notify_channel.guild.id,
+                )
+                record_action_safe(
+                    action="youtube_notify",
+                    status="success",
+                    moderator="system",
+                    target=f"{notify_channel.name} ({notify_channel.id})",
+                    reason=truncate_log_text(f"{item['channel_title']} - {item['video_title']}"),
+                    guild=str(notify_channel.guild.id),
+                )
+            if uploads:
+                youtube_updates.update(
+                    {
+                        "last_video_id": uploads[0]["video_id"],
+                        "last_video_title": uploads[0]["video_title"],
+                        "last_published_at": uploads[0]["published_at"],
+                    }
+                )
 
-        ACTION_STORE.update_youtube_last_video(
-            subscription_id=subscription_id,
-            video_id=latest["video_id"],
-            video_title=latest["video_title"],
-            published_at=latest["published_at"],
+        if include_community_posts and source_url:
+            try:
+                community_posts = await asyncio.to_thread(fetch_recent_youtube_community_posts, source_url, 10)
+            except RuntimeError as exc:
+                logger.warning("Unable to fetch YouTube community page for %s: %s", source_url, exc)
+                community_posts = []
+            last_community_post_id = str(subscription.get("last_community_post_id", "")).strip()
+            new_posts: list[dict] = []
+            for item in community_posts:
+                if item["post_id"] == last_community_post_id:
+                    break
+                new_posts.append(item)
+            for item in reversed(new_posts):
+                embed = discord.Embed(
+                    title=f"New community post from {subscription.get('channel_title', 'YouTube Channel')}",
+                    description=f"[{item['post_title']}]({item['post_url']})",
+                    color=discord.Color.orange(),
+                )
+                embed.set_footer(text="YouTube Community Post")
+                await notify_channel.send(embed=embed)
+                await log_action(
+                    self,
+                    "YouTube Community Post",
+                    (
+                        f"Action: `youtube_community_post`\nStatus: **Success**\nGuild: {notify_channel.guild.id}\n"
+                        f"Target: {notify_channel.mention} ({notify_channel.id})\nReason: {item['post_title']}"
+                    ),
+                    discord.Color.orange(),
+                    guild_id=notify_channel.guild.id,
+                )
+                record_action_safe(
+                    action="youtube_community_post",
+                    status="success",
+                    moderator="system",
+                    target=f"{notify_channel.name} ({notify_channel.id})",
+                    reason=truncate_log_text(item["post_title"]),
+                    guild=str(notify_channel.guild.id),
+                )
+            if community_posts:
+                youtube_updates.update(
+                    {
+                        "last_community_post_id": community_posts[0]["post_id"],
+                        "last_community_post_title": community_posts[0]["post_title"],
+                        "last_community_published_at": community_posts[0]["published_at"],
+                    }
+                )
+
+        ACTION_STORE.update_youtube_subscription_state(subscription_id, **youtube_updates)
+
+    async def poll_reddit_feeds(self) -> None:
+        feeds = ACTION_STORE.list_reddit_feeds(enabled_only=True)
+        if not feeds:
+            return
+        for feed in feeds:
+            await self._process_reddit_feed(feed)
+
+    async def _process_reddit_feed(self, feed: dict) -> None:
+        feed_id = int(feed.get("id", 0))
+        subreddit_name = str(feed.get("subreddit_name", "")).strip()
+        target_channel_id = int(feed.get("target_channel_id", 0))
+        if feed_id <= 0 or not subreddit_name or target_channel_id <= 0:
+            return
+        if not subscription_due(feed.get("last_checked_at"), feed.get("poll_interval_seconds")):
+            return
+        checked_at = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
+        notify_channel = await get_text_channel(self, target_channel_id)
+        if notify_channel is None:
+            logger.warning("Notify channel %s not found for Reddit feed %s", target_channel_id, feed_id)
+            ACTION_STORE.update_reddit_feed_state(feed_id, last_checked_at=checked_at)
+            return
+        try:
+            posts = await asyncio.to_thread(fetch_recent_reddit_posts, subreddit_name, 10)
+        except RuntimeError as exc:
+            logger.warning("Unable to fetch Reddit feed for r/%s: %s", subreddit_name, exc)
+            ACTION_STORE.update_reddit_feed_state(feed_id, last_checked_at=checked_at)
+            return
+        last_post_id = str(feed.get("last_post_id", "")).strip()
+        new_posts: list[dict] = []
+        for item in posts:
+            if item["post_id"] == last_post_id:
+                break
+            new_posts.append(item)
+        for item in reversed(new_posts):
+            embed = discord.Embed(
+                title=f"New Reddit post in r/{item['subreddit_name']}",
+                description=f"[{item['post_title']}]({item['post_url']})",
+                color=discord.Color.orange(),
+            )
+            embed.set_footer(text="Reddit Feed")
+            await notify_channel.send(embed=embed)
+            await log_action(
+                self,
+                "Reddit Feed Notification",
+                (
+                    f"Action: `reddit_feed_notify`\nStatus: **Success**\nGuild: {notify_channel.guild.id}\n"
+                    f"Target: {notify_channel.mention} ({notify_channel.id})\nReason: r/{item['subreddit_name']} - {item['post_title']}"
+                ),
+                discord.Color.orange(),
+                guild_id=notify_channel.guild.id,
+            )
+            record_action_safe(
+                action="reddit_feed_notify",
+                status="success",
+                moderator="system",
+                target=f"{notify_channel.name} ({notify_channel.id})",
+                reason=truncate_log_text(f"r/{item['subreddit_name']} - {item['post_title']}"),
+                guild=str(notify_channel.guild.id),
+            )
+        latest = posts[0] if posts else None
+        ACTION_STORE.update_reddit_feed_state(
+            feed_id,
+            last_checked_at=checked_at,
+            last_post_id=latest["post_id"] if latest else None,
+            last_post_title=latest["post_title"] if latest else None,
+            last_post_url=latest["post_url"] if latest else None,
+            last_published_at=latest["published_at"] if latest else None,
         )
-        description = (
-            f"Action: `youtube_notify`\n"
-            f"Status: **Success**\n"
-            f"Guild: {notify_channel.guild.id}\n"
-            f"Target: {notify_channel.mention} ({notify_channel.id})\n"
-            f"Reason: {latest['channel_title']} - {latest['video_title']}"
+
+    async def poll_wordpress_feeds(self) -> None:
+        feeds = ACTION_STORE.list_wordpress_feeds(enabled_only=True)
+        if not feeds:
+            return
+        for feed in feeds:
+            await self._process_wordpress_feed(feed)
+
+    async def _process_wordpress_feed(self, feed: dict) -> None:
+        feed_id = int(feed.get("id", 0))
+        site_url = str(feed.get("site_url", "")).strip()
+        target_channel_id = int(feed.get("target_channel_id", 0))
+        if feed_id <= 0 or not site_url or target_channel_id <= 0:
+            return
+        if not subscription_due(feed.get("last_checked_at"), feed.get("poll_interval_seconds")):
+            return
+        checked_at = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
+        notify_channel = await get_text_channel(self, target_channel_id)
+        if notify_channel is None:
+            logger.warning("Notify channel %s not found for WordPress feed %s", target_channel_id, feed_id)
+            ACTION_STORE.update_wordpress_feed_state(feed_id, last_checked_at=checked_at)
+            return
+        try:
+            payload = await asyncio.to_thread(fetch_recent_wordpress_posts, site_url, 10)
+        except RuntimeError as exc:
+            logger.warning("Unable to fetch WordPress feed for %s: %s", site_url, exc)
+            ACTION_STORE.update_wordpress_feed_state(feed_id, last_checked_at=checked_at)
+            return
+        posts = payload.get("posts", []) if isinstance(payload, dict) else []
+        last_post_id = str(feed.get("last_post_id", "")).strip()
+        new_posts: list[dict] = []
+        for item in posts:
+            if str(item.get("post_id", "")).strip() == last_post_id:
+                break
+            new_posts.append(item)
+        site_title = str(payload.get("site_title", "")).strip() or str(feed.get("site_title", "WordPress Site")).strip()
+        for item in reversed(new_posts):
+            post_title = str(item.get("post_title", "Untitled Post")).strip()
+            post_url = str(item.get("post_url", site_url)).strip() or site_url
+            embed = discord.Embed(
+                title=f"New WordPress post from {site_title}",
+                description=f"[{post_title}]({post_url})",
+                color=discord.Color.blue(),
+            )
+            embed.set_footer(text="WordPress Feed")
+            await notify_channel.send(embed=embed)
+            await log_action(
+                self,
+                "WordPress Feed Notification",
+                (
+                    f"Action: `wordpress_feed_notify`\nStatus: **Success**\nGuild: {notify_channel.guild.id}\n"
+                    f"Target: {notify_channel.mention} ({notify_channel.id})\nReason: {site_title} - {post_title}"
+                ),
+                discord.Color.blue(),
+                guild_id=notify_channel.guild.id,
+            )
+            record_action_safe(
+                action="wordpress_feed_notify",
+                status="success",
+                moderator="system",
+                target=f"{notify_channel.name} ({notify_channel.id})",
+                reason=truncate_log_text(f"{site_title} - {post_title}"),
+                guild=str(notify_channel.guild.id),
+            )
+        latest = posts[0] if posts else None
+        ACTION_STORE.update_wordpress_feed_state(
+            feed_id,
+            last_checked_at=checked_at,
+            last_post_id=str(latest.get("post_id", "")) if latest else None,
+            last_post_title=str(latest.get("post_title", "")) if latest else None,
+            last_post_url=str(latest.get("post_url", "")) if latest else None,
+            last_published_at=str(latest.get("published_at", "")) if latest else None,
         )
-        await log_action(self, "YouTube Notification", description, discord.Color.red(), guild_id=notify_channel.guild.id)
-        record_action_safe(
-            action="youtube_notify",
-            status="success",
-            moderator="system",
-            target=f"{notify_channel.name} ({notify_channel.id})",
-            reason=truncate_log_text(f"{latest['channel_title']} - {latest['video_title']}"),
-            guild=str(notify_channel.guild.id),
+
+    async def poll_linkedin_feeds(self) -> None:
+        feeds = ACTION_STORE.list_linkedin_feeds(enabled_only=True)
+        if not feeds:
+            return
+        for feed in feeds:
+            await self._process_linkedin_feed(feed)
+
+    async def _process_linkedin_feed(self, feed: dict) -> None:
+        feed_id = int(feed.get("id", 0))
+        profile_url = str(feed.get("profile_url", "")).strip()
+        target_channel_id = int(feed.get("target_channel_id", 0))
+        if feed_id <= 0 or not profile_url or target_channel_id <= 0:
+            return
+        if not subscription_due(feed.get("last_checked_at"), feed.get("poll_interval_seconds")):
+            return
+        checked_at = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
+        notify_channel = await get_text_channel(self, target_channel_id)
+        if notify_channel is None:
+            logger.warning("Notify channel %s not found for LinkedIn feed %s", target_channel_id, feed_id)
+            ACTION_STORE.update_linkedin_feed_state(feed_id, last_checked_at=checked_at)
+            return
+        try:
+            payload = await asyncio.to_thread(fetch_recent_linkedin_posts, profile_url, 10)
+        except RuntimeError as exc:
+            logger.warning("Unable to fetch LinkedIn feed for %s: %s", profile_url, exc)
+            ACTION_STORE.update_linkedin_feed_state(feed_id, last_checked_at=checked_at)
+            return
+        posts = payload.get("posts", []) if isinstance(payload, dict) else []
+        last_post_id = str(feed.get("last_post_id", "")).strip()
+        new_posts: list[dict] = []
+        for item in posts:
+            if str(item.get("post_id", "")).strip() == last_post_id:
+                break
+            new_posts.append(item)
+        profile_label = str(payload.get("profile_label", "")).strip() or str(feed.get("profile_label", "LinkedIn Profile")).strip()
+        for item in reversed(new_posts):
+            post_title = str(item.get("post_title", "New LinkedIn post")).strip()
+            post_url = str(item.get("post_url", profile_url)).strip() or profile_url
+            embed = discord.Embed(
+                title=f"New LinkedIn post from {profile_label}",
+                description=f"[{post_title}]({post_url})",
+                color=discord.Color.dark_blue(),
+            )
+            embed.set_footer(text="LinkedIn Feed")
+            await notify_channel.send(embed=embed)
+            await log_action(
+                self,
+                "LinkedIn Feed Notification",
+                (
+                    f"Action: `linkedin_feed_notify`\nStatus: **Success**\nGuild: {notify_channel.guild.id}\n"
+                    f"Target: {notify_channel.mention} ({notify_channel.id})\nReason: {profile_label} - {post_title}"
+                ),
+                discord.Color.dark_blue(),
+                guild_id=notify_channel.guild.id,
+            )
+            record_action_safe(
+                action="linkedin_feed_notify",
+                status="success",
+                moderator="system",
+                target=f"{notify_channel.name} ({notify_channel.id})",
+                reason=truncate_log_text(f"{profile_label} - {post_title}"),
+                guild=str(notify_channel.guild.id),
+            )
+        latest = posts[0] if posts else None
+        ACTION_STORE.update_linkedin_feed_state(
+            feed_id,
+            last_checked_at=checked_at,
+            last_post_id=str(latest.get("post_id", "")) if latest else None,
+            last_post_title=str(latest.get("post_title", "")) if latest else None,
+            last_post_url=str(latest.get("post_url", "")) if latest else None,
+            last_published_at=str(latest.get("published_at", "")) if latest else None,
         )
 
 
@@ -1800,6 +2795,29 @@ def record_action_safe(
         )
     except Exception as exc:
         logger.exception("Failed to persist action log: %s", exc)
+
+
+def parse_stored_datetime(raw_value: object) -> datetime | None:
+    candidate = str(raw_value or "").strip()
+    if not candidate:
+        return None
+    for fmt in ("%Y-%m-%dT%H:%M:%S.%f%z", "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%d %H:%M:%S"):
+        try:
+            parsed = datetime.strptime(candidate, fmt)
+            if parsed.tzinfo is None:
+                return parsed.replace(tzinfo=UTC)
+            return parsed.astimezone(UTC)
+        except ValueError:
+            continue
+    return None
+
+
+def subscription_due(last_checked_at: object, interval_seconds: object) -> bool:
+    last_checked = parse_stored_datetime(last_checked_at)
+    if last_checked is None:
+        return True
+    interval = normalize_feed_interval_seconds(interval_seconds)
+    return datetime.now(UTC) >= (last_checked + timedelta(seconds=interval))
 
 
 async def reply_ephemeral(interaction: discord.Interaction, message: str) -> None:
