@@ -41,6 +41,162 @@ Response visibility for most slash commands is controlled by `COMMAND_RESPONSES_
   - Reply visibility follows `COMMAND_RESPONSES_EPHEMERAL`.
   - Logs success/failure to configured guild log channel (or global `Bot_Log_Channel` fallback) and SQLite action history.
 
+## `/cat`
+
+- Description: Post a random cat picture.
+- Parameters: none
+- Required user permissions: none
+- Bot action:
+  - Fetches an image from `CAT_IMAGE_API_URL`.
+  - Sends an embed with the image.
+  - Reply visibility follows `COMMAND_RESPONSES_EPHEMERAL`.
+  - Logs success/failure to configured guild log channel (or global `Bot_Log_Channel` fallback) and SQLite action history.
+
+## `/meme`
+
+- Description: Post a random meme.
+- Parameters: none
+- Required user permissions: none
+- Bot action:
+  - Fetches a meme from `MEME_API_URL`.
+  - Rejects NSFW responses.
+  - Sends an embed with title, subreddit, and image.
+  - Reply visibility follows `COMMAND_RESPONSES_EPHEMERAL`.
+  - Logs success/failure to configured guild log channel (or global `Bot_Log_Channel` fallback) and SQLite action history.
+
+## `/dadjoke`
+
+- Description: Return a random dad joke.
+- Parameters: none
+- Required user permissions: none
+- Bot action:
+  - Fetches a joke from `DAD_JOKE_API_URL`.
+  - Reply visibility follows `COMMAND_RESPONSES_EPHEMERAL`.
+  - Logs success/failure to configured guild log channel (or global `Bot_Log_Channel` fallback) and SQLite action history.
+
+## `/eightball`
+
+- Description: Ask the bot a question and get a random magic eight-ball answer.
+- Parameters:
+  - `question` (`str`)
+- Required user permissions: none
+- Bot action:
+  - Picks a random canned answer.
+  - Reply visibility follows `COMMAND_RESPONSES_EPHEMERAL`.
+  - Logs the interaction to configured guild log channel (or global `Bot_Log_Channel` fallback) and SQLite.
+
+## `/coinflip`
+
+- Description: Flip a coin.
+- Parameters: none
+- Required user permissions: none
+- Bot action:
+  - Randomly returns `Heads` or `Tails`.
+  - Reply visibility follows `COMMAND_RESPONSES_EPHEMERAL`.
+  - Logs the interaction to configured guild log channel (or global `Bot_Log_Channel` fallback) and SQLite.
+
+## `/roll`
+
+- Description: Roll dice with expressions like `1d20`, `2d6+3`, or `4d8-1`.
+- Parameters:
+  - `expression` (`str`, optional) - default: `1d20`
+- Required user permissions: none
+- Bot action:
+  - Validates dice count, sides, and modifier.
+  - Returns individual rolls, subtotal, modifier, and total.
+  - Reply visibility follows `COMMAND_RESPONSES_EPHEMERAL`.
+  - Logs success/failure to configured guild log channel (or global `Bot_Log_Channel` fallback) and SQLite action history.
+
+## `/choose`
+
+- Description: Pick one option from a comma-, pipe-, or newline-separated list.
+- Parameters:
+  - `options` (`str`)
+- Required user permissions: none
+- Bot action:
+  - Requires at least two options.
+  - Randomly chooses one and returns it.
+  - Reply visibility follows `COMMAND_RESPONSES_EPHEMERAL`.
+  - Logs success/failure to configured guild log channel (or global `Bot_Log_Channel` fallback) and SQLite action history.
+
+## `/roastme`
+
+- Description: Send a playful roast to you or an optionally selected member.
+- Parameters:
+  - `target` (`discord.Member`, optional)
+- Required user permissions: none
+- Bot action:
+  - Uses a light canned roast.
+  - Reply visibility follows `COMMAND_RESPONSES_EPHEMERAL`.
+  - Logs the interaction to configured guild log channel (or global `Bot_Log_Channel` fallback) and SQLite.
+
+## `/compliment`
+
+- Description: Send a compliment to you or an optionally selected member.
+- Parameters:
+  - `target` (`discord.Member`, optional)
+- Required user permissions: none
+- Bot action:
+  - Uses a canned compliment.
+  - Reply visibility follows `COMMAND_RESPONSES_EPHEMERAL`.
+  - Logs the interaction to configured guild log channel (or global `Bot_Log_Channel` fallback) and SQLite.
+
+## `/wisdom`
+
+- Description: Return a random Yoda-style line.
+- Parameters: none
+- Required user permissions: none
+- Bot action:
+  - Sends a short themed wisdom line.
+  - Reply visibility follows `COMMAND_RESPONSES_EPHEMERAL`.
+  - Logs the interaction to configured guild log channel (or global `Bot_Log_Channel` fallback) and SQLite.
+
+## `/gif`
+
+- Description: Post a reaction GIF for a selected theme.
+- Parameters:
+  - `theme` (`str`, optional) - one of `random`, `celebrate`, `laugh`, `hype`, `cute`
+- Required user permissions: none
+- Bot action:
+  - Uses a curated internal GIF library.
+  - Sends an embed with the selected GIF.
+  - Reply visibility follows `COMMAND_RESPONSES_EPHEMERAL`.
+  - Logs the interaction to configured guild log channel (or global `Bot_Log_Channel` fallback) and SQLite.
+
+## `/poll`
+
+- Description: Create a quick channel poll with two to ten options.
+- Parameters:
+  - `question` (`str`)
+  - `options` (`str`) - comma- or pipe-separated options
+- Required user permissions: none
+- Bot action:
+  - Posts the poll publicly in the channel.
+  - Attempts to add matching number reactions (`1️⃣`-`🔟`).
+  - Logs success/failure to configured guild log channel (or global `Bot_Log_Channel` fallback) and SQLite action history.
+
+## `/questionoftheday`
+
+- Description: Post a random conversation starter.
+- Parameters: none
+- Required user permissions: none
+- Bot action:
+  - Posts the prompt publicly in the channel.
+  - Logs the interaction to configured guild log channel (or global `Bot_Log_Channel` fallback) and SQLite.
+
+## `/countdown`
+
+- Description: Count down to a future date.
+- Parameters:
+  - `event` (`str`)
+  - `when` (`str`) - `YYYY-MM-DD` or `YYYY-MM-DD HH:MM`; UTC when no timezone is supplied
+- Required user permissions: none
+- Bot action:
+  - Parses the target date and shows remaining time.
+  - Rejects past dates or invalid formats.
+  - Reply visibility follows `COMMAND_RESPONSES_EPHEMERAL`.
+  - Logs success/failure to configured guild log channel (or global `Bot_Log_Channel` fallback) and SQLite action history.
+
 ## `/shorten`
 
 - Description: Create a short URL with the configured Shortipy instance.
@@ -100,6 +256,108 @@ Response visibility for most slash commands is controlled by `COMMAND_RESPONSES_
   - Summarizes the user's recent message activity from the internal activity tracker.
   - Includes activity windows for the recent `24h`, `7d`, `30d`, and `90d` periods when data is available.
   - Uses an ephemeral/private response so only the calling user sees the output.
+  - Logs success/failure to configured guild log channel (or global `Bot_Log_Channel` fallback) and SQLite action history.
+
+## `/leaderboard`
+
+- Description: Show the guild member activity leaderboard for a selected time window.
+- Parameters:
+  - `window` (`str`, optional) - one of `1d`, `7d`, `30d`, `90d`
+- Required user permissions: none
+- Bot action:
+  - Uses the internal member activity tracker.
+  - Excludes bots and moderator-ranked members from the leaderboard output.
+  - Reply visibility follows `COMMAND_RESPONSES_EPHEMERAL`.
+  - Logs success/failure to configured guild log channel (or global `Bot_Log_Channel` fallback) and SQLite action history.
+
+## `/trivia`
+
+- Description: Get a random trivia question.
+- Parameters: none
+- Required user permissions: none
+- Bot action:
+  - Sends a multiple-choice trivia prompt.
+  - Includes the answer behind Discord spoiler formatting.
+  - Reply visibility follows `COMMAND_RESPONSES_EPHEMERAL`.
+  - Logs the interaction to configured guild log channel (or global `Bot_Log_Channel` fallback) and SQLite.
+
+## `/wouldyourather`
+
+- Description: Get a random would-you-rather prompt.
+- Parameters: none
+- Required user permissions: none
+- Bot action:
+  - Sends a themed prompt.
+  - Reply visibility follows `COMMAND_RESPONSES_EPHEMERAL`.
+  - Logs the interaction to configured guild log channel (or global `Bot_Log_Channel` fallback) and SQLite.
+
+## `/rps`
+
+- Description: Play rock-paper-scissors against the bot.
+- Parameters:
+  - `choice` (`str`) - `rock`, `paper`, or `scissors`
+- Required user permissions: none
+- Bot action:
+  - Randomly picks the bot's throw.
+  - Reports win, loss, or tie.
+  - Reply visibility follows `COMMAND_RESPONSES_EPHEMERAL`.
+  - Logs the interaction to configured guild log channel (or global `Bot_Log_Channel` fallback) and SQLite.
+
+## `/guess`
+
+- Description: Play the guild guessing game.
+- Parameters:
+  - `number` (`int`, optional) - guess between `1` and `100`
+- Required user permissions: none
+- Bot action:
+  - Maintains one active guessing game per guild in SQLite.
+  - Starts a new game automatically when needed.
+  - Returns higher/lower hints and resets the game after a correct guess.
+  - Reply visibility follows `COMMAND_RESPONSES_EPHEMERAL`.
+  - Logs success/failure to configured guild log channel (or global `Bot_Log_Channel` fallback) and SQLite action history.
+
+## `/birthday set`
+
+- Description: Store your birthday for the current guild.
+- Parameters:
+  - `date` (`str`) - `MM-DD`, `MM/DD`, or `YYYY-MM-DD`
+- Required user permissions: none
+- Bot action:
+  - Stores month/day in SQLite for the current guild and user.
+  - Returns the next upcoming occurrence date.
+  - Reply visibility follows `COMMAND_RESPONSES_EPHEMERAL`.
+  - Logs success/failure to configured guild log channel (or global `Bot_Log_Channel` fallback) and SQLite action history.
+
+## `/birthday view`
+
+- Description: View a stored birthday.
+- Parameters:
+  - `member` (`discord.Member`, optional) - defaults to the caller
+- Required user permissions: none
+- Bot action:
+  - Returns the stored birthday and next occurrence date for the selected member.
+  - Reply visibility follows `COMMAND_RESPONSES_EPHEMERAL`.
+  - Logs success/failure to configured guild log channel (or global `Bot_Log_Channel` fallback) and SQLite action history.
+
+## `/birthday upcoming`
+
+- Description: Show upcoming birthdays for the current guild.
+- Parameters:
+  - `days` (`int`, optional) - future lookahead window, default `30`
+- Required user permissions: none
+- Bot action:
+  - Lists upcoming birthdays from SQLite for the selected guild.
+  - Reply visibility follows `COMMAND_RESPONSES_EPHEMERAL`.
+  - Logs success/failure to configured guild log channel (or global `Bot_Log_Channel` fallback) and SQLite action history.
+
+## `/birthday remove`
+
+- Description: Remove your stored birthday.
+- Parameters: none
+- Required user permissions: none
+- Bot action:
+  - Deletes the caller's birthday for the current guild from SQLite.
+  - Reply visibility follows `COMMAND_RESPONSES_EPHEMERAL`.
   - Logs success/failure to configured guild log channel (or global `Bot_Log_Channel` fallback) and SQLite action history.
 
 ## `/help`

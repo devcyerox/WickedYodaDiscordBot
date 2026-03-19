@@ -34,6 +34,10 @@ Set these in `env.env`:
 - `COMMAND_RESPONSES_EPHEMERAL` - set `false` for public command replies, `true` for user-only (ephemeral) replies
 - `PUPPY_IMAGE_API_URL` - API endpoint used by `/happy` for random puppy images
 - `PUPPY_IMAGE_TIMEOUT_SECONDS` - timeout for puppy image API requests
+- `FUN_API_TIMEOUT_SECONDS` - timeout for fun command APIs (`/cat`, `/meme`, `/dadjoke`)
+- `CAT_IMAGE_API_URL` - API endpoint used by `/cat`
+- `MEME_API_URL` - API endpoint used by `/meme`
+- `DAD_JOKE_API_URL` - API endpoint used by `/dadjoke`
 - `SHORTENER_ENABLED` - enable Shortipy integration commands (`/shorten`, `/expand`)
 - `SHORTENER_BASE_URL` - Shortipy base URL (example: `https://l.twy4.us`)
 - `SHORTENER_TIMEOUT_SECONDS` - timeout for Shortipy requests
@@ -85,6 +89,29 @@ WEB_TLS_PORT=8081
 - `/ping`
 - `/sayhi`
 - `/happy`
+- `/cat`
+- `/meme`
+- `/dadjoke`
+- `/eightball`
+- `/coinflip`
+- `/roll`
+- `/choose`
+- `/roastme`
+- `/compliment`
+- `/wisdom`
+- `/gif`
+- `/poll`
+- `/questionoftheday`
+- `/countdown`
+- `/birthday set`
+- `/birthday view`
+- `/birthday upcoming`
+- `/birthday remove`
+- `/leaderboard`
+- `/trivia`
+- `/wouldyourather`
+- `/rps`
+- `/guess`
 - `/help`
 - `/tags`
 - `/tag`
