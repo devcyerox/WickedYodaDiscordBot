@@ -11,6 +11,7 @@ Project wiki files live in [`wiki/`](wiki/).
 - [`wiki/Feed-Integrations.md`](wiki/Feed-Integrations.md) - web-managed Reddit, WordPress, LinkedIn, and YouTube feeds
 - [`wiki/Multi-Guild-and-Env.md`](wiki/Multi-Guild-and-Env.md) - multi-guild behavior and environment variable patterns
 - [`wiki/Web-Admin-Interface.md`](wiki/Web-Admin-Interface.md) - web GUI authentication, pages, and security controls
+- [`wiki/Security-Hardening.md`](wiki/Security-Hardening.md) - runtime and verification hardening details
 
 When adding or changing a bot command, update `wiki/Command-Reference.md` in the same pull request.
 
@@ -91,6 +92,7 @@ WEB_TLS_PORT=8081
 - `/expand`
 - `/uptime`
 - `/logs`
+- `/stats`
 - `/kick`
 - `/ban`
 - `/timeout`
@@ -104,6 +106,11 @@ Detailed command behavior, parameters, and permission requirements are documente
 
 All command actions (success/failure) are logged to per-guild configured log channel, or `Bot_Log_Channel` when set.
 All actions are also written to SQLite and visible in the web GUI.
+
+Member message activity is also recorded internally and exposed through:
+
+- `/stats` for a private per-user activity summary in Discord
+- `/admin/member-activity` for guild activity rankings and export in the web GUI
 
 SQLite storage is internal to the container at `/app/data/mod_actions.db`.
 
@@ -122,6 +129,9 @@ SQLite storage is internal to the container at `/app/data/mod_actions.db`.
   - Dashboard (`/admin`)
   - Status (`/admin/status`)
   - Action history (`/admin/actions`)
+  - Member activity (`/admin/member-activity`)
+    - per-guild message activity leaderboards for `24h`, `7d`, `30d`, and `90d`
+    - ZIP export for guild activity data, optionally filtered by role
   - Reddit feeds (`/admin/reddit`)
   - WordPress feeds (`/admin/wordpress`)
   - LinkedIn feeds (`/admin/linkedin`)

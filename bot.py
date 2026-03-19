@@ -207,7 +207,11 @@ COMMAND_PERMISSION_METADATA: dict[str, dict[str, str]] = {
     "expand": {"label": "/expand", "description": "Expand short URL", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
     "uptime": {"label": "/uptime", "description": "Uptime monitor summary", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
     "logs": {"label": "/logs", "description": "Read recent error logs", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR},
-    "stats": {"label": "/stats", "description": "Your private activity summary", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
+    "stats": {
+        "label": "/stats",
+        "description": "Your private activity summary",
+        "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
+    },
     "help": {"label": "/help", "description": "Command overview", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
     "tags": {"label": "/tags", "description": "List configured tags", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
     "tag": {"label": "/tag", "description": "Post a configured tag", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
@@ -2275,7 +2279,9 @@ def record_member_message_activity(message: discord.Message) -> bool:
     )
 
 
-def list_member_activity_top_window(guild_id: int | None, window_key: str, *, limit: int = MEMBER_ACTIVITY_WEB_TOP_LIMIT, role_id: int | None = None) -> list[dict]:
+def list_member_activity_top_window(
+    guild_id: int | None, window_key: str, *, limit: int = MEMBER_ACTIVITY_WEB_TOP_LIMIT, role_id: int | None = None
+) -> list[dict]:
     safe_guild_id = require_managed_guild_id(guild_id, context="member activity guild")
     window_spec = next((item for item in MEMBER_ACTIVITY_WINDOW_SPECS if item[0] == window_key), None)
     if window_spec is None:
@@ -2334,7 +2340,9 @@ def build_member_activity_web_payload(guild_id: int, role_id: int | None = None)
             {
                 "key": window_key,
                 "label": label,
-                "members": list_member_activity_top_window(safe_guild_id, window_key, limit=MEMBER_ACTIVITY_WEB_TOP_LIMIT, role_id=safe_role_id),
+                "members": list_member_activity_top_window(
+                    safe_guild_id, window_key, limit=MEMBER_ACTIVITY_WEB_TOP_LIMIT, role_id=safe_role_id
+                ),
             }
         )
     return {
@@ -3777,6 +3785,45 @@ async def logs(interaction: discord.Interaction, lines: app_commands.Range[int, 
                 file=discord.File(io.BytesIO(log_tail.encode("utf-8")), filename=f"container_errors_last_{int(lines)}.log"),
             )
     await log_interaction(interaction, action="logs", reason=f"lines={int(lines)}", success=True)
+
+
+@bot.tree.command(name="stats", description="Show your private member activity stats.")
+async def stats(interaction: discord.Interaction) -> None:
+    if not await ensure_interaction_command_access(interaction, "stats"):
+        return
+    if interaction.guild is None:
+        await reply_ephemeral(interaction, "This command can only be used in a server.")
+        await log_interaction(interaction, action="stats", reason="No guild context", success=False)
+        return
+    try:
+        snapshot = get_member_activity_snapshot(interaction.guild.id, interaction.user.id)
+    except Exception as exc:
+        await reply_ephemeral(interaction, f"Failed to load your activity stats: {exc}")
+        await log_interaction(interaction, action="stats", reason=truncate_log_text(str(exc)), success=False)
+        return
+    windows = snapshot.get("windows", []) if isinstance(snapshot, dict) else []
+    if not windows:
+        await reply_ephemeral(interaction, "No member activity has been recorded for you in this server yet.")
+        await log_interaction(interaction, action="stats", reason="no activity", success=True)
+        return
+    display_name = str(snapshot.get("display_name") or interaction.user.display_name or interaction.user.name)
+    lines = [
+        "Your Activity Stats",
+        f"Server: {interaction.guild.name}",
+        f"Member: {display_name}",
+        "",
+    ]
+    for index, window in enumerate(windows):
+        if index > 0:
+            lines.append("")
+        lines.append(format_member_activity_window_summary(window))
+    await reply_ephemeral(interaction, "\n".join(lines))
+    await log_interaction(
+        interaction,
+        action="stats",
+        reason=truncate_log_text(f"messages={sum(int(window.get('message_count') or 0) for window in windows)}"),
+        success=True,
+    )
 
 
 @bot.tree.command(name="help", description="Show available bot features.")

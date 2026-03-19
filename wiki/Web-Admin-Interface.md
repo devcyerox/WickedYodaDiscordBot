@@ -1,6 +1,6 @@
 # Web Admin Interface
 
-Last Updated: 2026-03-18
+Last Updated: 2026-03-19
 
 The web admin is served by `web_admin.py` and is mobile-friendly.
 
@@ -37,6 +37,7 @@ The web admin is served by `web_admin.py` and is mobile-friendly.
 - Dashboard: `/admin`
 - Status: `/admin/status`
 - Actions: `/admin/actions`
+- Member activity: `/admin/member-activity`
 - Reddit feeds: `/admin/reddit`
 - WordPress feeds: `/admin/wordpress`
 - LinkedIn feeds: `/admin/linkedin`
@@ -55,6 +56,15 @@ The web admin is served by `web_admin.py` and is mobile-friendly.
   - Update bot username
   - Update or clear guild nickname
   - Upload bot avatar (`WEB_AVATAR_MAX_UPLOAD_BYTES`)
+
+## Member Activity
+
+The web GUI includes a guild-scoped member activity view at `/admin/member-activity`.
+
+- Shows message activity rankings for `24h`, `7d`, `30d`, and `90d` windows
+- Supports optional filtering by Discord role
+- Exposes ZIP export for the selected guild and role filter
+- Uses internally tracked message activity stored in SQLite
 
 ## Public Status
 
