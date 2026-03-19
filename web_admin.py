@@ -2754,9 +2754,8 @@ def create_app(
                 if existing_admin_user is None:
                     raise RuntimeError(f"WEB_ADMIN_DEFAULT_PASSWORD does not meet policy: {password_policy_error}")
                 app.logger.warning(
-                    "WEB_ADMIN_DEFAULT_PASSWORD is set but does not meet policy; ignoring it for existing admin user %s: %s",
+                    "WEB_ADMIN_DEFAULT_PASSWORD is set but does not meet policy; ignoring it for existing admin user %s.",
                     admin_user,
-                    password_policy_error,
                 )
                 admin_password = None
             else:
