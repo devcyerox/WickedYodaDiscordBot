@@ -63,7 +63,7 @@ Set these in `env.env`:
 - `WEB_ENFORCE_SAME_ORIGIN_POSTS` - block cross-origin POST requests (`true`/`false`)
 - `WEB_RESTART_ENABLED` - allow admin-triggered container restart from web GUI (`true`/`false`)
 - `DATA_DIR` - when using the shipped Docker Compose example, host-side bind path for persistent bot data (example: `/root/docker/wickedyodabot`)
-- `LOG_DIR` - optional override for log file directory shown in web GUI Logs page
+- `LOG_DIR` - when using the shipped Docker Compose example, host-side bind path for persistent bot logs (example: `/root/docker/wickedyodabot/log`)
 - `WEB_ENV_FILE` - optional path to env file used by web GUI settings editor (default: `./env.env`)
 - `WEB_GITHUB_WIKI_URL` - optional external wiki URL button in the web GUI Wiki page
 
@@ -244,7 +244,8 @@ docker compose --env-file env.env up -d
 ```
 
 The shipped Compose example bind-mounts `${DATA_DIR:-/root/docker/wickedyodabot}` on the host to `/app/data` inside the container.
-`docker-compose.yml` overrides the bot's in-container `DATA_DIR` back to `/app/data`, so the bot still stores SQLite and logs under the mounted path inside the container.
+It also bind-mounts `${LOG_DIR:-/root/docker/wickedyodabot/log}` on the host to `/app/log` inside the container.
+`docker-compose.yml` overrides the bot's in-container `DATA_DIR` to `/app/data` and `LOG_DIR` to `/app/log`.
 
 ## Docker Image Publish (GitHub Packages / GHCR)
 

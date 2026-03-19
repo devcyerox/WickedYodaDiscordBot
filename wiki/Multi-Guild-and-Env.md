@@ -17,10 +17,12 @@ Last Updated: 2026-03-19
 ## Storage Paths
 
 - In the shipped Docker Compose example, `DATA_DIR` in `env.env` is the host-side bind path for persistent data.
-- `docker-compose.yml` overrides the bot's in-container `DATA_DIR` to `/app/data`.
+- In the shipped Docker Compose example, `LOG_DIR` in `env.env` is the host-side bind path for persistent logs.
+- `docker-compose.yml` overrides the bot's in-container `DATA_DIR` to `/app/data` and `LOG_DIR` to `/app/log`.
 - `ACTION_DB_PATH` defaults to the in-container `DATA_DIR/mod_actions.db` when unset.
-- `LOG_DIR` defaults under the in-container `DATA_DIR` when unset or invalid.
+- `LOG_DIR` defaults under the in-container `DATA_DIR` when unset or invalid, but the shipped Compose example pins it to `/app/log`.
 - The shipped `docker-compose.yml` example bind-mounts `${DATA_DIR:-/root/docker/wickedyodabot}` to `/app/data`.
+- The shipped `docker-compose.yml` example bind-mounts `${LOG_DIR:-/root/docker/wickedyodabot/log}` to `/app/log`.
 - Start Compose with `docker compose --env-file env.env up -d` so the bind path comes from `env.env`.
 
 ## How Guild Selection Works
@@ -63,6 +65,7 @@ WEB_PORT=8080
 WEB_TLS_ENABLED=true
 WEB_TLS_PORT=8081
 DATA_DIR=/root/docker/wickedyodabot
+LOG_DIR=/root/docker/wickedyodabot/log
 ```
 
 ## Single-Guild Legacy Example
@@ -76,4 +79,5 @@ WEB_PORT=8080
 WEB_TLS_ENABLED=true
 WEB_TLS_PORT=8081
 DATA_DIR=/root/docker/wickedyodabot
+LOG_DIR=/root/docker/wickedyodabot/log
 ```
