@@ -66,6 +66,7 @@ Whenever a web-managed automation or admin capability is added or changed:
 1. Update [Feed Integrations](./Feed-Integrations.md) if the change affects background notifications.
 2. Update [Web Admin Interface](./Web-Admin-Interface.md) if the change affects the GUI, auth, or account management.
 3. Update [Multi-Guild and Env Setup](./Multi-Guild-and-Env.md) if new env vars or guild-scoped behaviors are introduced.
+4. Update the shipped examples (`env.env`, `docker-compose.yml`) when container paths or runtime storage defaults change.
 
 Whenever activity reporting or analytics views change:
 
