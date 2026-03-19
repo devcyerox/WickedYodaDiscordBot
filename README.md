@@ -62,7 +62,7 @@ Set these in `env.env`:
 - `WEB_ENFORCE_CSRF` - enforce CSRF token checks on POST routes (`true`/`false`)
 - `WEB_ENFORCE_SAME_ORIGIN_POSTS` - block cross-origin POST requests (`true`/`false`)
 - `WEB_RESTART_ENABLED` - allow admin-triggered container restart from web GUI (`true`/`false`)
-- `DATA_DIR` - persistent internal data directory for SQLite, member activity, feed state, and runtime logs (recommended: `/app/data`)
+- `DATA_DIR` - when using the shipped Docker Compose example, host-side bind path for persistent bot data (example: `/root/docker/wickedyodabot`)
 - `LOG_DIR` - optional override for log file directory shown in web GUI Logs page
 - `WEB_ENV_FILE` - optional path to env file used by web GUI settings editor (default: `./env.env`)
 - `WEB_GITHUB_WIKI_URL` - optional external wiki URL button in the web GUI Wiki page
@@ -240,12 +240,11 @@ GitHub workflows included:
 ## Run With Docker Compose
 
 ```bash
-docker compose up -d
+docker compose --env-file env.env up -d
 ```
 
-Compose mounts a persistent writable volume at the configured `DATA_DIR` path for SQLite and log files.
-[`docker-compose.yml`](docker-compose.yml) uses `${DATA_DIR:-/app/data}` for the container mount target, but Docker Compose resolves that from the shell or `.env`, not from `env.env`.
-Keep the `DATA_DIR` value in `env.env` and the Compose mount target aligned.
+The shipped Compose example bind-mounts `${DATA_DIR:-/root/docker/wickedyodabot}` on the host to `/app/data` inside the container.
+`docker-compose.yml` overrides the bot's in-container `DATA_DIR` back to `/app/data`, so the bot still stores SQLite and logs under the mounted path inside the container.
 
 ## Docker Image Publish (GitHub Packages / GHCR)
 
