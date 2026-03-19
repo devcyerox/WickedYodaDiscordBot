@@ -1,6 +1,6 @@
 # Command Reference
 
-Last Updated: 2026-03-18
+Last Updated: 2026-03-19
 
 Guild-scoped slash commands currently registered in `bot.py`.
 
@@ -89,6 +89,17 @@ Response visibility for most slash commands is controlled by `COMMAND_RESPONSES_
   - Reads latest lines from runtime error log file.
   - Sends inline code block when short enough, otherwise sends as a file attachment.
   - Reply visibility follows `COMMAND_RESPONSES_EPHEMERAL`.
+  - Logs success/failure to configured guild log channel (or global `Bot_Log_Channel` fallback) and SQLite action history.
+
+## `/stats`
+
+- Description: Show the calling user's private message activity summary for the current guild.
+- Parameters: none
+- Required user permissions: none
+- Bot action:
+  - Summarizes the user's recent message activity from the internal activity tracker.
+  - Includes activity windows for the recent `24h`, `7d`, `30d`, and `90d` periods when data is available.
+  - Uses an ephemeral/private response so only the calling user sees the output.
   - Logs success/failure to configured guild log channel (or global `Bot_Log_Channel` fallback) and SQLite action history.
 
 ## `/help`

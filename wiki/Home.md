@@ -1,8 +1,10 @@
 # WickedYoda's Little Helper Wiki
 
-Last Updated: 2026-03-18
+Last Updated: 2026-03-19
 
 This folder contains internal project wiki docs for bot operations, command behavior, feed automation, and web admin usage.
+
+Current feature areas include moderation commands, feed automation, guild-scoped member activity reporting, and the multi-guild web admin portal.
 
 ## Pages
 
@@ -27,6 +29,7 @@ This folder contains internal project wiki docs for bot operations, command beha
   - `/admin/guilds`
   - `/admin/status`
   - `/admin/actions`
+  - `/admin/member-activity`
   - `/admin/reddit`
   - `/admin/wordpress`
   - `/admin/linkedin`
@@ -63,6 +66,11 @@ Whenever a web-managed automation or admin capability is added or changed:
 1. Update [Feed Integrations](./Feed-Integrations.md) if the change affects background notifications.
 2. Update [Web Admin Interface](./Web-Admin-Interface.md) if the change affects the GUI, auth, or account management.
 3. Update [Multi-Guild and Env Setup](./Multi-Guild-and-Env.md) if new env vars or guild-scoped behaviors are introduced.
+
+Whenever activity reporting or analytics views change:
+
+1. Update [Command Reference](./Command-Reference.md) if `/stats` behavior changes.
+2. Update [Web Admin Interface](./Web-Admin-Interface.md) if `/admin/member-activity` layout, export, or permissions change.
 
 ## Source Of Truth
 

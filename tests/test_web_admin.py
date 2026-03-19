@@ -1,6 +1,7 @@
 import io
 import re
 import sqlite3
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -586,6 +587,87 @@ def test_guilds_page_renders_managed_servers(tmp_path: Path, monkeypatch) -> Non
     assert b"Discord Servers" in response.data
     assert b"Alpha Guild" in response.data
     assert b"Beta Guild" in response.data
+
+
+def test_member_activity_page_renders_tables(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_USERNAME", "admin@example.com")
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_PASSWORD", "TestPass123!")
+
+    def get_member_activity(_guild_id: int, role_id: int | None = None) -> dict:
+        return {
+            "ok": True,
+            "top_limit": 20,
+            "selected_role_id": role_id or 0,
+            "windows": [
+                {
+                    "key": "7d",
+                    "label": "Last 7 Days",
+                    "members": [
+                        {
+                            "rank": 1,
+                            "user_id": 123,
+                            "display_name": "Member One",
+                            "username": "member1",
+                            "message_count": 42,
+                            "active_days": 5,
+                            "last_message_at": "2026-03-18T00:00:00+00:00",
+                        }
+                    ],
+                }
+            ],
+        }
+
+    def get_discord_catalog(_guild_id: int) -> dict:
+        return {"ok": True, "roles": [{"id": 555, "name": "Community"}], "channels": []}
+
+    app = create_app(
+        str(tmp_path / "actions.db"),
+        _bot_snapshot,
+        get_discord_catalog=get_discord_catalog,
+        get_member_activity=get_member_activity,
+    )
+    client = app.test_client()
+    _login(client)
+
+    response = client.get("/admin/member-activity?role_id=555")
+
+    assert response.status_code == 200
+    assert b"Member Activity" in response.data
+    assert b"Last 7 Days" in response.data
+    assert b"Member One" in response.data
+    assert b"Community" in response.data
+
+
+def test_member_activity_export_downloads_zip(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_USERNAME", "admin@example.com")
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_PASSWORD", "TestPass123!")
+
+    archive_buffer = io.BytesIO()
+    with zipfile.ZipFile(archive_buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("summary.json", '{"ok":true}')
+
+    def export_member_activity(_guild_id: int, role_id: int | None = None) -> dict:
+        assert role_id == 555
+        return {
+            "ok": True,
+            "filename": "member_activity_test.zip",
+            "content_type": "application/zip",
+            "data": archive_buffer.getvalue(),
+        }
+
+    app = create_app(
+        str(tmp_path / "actions.db"),
+        _bot_snapshot,
+        export_member_activity=export_member_activity,
+    )
+    client = app.test_client()
+    _login(client)
+
+    response = client.get("/admin/member-activity/export?role_id=555")
+
+    assert response.status_code == 200
+    assert response.mimetype == "application/zip"
+    assert "member_activity_test.zip" in response.headers.get("Content-Disposition", "")
 
 
 def test_documentation_page_renders_selected_wiki_doc(tmp_path: Path, monkeypatch) -> None:

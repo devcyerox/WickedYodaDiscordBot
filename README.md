@@ -11,6 +11,7 @@ Project wiki files live in [`wiki/`](wiki/).
 - [`wiki/Feed-Integrations.md`](wiki/Feed-Integrations.md) - web-managed Reddit, WordPress, LinkedIn, and YouTube feeds
 - [`wiki/Multi-Guild-and-Env.md`](wiki/Multi-Guild-and-Env.md) - multi-guild behavior and environment variable patterns
 - [`wiki/Web-Admin-Interface.md`](wiki/Web-Admin-Interface.md) - web GUI authentication, pages, and security controls
+- [`wiki/Security-Hardening.md`](wiki/Security-Hardening.md) - runtime and verification hardening details
 
 When adding or changing a bot command, update `wiki/Command-Reference.md` in the same pull request.
 
@@ -55,7 +56,7 @@ Set these in `env.env`:
 - `WEB_ENFORCE_CSRF` - enforce CSRF token checks on POST routes (`true`/`false`)
 - `WEB_ENFORCE_SAME_ORIGIN_POSTS` - block cross-origin POST requests (`true`/`false`)
 - `WEB_RESTART_ENABLED` - allow admin-triggered container restart from web GUI (`true`/`false`)
-- `DATA_DIR` - persistent internal data directory for moderation action history (recommended: `/app/data`)
+- `DATA_DIR` - persistent internal data directory for SQLite, member activity, feed state, and runtime logs (recommended: `/app/data`)
 - `LOG_DIR` - optional override for log file directory shown in web GUI Logs page
 - `WEB_ENV_FILE` - optional path to env file used by web GUI settings editor (default: `./env.env`)
 - `WEB_GITHUB_WIKI_URL` - optional external wiki URL button in the web GUI Wiki page
@@ -91,6 +92,7 @@ WEB_TLS_PORT=8081
 - `/expand`
 - `/uptime`
 - `/logs`
+- `/stats`
 - `/kick`
 - `/ban`
 - `/timeout`
@@ -104,6 +106,11 @@ Detailed command behavior, parameters, and permission requirements are documente
 
 All command actions (success/failure) are logged to per-guild configured log channel, or `Bot_Log_Channel` when set.
 All actions are also written to SQLite and visible in the web GUI.
+
+Member message activity is also recorded internally and exposed through:
+
+- `/stats` for a private per-user activity summary in Discord
+- `/admin/member-activity` for guild activity rankings and export in the web GUI
 
 SQLite storage is internal to the container at `/app/data/mod_actions.db`.
 
@@ -122,6 +129,9 @@ SQLite storage is internal to the container at `/app/data/mod_actions.db`.
   - Dashboard (`/admin`)
   - Status (`/admin/status`)
   - Action history (`/admin/actions`)
+  - Member activity (`/admin/member-activity`)
+    - per-guild message activity leaderboards for `24h`, `7d`, `30d`, and `90d`
+    - ZIP export for guild activity data, optionally filtered by role
   - Reddit feeds (`/admin/reddit`)
   - WordPress feeds (`/admin/wordpress`)
   - LinkedIn feeds (`/admin/linkedin`)
@@ -205,6 +215,7 @@ docker compose up -d
 ```
 
 Compose mounts a persistent writable volume at `/app/data` for SQLite and log files.
+If you change `DATA_DIR` in `env.env`, update the container volume target in [`docker-compose.yml`](docker-compose.yml) to match.
 
 ## Docker Image Publish (GitHub Packages / GHCR)
 

@@ -1,3 +1,4 @@
+import io
 import json
 import logging
 import os
@@ -12,7 +13,7 @@ from functools import wraps
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 
-from flask import Flask, flash, redirect, render_template_string, request, session, url_for
+from flask import Flask, flash, redirect, render_template_string, request, send_file, session, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
 
 SENSITIVE_ENV_KEYS = {
@@ -1452,6 +1453,7 @@ PAGE_TEMPLATE = """
           <li class="nav-item"><a class="nav-link" href="{{ url_for('guilds_page') }}">Servers</a></li>
           <li class="nav-item"><a class="nav-link" href="{{ url_for('dashboard') }}">Dashboard</a></li>
           <li class="nav-item"><a class="nav-link" href="{{ url_for('actions') }}">Actions</a></li>
+          <li class="nav-item"><a class="nav-link" href="{{ url_for('member_activity_page') }}">Member Activity</a></li>
           <li class="nav-item"><a class="nav-link" href="{{ url_for('reddit_feeds') }}">Reddit</a></li>
           <li class="nav-item"><a class="nav-link" href="{{ url_for('wordpress_feeds') }}">WordPress</a></li>
           <li class="nav-item"><a class="nav-link" href="{{ url_for('linkedin_feeds') }}">LinkedIn</a></li>
@@ -1475,6 +1477,7 @@ PAGE_TEMPLATE = """
             <option value="{{ url_for('guilds_page') }}">Servers</option>
             <option value="{{ url_for('dashboard') }}">Dashboard</option>
             <option value="{{ url_for('actions') }}">Actions</option>
+            <option value="{{ url_for('member_activity_page') }}">Member Activity</option>
             <option value="{{ url_for('reddit_feeds') }}">Reddit</option>
             <option value="{{ url_for('wordpress_feeds') }}">WordPress</option>
             <option value="{{ url_for('linkedin_feeds') }}">LinkedIn</option>
@@ -1838,6 +1841,64 @@ PAGE_TEMPLATE = """
             </tbody>
           </table>
         </div>
+      </div>
+    {% elif page == "member_activity" %}
+      <div class="card card-soft p-3 mb-3">
+        <div class="d-flex flex-column flex-lg-row justify-content-between align-items-lg-end gap-3">
+          <div>
+            <h1 class="h5 mb-2">Member Activity</h1>
+            <p class="text-secondary mb-0">Top {{ member_activity.top_limit }} eligible members by message activity for the selected guild across rolling time windows.</p>
+          </div>
+          <div class="d-flex flex-column flex-sm-row gap-2">
+            <form method="get" action="{{ url_for('member_activity_page') }}" class="d-flex flex-column flex-sm-row gap-2">
+              <select class="form-select" name="role_id" onchange="this.form.submit()">
+                {% for option in member_activity_role_options %}
+                <option value="{{ option.value }}" {% if option.value == member_activity.selected_role_id %}selected{% endif %}>{{ option.label }}</option>
+                {% endfor %}
+              </select>
+            </form>
+            {% if member_activity_export_enabled %}
+            <a class="btn btn-outline-primary" href="{{ url_for('member_activity_export', role_id=member_activity.selected_role_id) if member_activity.selected_role_id else url_for('member_activity_export') }}">Download ZIP Export</a>
+            {% endif %}
+          </div>
+        </div>
+        {% if member_activity.error %}
+        <p class="small text-danger mt-3 mb-0">{{ member_activity.error }}</p>
+        {% else %}
+        <p class="small text-secondary mt-3 mb-0">Current filter: <strong>{{ member_activity.selected_role_label }}</strong>. Moderator-style accounts are excluded from rankings.</p>
+        {% endif %}
+      </div>
+      <div class="row g-3">
+        {% for window in member_activity.windows %}
+        <div class="col-12 col-xl-6">
+          <div class="card card-soft p-3 h-100">
+            <h2 class="h6 mb-3">{{ window.label }}</h2>
+            <div class="table-wrap">
+              <table class="table table-sm align-middle">
+                <thead><tr><th>Rank</th><th>Member</th><th>Messages</th><th>Active Days</th><th>Last Seen</th></tr></thead>
+                <tbody>
+                  {% for member in window.members %}
+                  <tr>
+                    <td>{{ member.rank }}</td>
+                    <td class="small">
+                      <div class="fw-semibold">{{ member.display_name or member.username or member.user_id }}</div>
+                      {% if member.username and member.username != member.display_name %}
+                      <div class="text-secondary">{{ member.username }}</div>
+                      {% endif %}
+                    </td>
+                    <td>{{ member.message_count }}</td>
+                    <td>{{ member.active_days }}</td>
+                    <td class="small">{{ member.last_message_at or "n/a" }}</td>
+                  </tr>
+                  {% else %}
+                  <tr><td colspan="5" class="text-secondary">No member activity recorded in this window yet.</td></tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+        {% endfor %}
       </div>
     {% elif page == "youtube" %}
       <div class="card card-soft p-3 mb-3">
@@ -2690,6 +2751,8 @@ def create_app(
     get_bot_profile: Callable[[int], dict] | Callable[[], dict] | None = None,
     update_bot_profile: Callable[[dict, str, int], dict] | Callable[[dict, str], dict] | None = None,
     update_bot_avatar: Callable[[bytes, str, str, int], dict] | Callable[[bytes, str, str], dict] | None = None,
+    get_member_activity: Callable[[int, int | None], dict] | Callable[[int], dict] | None = None,
+    export_member_activity: Callable[[int, int | None], dict] | Callable[[int], dict] | None = None,
     request_restart: Callable[[str], dict] | None = None,
     resolve_youtube_subscription: Callable[[str], dict] | None = None,
     resolve_youtube_community_seed: Callable[[str], dict] | None = None,
@@ -2754,9 +2817,8 @@ def create_app(
                 if existing_admin_user is None:
                     raise RuntimeError(f"WEB_ADMIN_DEFAULT_PASSWORD does not meet policy: {password_policy_error}")
                 app.logger.warning(
-                    "WEB_ADMIN_DEFAULT_PASSWORD is set but does not meet policy; ignoring it for existing admin user %s: %s",
+                    "WEB_ADMIN_DEFAULT_PASSWORD is set but does not meet policy; ignoring it for existing admin user %s.",
                     admin_user,
-                    password_policy_error,
                 )
                 admin_password = None
             else:
@@ -3018,6 +3080,28 @@ def create_app(
             return update_bot_avatar(payload, filename, actor)  # type: ignore[misc]
         except TypeError:
             return {"ok": False, "error": "Bot avatar update callback could not be called."}
+
+    def _call_get_member_activity(guild_id: int | None, role_id: int | None = None) -> dict:
+        if guild_id is None or not callable(get_member_activity):
+            return {"ok": False, "error": "Member activity callback is not configured."}
+        try:
+            return get_member_activity(guild_id, role_id)  # type: ignore[misc]
+        except TypeError:
+            try:
+                return get_member_activity(guild_id)  # type: ignore[misc]
+            except TypeError:
+                return {"ok": False, "error": "Member activity callback could not be called."}
+
+    def _call_export_member_activity(guild_id: int | None, role_id: int | None = None) -> dict:
+        if guild_id is None or not callable(export_member_activity):
+            return {"ok": False, "error": "Member activity export callback is not configured."}
+        try:
+            return export_member_activity(guild_id, role_id)  # type: ignore[misc]
+        except TypeError:
+            try:
+                return export_member_activity(guild_id)  # type: ignore[misc]
+            except TypeError:
+                return {"ok": False, "error": "Member activity export callback could not be called."}
 
     def _call_request_restart(actor: str) -> dict:
         if not callable(request_restart):
@@ -3669,6 +3753,7 @@ def create_app(
             "dashboard",
             "status_page",
             "actions",
+            "member_activity_page",
             "reddit_feeds",
             "wordpress_feeds",
             "linkedin_feeds",
@@ -3714,6 +3799,63 @@ def create_app(
             "Moderation Action History",
             actions=_fetch_actions(db_path, limit=300, guild_id=selected_guild_id),
         )
+
+    @app.get("/admin/member-activity")
+    @login_required
+    def member_activity_page():
+        selected_guild_id, _, selected_guild_name = _selected_guild_context()
+        raw_role_id = str(request.args.get("role_id", "")).strip()
+        selected_role_id = int(raw_role_id) if raw_role_id.isdigit() and int(raw_role_id) > 0 else None
+        payload = _call_get_member_activity(selected_guild_id, selected_role_id)
+        catalog_payload = _call_get_discord_catalog(selected_guild_id)
+        role_options = [{"value": "", "label": "All eligible members"}]
+        if isinstance(catalog_payload, dict) and catalog_payload.get("ok"):
+            for role in catalog_payload.get("roles", []) or []:
+                role_id_value = str(role.get("id") or "").strip()
+                role_name = str(role.get("name") or "").strip()
+                if not role_id_value or not role_name:
+                    continue
+                role_options.append({"value": role_id_value, "label": role_name})
+        selected_role_label = "All eligible members"
+        for option in role_options:
+            if option["value"] == (str(selected_role_id) if selected_role_id else ""):
+                selected_role_label = option["label"]
+                break
+        member_activity_payload = {
+            "windows": payload.get("windows", []) if isinstance(payload, dict) else [],
+            "error": str(payload.get("error") or "") if isinstance(payload, dict) and not payload.get("ok") else "",
+            "top_limit": int(payload.get("top_limit") or 20) if isinstance(payload, dict) else 20,
+            "selected_role_id": str(selected_role_id or ""),
+            "selected_role_label": selected_role_label,
+            "guild_name": selected_guild_name,
+        }
+        return _render_page(
+            "member_activity",
+            "Member Activity",
+            member_activity=member_activity_payload,
+            member_activity_role_options=role_options,
+            member_activity_export_enabled=callable(export_member_activity),
+        )
+
+    @app.get("/admin/member-activity/export")
+    @login_required
+    def member_activity_export():
+        selected_guild_id, _, _ = _selected_guild_context()
+        raw_role_id = str(request.args.get("role_id", "")).strip()
+        selected_role_id = int(raw_role_id) if raw_role_id.isdigit() and int(raw_role_id) > 0 else None
+        payload = _call_export_member_activity(selected_guild_id, selected_role_id)
+        if not isinstance(payload, dict) or not payload.get("ok"):
+            flash(
+                str(payload.get("error") or "Failed to export member activity.")
+                if isinstance(payload, dict)
+                else "Failed to export member activity.",
+                "danger",
+            )
+            return redirect(url_for("member_activity_page"))
+        file_name = str(payload.get("filename") or "member_activity.zip")
+        content_type = str(payload.get("content_type") or "application/octet-stream")
+        data = payload.get("data") or b""
+        return send_file(io.BytesIO(data), mimetype=content_type, as_attachment=True, download_name=file_name)
 
     @app.get("/admin/youtube")
     @login_required
@@ -4628,6 +4770,8 @@ def start_web_admin(
     get_bot_profile: Callable[[int], dict] | Callable[[], dict] | None = None,
     update_bot_profile: Callable[[dict, str, int], dict] | Callable[[dict, str], dict] | None = None,
     update_bot_avatar: Callable[[bytes, str, str, int], dict] | Callable[[bytes, str, str], dict] | None = None,
+    get_member_activity: Callable[[int, int | None], dict] | Callable[[int], dict] | None = None,
+    export_member_activity: Callable[[int, int | None], dict] | Callable[[int], dict] | None = None,
     request_restart: Callable[[str], dict] | None = None,
     resolve_youtube_subscription: Callable[[str], dict] | None = None,
     resolve_youtube_community_seed: Callable[[str], dict] | None = None,
@@ -4652,6 +4796,8 @@ def start_web_admin(
         get_bot_profile=get_bot_profile,
         update_bot_profile=update_bot_profile,
         update_bot_avatar=update_bot_avatar,
+        get_member_activity=get_member_activity,
+        export_member_activity=export_member_activity,
         request_restart=request_restart,
         resolve_youtube_subscription=resolve_youtube_subscription,
         resolve_youtube_community_seed=resolve_youtube_community_seed,
