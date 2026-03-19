@@ -7,6 +7,7 @@ import io
 import json
 import logging
 import os
+import random
 import re
 import sqlite3
 import tempfile
@@ -114,6 +115,10 @@ SHORTENER_ENABLED = env_bool("SHORTENER_ENABLED", False)
 SHORTENER_TIMEOUT_SECONDS = env_int("SHORTENER_TIMEOUT_SECONDS", 8)
 PUPPY_IMAGE_API_URL = os.getenv("PUPPY_IMAGE_API_URL", "https://dog.ceo/api/breeds/image/random").strip()
 PUPPY_IMAGE_TIMEOUT_SECONDS = env_int("PUPPY_IMAGE_TIMEOUT_SECONDS", 8)
+FUN_API_TIMEOUT_SECONDS = env_int("FUN_API_TIMEOUT_SECONDS", 8)
+CAT_IMAGE_API_URL = os.getenv("CAT_IMAGE_API_URL", "https://api.thecatapi.com/v1/images/search").strip()
+MEME_API_URL = os.getenv("MEME_API_URL", "https://meme-api.com/gimme").strip()
+DAD_JOKE_API_URL = os.getenv("DAD_JOKE_API_URL", "https://icanhazdadjoke.com/").strip()
 YOUTUBE_NOTIFY_ENABLED = env_bool("YOUTUBE_NOTIFY_ENABLED", True)
 YOUTUBE_POLL_INTERVAL_SECONDS = env_int("YOUTUBE_POLL_INTERVAL_SECONDS", 300)
 YOUTUBE_REQUEST_TIMEOUT_SECONDS = env_int("YOUTUBE_REQUEST_TIMEOUT_SECONDS", 12)
@@ -203,6 +208,57 @@ COMMAND_PERMISSION_METADATA: dict[str, dict[str, str]] = {
     "ping": {"label": "/ping", "description": "Health check", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
     "sayhi": {"label": "/sayhi", "description": "Bot introduction", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
     "happy": {"label": "/happy", "description": "Random puppy image", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
+    "cat": {"label": "/cat", "description": "Random cat image", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
+    "meme": {"label": "/meme", "description": "Random meme", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
+    "dadjoke": {"label": "/dadjoke", "description": "Random dad joke", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
+    "eightball": {"label": "/eightball", "description": "Magic eight-ball", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
+    "coinflip": {"label": "/coinflip", "description": "Flip a coin", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
+    "roll": {"label": "/roll", "description": "Roll dice", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
+    "choose": {"label": "/choose", "description": "Pick an option", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
+    "roastme": {"label": "/roastme", "description": "Playful roast", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
+    "compliment": {
+        "label": "/compliment",
+        "description": "Friendly compliment",
+        "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
+    },
+    "wisdom": {"label": "/wisdom", "description": "Yoda-style wisdom", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
+    "gif": {"label": "/gif", "description": "Reaction GIF", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
+    "poll": {"label": "/poll", "description": "Quick poll", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
+    "questionoftheday": {
+        "label": "/questionoftheday",
+        "description": "Conversation starter",
+        "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
+    },
+    "countdown": {"label": "/countdown", "description": "Countdown to a date", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
+    "leaderboard": {
+        "label": "/leaderboard",
+        "description": "Activity leaderboard",
+        "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
+    },
+    "trivia": {"label": "/trivia", "description": "Trivia question", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
+    "wouldyourather": {
+        "label": "/wouldyourather",
+        "description": "Would you rather prompt",
+        "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
+    },
+    "rps": {"label": "/rps", "description": "Rock paper scissors", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
+    "guess": {"label": "/guess", "description": "Guessing game", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
+    "birthday_set": {"label": "/birthday set", "description": "Set a birthday", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
+    "birthday_view": {
+        "label": "/birthday view",
+        "description": "View a birthday",
+        "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
+    },
+    "birthday_upcoming": {
+        "label": "/birthday upcoming",
+        "description": "List upcoming birthdays",
+        "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
+    },
+    "birthday_remove": {
+        "label": "/birthday remove",
+        "description": "Remove a birthday",
+        "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
+    },
     "shorten": {"label": "/shorten", "description": "Create short URL", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
     "expand": {"label": "/expand", "description": "Expand short URL", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
     "uptime": {"label": "/uptime", "description": "Uptime monitor summary", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
@@ -232,6 +288,106 @@ DEFAULT_TAG_RESPONSES = {
     "!rules": "Please review the server rules and pinned messages before posting.",
     "!support": "Need help? Open a support thread with details and device/version info.",
 }
+COUNTDOWN_INPUT_FORMATS = (
+    "%Y-%m-%d",
+    "%Y-%m-%d %H:%M",
+    "%Y-%m-%dT%H:%M",
+    "%Y-%m-%d %H:%M:%S",
+    "%Y-%m-%dT%H:%M:%S",
+)
+ROLL_EXPRESSION_PATTERN = re.compile(r"^\s*(\d{1,2})d(\d{1,4})([+-]\d{1,4})?\s*$", re.IGNORECASE)
+NUMBER_EMOJIS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
+RPS_BEATS = {"rock": "scissors", "paper": "rock", "scissors": "paper"}
+FUN_GIF_LIBRARY: dict[str, list[dict[str, str]]] = {
+    "celebrate": [
+        {"title": "Celebrate", "url": "https://media.tenor.com/8Jf8u6H2n0QAAAAC/celebrate-happy.gif"},
+        {"title": "Party Time", "url": "https://media.tenor.com/1g8z7QxgK5AAAAAC/party-celebration.gif"},
+    ],
+    "laugh": [
+        {"title": "Laugh", "url": "https://media.tenor.com/FZ9Y8wSg1skAAAAC/laughing-lol.gif"},
+        {"title": "That Was Funny", "url": "https://media.tenor.com/1B1x7jQ4W4kAAAAC/funny-laugh.gif"},
+    ],
+    "hype": [
+        {"title": "Hype", "url": "https://media.tenor.com/6D8lL0z7oOAAAAAC/hype-excited.gif"},
+        {"title": "Let's Go", "url": "https://media.tenor.com/U6v1kO8x0csAAAAC/lets-go-hype.gif"},
+    ],
+    "cute": [
+        {"title": "Cute", "url": "https://media.tenor.com/Fqv8W8mKX1YAAAAC/cute-happy.gif"},
+        {"title": "Adorable", "url": "https://media.tenor.com/2t8hS8mVQxMAAAAC/aww-cute.gif"},
+    ],
+}
+EIGHTBALL_RESPONSES = (
+    "Yes.",
+    "No.",
+    "Maybe.",
+    "Absolutely.",
+    "Ask again later.",
+    "Signs point to yes.",
+    "Very doubtful.",
+    "Focus and ask once more.",
+)
+PLAYFUL_ROASTS = (
+    "Your Wi-Fi probably disconnects just to get a break from you.",
+    "If overthinking were a sport, you'd still somehow miss the playoffs.",
+    "You bring strong 'forgot the semicolon' energy.",
+    "You're proof that chaos can be a personality trait.",
+    "Your browser tabs have started filing complaints.",
+)
+COMPLIMENTS = (
+    "You make the server better just by being active in it.",
+    "You have strong main-character energy, in a good way.",
+    "Your timing is better than most deployment windows.",
+    "You consistently bring good vibes and useful chaos.",
+    "You seem like the person who actually reads the pinned messages.",
+)
+YODA_WISDOM_LINES = (
+    "Patience you need; rushed commands, buggy results make.",
+    "Helpful the small bot is, when configured well it remains.",
+    "Do, or do not. There is no 'I forgot to check the logs.'",
+    "Calm your mind. Then fix the root cause.",
+    "Strong with the helper you are, when kindness and moderation balance.",
+)
+QUESTION_OF_THE_DAY_PROMPTS = (
+    "What small thing made your day better this week?",
+    "If you could master one skill instantly, what would it be?",
+    "What is one app or tool you use more than anything else?",
+    "What fictional world would you visit for a day?",
+    "What is the most underrated comfort food?",
+)
+WOULD_YOU_RATHER_PROMPTS = (
+    "Would you rather always be 10 minutes early or always have perfect Wi-Fi?",
+    "Would you rather only communicate in GIFs or only in voice notes?",
+    "Would you rather have unlimited snacks or unlimited battery life?",
+    "Would you rather win every argument or never lose your keys again?",
+    "Would you rather always know the best meme for the moment or the perfect song?",
+)
+TRIVIA_QUESTIONS = (
+    {
+        "question": "Which planet is known as the Red Planet?",
+        "choices": ["Mars", "Venus", "Jupiter", "Mercury"],
+        "answer": "Mars",
+    },
+    {
+        "question": "What does CPU stand for?",
+        "choices": ["Central Processing Unit", "Core Program Utility", "Central Program Upload", "Computer Power Unit"],
+        "answer": "Central Processing Unit",
+    },
+    {
+        "question": "Which ocean is the largest on Earth?",
+        "choices": ["Atlantic", "Indian", "Pacific", "Arctic"],
+        "answer": "Pacific",
+    },
+    {
+        "question": "How many sides does a hexagon have?",
+        "choices": ["5", "6", "7", "8"],
+        "answer": "6",
+    },
+    {
+        "question": "What year did the first iPhone launch?",
+        "choices": ["2005", "2007", "2009", "2010"],
+        "answer": "2007",
+    },
+)
 
 
 def normalize_tag(raw_tag: str) -> str:
@@ -442,6 +598,8 @@ if SHORTENER_TIMEOUT_SECONDS <= 0:
     raise RuntimeError("SHORTENER_TIMEOUT_SECONDS must be a positive integer.")
 if PUPPY_IMAGE_TIMEOUT_SECONDS <= 0:
     raise RuntimeError("PUPPY_IMAGE_TIMEOUT_SECONDS must be a positive integer.")
+if FUN_API_TIMEOUT_SECONDS <= 0:
+    raise RuntimeError("FUN_API_TIMEOUT_SECONDS must be a positive integer.")
 if YOUTUBE_POLL_INTERVAL_SECONDS <= 0:
     raise RuntimeError("YOUTUBE_POLL_INTERVAL_SECONDS must be a positive integer.")
 if YOUTUBE_REQUEST_TIMEOUT_SECONDS <= 0:
@@ -528,6 +686,201 @@ def truncate_log_text(text: str, max_length: int = 300) -> str:
     if len(text) <= max_length:
         return text
     return f"{text[: max_length - 3]}..."
+
+
+def validate_image_url(url: str) -> str:
+    candidate = str(url or "").strip()
+    parsed = urllib.parse.urlparse(candidate)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise RuntimeError("API returned an invalid image URL.")
+    return candidate
+
+
+def fetch_json_url(url: str, timeout_seconds: int, *, accept: str = "application/json") -> dict | list:
+    status, _, body_text = fetch_text_url(url, timeout_seconds=timeout_seconds, accept=accept)
+    if status >= 400:
+        raise RuntimeError(f"API returned HTTP {status}.")
+    try:
+        payload = json.loads(body_text)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("API returned invalid JSON.") from exc
+    if not isinstance(payload, dict | list):
+        raise RuntimeError("API returned an unexpected response.")
+    return payload
+
+
+def fetch_random_cat_image_url() -> str:
+    payload = fetch_json_url(CAT_IMAGE_API_URL, FUN_API_TIMEOUT_SECONDS)
+    if not isinstance(payload, list) or not payload or not isinstance(payload[0], dict):
+        raise RuntimeError("Cat API returned an unexpected payload.")
+    return validate_image_url(str(payload[0].get("url", "")).strip())
+
+
+def fetch_random_meme() -> dict[str, str]:
+    payload = fetch_json_url(MEME_API_URL, FUN_API_TIMEOUT_SECONDS)
+    if not isinstance(payload, dict):
+        raise RuntimeError("Meme API returned an unexpected payload.")
+    if bool(payload.get("nsfw")):
+        raise RuntimeError("Meme API returned an NSFW meme.")
+    image_url = validate_image_url(str(payload.get("url", "")).strip())
+    return {
+        "title": str(payload.get("title", "Random Meme")).strip() or "Random Meme",
+        "image_url": image_url,
+        "post_url": str(payload.get("postLink", "")).strip(),
+        "subreddit": str(payload.get("subreddit", "")).strip(),
+    }
+
+
+def fetch_dad_joke() -> str:
+    payload = fetch_json_url(DAD_JOKE_API_URL, FUN_API_TIMEOUT_SECONDS, accept="application/json")
+    if not isinstance(payload, dict):
+        raise RuntimeError("Dad joke API returned an unexpected payload.")
+    joke = str(payload.get("joke", "")).strip()
+    if not joke:
+        raise RuntimeError("Dad joke API did not return a joke.")
+    return joke
+
+
+def split_option_values(raw_value: str, *, max_options: int = 10) -> list[str]:
+    parts = [item.strip() for item in re.split(r"[,|\n]+", str(raw_value or "").strip())]
+    options = [item for item in parts if item]
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for option in options:
+        lowered = option.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        deduped.append(truncate_log_text(option, max_length=100))
+        if len(deduped) >= max_options:
+            break
+    return deduped
+
+
+def parse_roll_expression(raw_value: str) -> tuple[int, int, int]:
+    match = ROLL_EXPRESSION_PATTERN.fullmatch(str(raw_value or "").strip())
+    if match is None:
+        raise ValueError("Dice format must look like `1d20`, `2d6+3`, or `4d8-1`.")
+    count = int(match.group(1))
+    sides = int(match.group(2))
+    modifier = int(match.group(3) or 0)
+    if count <= 0 or count > 20:
+        raise ValueError("You can roll between 1 and 20 dice at a time.")
+    if sides <= 1 or sides > 1000:
+        raise ValueError("Dice sides must be between 2 and 1000.")
+    return count, sides, modifier
+
+
+def execute_roll_expression(raw_value: str) -> dict[str, int | list[int] | str]:
+    count, sides, modifier = parse_roll_expression(raw_value)
+    rolls = [random.randint(1, sides) for _ in range(count)]
+    subtotal = sum(rolls)
+    total = subtotal + modifier
+    return {
+        "expression": f"{count}d{sides}{modifier:+d}" if modifier else f"{count}d{sides}",
+        "count": count,
+        "sides": sides,
+        "modifier": modifier,
+        "rolls": rolls,
+        "subtotal": subtotal,
+        "total": total,
+    }
+
+
+def parse_countdown_target(raw_value: str) -> datetime:
+    candidate = str(raw_value or "").strip()
+    if not candidate:
+        raise ValueError("Provide a target date like `2026-12-31` or `2026-12-31 18:30`.")
+    if candidate.endswith("Z"):
+        candidate = f"{candidate[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(candidate)
+    except ValueError:
+        parsed = None
+    if parsed is None:
+        for fmt in COUNTDOWN_INPUT_FORMATS:
+            try:
+                parsed = datetime.strptime(candidate, fmt)
+                break
+            except ValueError:
+                continue
+    if parsed is None:
+        raise ValueError("Unsupported date format. Use `YYYY-MM-DD` or `YYYY-MM-DD HH:MM`.")
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def format_duration_until(target_dt: datetime, *, now_dt: datetime | None = None) -> str:
+    safe_now = normalize_activity_timestamp(now_dt)
+    safe_target = normalize_activity_timestamp(target_dt)
+    delta = safe_target - safe_now
+    total_seconds = int(delta.total_seconds())
+    if total_seconds <= 0:
+        return "already passed"
+    days, remainder = divmod(total_seconds, 86400)
+    hours, remainder = divmod(remainder, 3600)
+    minutes, _ = divmod(remainder, 60)
+    parts: list[str] = []
+    if days:
+        parts.append(f"{days}d")
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes or not parts:
+        parts.append(f"{minutes}m")
+    return " ".join(parts[:3])
+
+
+def parse_month_day_input(raw_value: str) -> tuple[int, int]:
+    candidate = str(raw_value or "").strip()
+    if not candidate:
+        raise ValueError("Birthday is required. Use `MM-DD`, `MM/DD`, or `YYYY-MM-DD`.")
+    year: int
+    month: int
+    day: int
+    match = re.fullmatch(r"(\d{1,2})[-/](\d{1,2})", candidate)
+    if match is not None:
+        year = 2000
+        month = int(match.group(1))
+        day = int(match.group(2))
+    else:
+        match = re.fullmatch(r"(\d{4})[-/](\d{1,2})[-/](\d{1,2})", candidate)
+        if match is None:
+            raise ValueError("Birthday format must be `MM-DD`, `MM/DD`, or `YYYY-MM-DD`.")
+        year = int(match.group(1))
+        month = int(match.group(2))
+        day = int(match.group(3))
+    try:
+        datetime(year, month, day)
+    except ValueError as exc:
+        raise ValueError("Birthday is not a valid calendar date.") from exc
+    return month, day
+
+
+def birthday_label(month: int, day: int) -> str:
+    return datetime(2000, month, day).strftime("%B %d")
+
+
+def next_birthday_occurrence(month: int, day: int, *, now_dt: datetime | None = None) -> datetime:
+    safe_now = normalize_activity_timestamp(now_dt)
+    current_year = safe_now.year
+    for offset in range(0, 9):
+        year = current_year + offset
+        try:
+            candidate = datetime(year, month, day, tzinfo=UTC)
+        except ValueError:
+            continue
+        if candidate.date() >= safe_now.date():
+            return candidate
+    raise ValueError("Unable to calculate the next birthday occurrence.")
+
+
+def choose_random_gif(theme: str) -> dict[str, str]:
+    selected_theme = str(theme or "celebrate").strip().lower()
+    if selected_theme == "random" or selected_theme not in FUN_GIF_LIBRARY:
+        selected_theme = random.choice(sorted(FUN_GIF_LIBRARY))
+    chosen = random.choice(FUN_GIF_LIBRARY[selected_theme])
+    return {"theme": selected_theme, "title": chosen["title"], "url": chosen["url"]}
 
 
 def shortener_request(
@@ -1559,6 +1912,30 @@ class ActionStore:
                     ON member_activity_seen_messages(guild_id, created_at)
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS birthdays (
+                    guild_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    username TEXT NOT NULL DEFAULT '',
+                    month INTEGER NOT NULL,
+                    day INTEGER NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (guild_id, user_id)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS guess_games (
+                    guild_id INTEGER PRIMARY KEY,
+                    target_number INTEGER NOT NULL,
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    created_by_user_id INTEGER NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
             existing_tags = conn.execute("SELECT COUNT(*) FROM tag_responses").fetchone()[0]
             if int(existing_tags) == 0:
                 now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
@@ -2189,6 +2566,124 @@ class ActionStore:
                 ).fetchall()
         return [dict(row) for row in summary_rows], [dict(row) for row in hourly_rows]
 
+    def save_birthday(self, guild_id: int, user_id: int, username: str, month: int, day: int) -> None:
+        safe_guild_id = require_managed_guild_id(guild_id, context="birthday guild")
+        updated_at = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO birthdays (guild_id, user_id, username, month, day, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(guild_id, user_id) DO UPDATE SET
+                        username = excluded.username,
+                        month = excluded.month,
+                        day = excluded.day,
+                        updated_at = excluded.updated_at
+                    """,
+                    (safe_guild_id, int(user_id), truncate_log_text(username, max_length=120), int(month), int(day), updated_at),
+                )
+                conn.commit()
+
+    def get_birthday(self, guild_id: int, user_id: int) -> dict | None:
+        safe_guild_id = require_managed_guild_id(guild_id, context="birthday guild")
+        with self._lock:
+            with self._connect() as conn:
+                conn.row_factory = sqlite3.Row
+                row = conn.execute(
+                    """
+                    SELECT guild_id, user_id, username, month, day, updated_at
+                    FROM birthdays
+                    WHERE guild_id = ? AND user_id = ?
+                    """,
+                    (safe_guild_id, int(user_id)),
+                ).fetchone()
+        return dict(row) if row is not None else None
+
+    def delete_birthday(self, guild_id: int, user_id: int) -> bool:
+        safe_guild_id = require_managed_guild_id(guild_id, context="birthday guild")
+        with self._lock:
+            with self._connect() as conn:
+                deleted = conn.execute(
+                    "DELETE FROM birthdays WHERE guild_id = ? AND user_id = ?",
+                    (safe_guild_id, int(user_id)),
+                )
+                conn.commit()
+        return bool(deleted.rowcount)
+
+    def list_birthdays(self, guild_id: int) -> list[dict]:
+        safe_guild_id = require_managed_guild_id(guild_id, context="birthday guild")
+        with self._lock:
+            with self._connect() as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    """
+                    SELECT guild_id, user_id, username, month, day, updated_at
+                    FROM birthdays
+                    WHERE guild_id = ?
+                    ORDER BY month ASC, day ASC, username ASC
+                    """,
+                    (safe_guild_id,),
+                ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_guess_game(self, guild_id: int) -> dict | None:
+        safe_guild_id = require_managed_guild_id(guild_id, context="guess guild")
+        with self._lock:
+            with self._connect() as conn:
+                conn.row_factory = sqlite3.Row
+                row = conn.execute(
+                    """
+                    SELECT guild_id, target_number, attempt_count, created_by_user_id, updated_at
+                    FROM guess_games
+                    WHERE guild_id = ?
+                    """,
+                    (safe_guild_id,),
+                ).fetchone()
+        return dict(row) if row is not None else None
+
+    def save_guess_game(self, guild_id: int, target_number: int, created_by_user_id: int, attempt_count: int = 0) -> None:
+        safe_guild_id = require_managed_guild_id(guild_id, context="guess guild")
+        updated_at = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO guess_games (guild_id, target_number, attempt_count, created_by_user_id, updated_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(guild_id) DO UPDATE SET
+                        target_number = excluded.target_number,
+                        attempt_count = excluded.attempt_count,
+                        created_by_user_id = excluded.created_by_user_id,
+                        updated_at = excluded.updated_at
+                    """,
+                    (safe_guild_id, int(target_number), int(attempt_count), int(created_by_user_id), updated_at),
+                )
+                conn.commit()
+
+    def update_guess_game_attempts(self, guild_id: int, attempt_count: int) -> None:
+        safe_guild_id = require_managed_guild_id(guild_id, context="guess guild")
+        updated_at = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    UPDATE guess_games
+                    SET attempt_count = ?, updated_at = ?
+                    WHERE guild_id = ?
+                    """,
+                    (int(attempt_count), updated_at, safe_guild_id),
+                )
+                conn.commit()
+
+    def clear_guess_game(self, guild_id: int) -> bool:
+        safe_guild_id = require_managed_guild_id(guild_id, context="guess guild")
+        with self._lock:
+            with self._connect() as conn:
+                deleted = conn.execute("DELETE FROM guess_games WHERE guild_id = ?", (safe_guild_id,))
+                conn.commit()
+        return bool(deleted.rowcount)
+
 
 ACTION_DB_PATH = resolve_action_db_path()
 ACTIONS_DIR = os.path.dirname(ACTION_DB_PATH) or "."
@@ -2463,6 +2958,40 @@ def run_web_export_member_activity(guild_id: int, role_id: int | None = None) ->
     except Exception as exc:
         logger.exception("Failed to export member activity archive")
         return {"ok": False, "error": str(exc)}
+
+
+def build_activity_leaderboard(window_key: str, guild_id: int, *, limit: int = 10) -> tuple[str, list[dict]]:
+    window_spec = next((item for item in MEMBER_ACTIVITY_WINDOW_SPECS if item[0] == window_key), None)
+    if window_spec is None:
+        raise ValueError(f"Unsupported leaderboard window: {window_key}")
+    _, label, _ = window_spec
+    return label, list_member_activity_top_window(guild_id, window_key, limit=limit)
+
+
+def list_upcoming_birthdays(guild_id: int, *, days_ahead: int = 30, limit: int = 10) -> list[dict]:
+    entries = ACTION_STORE.list_birthdays(guild_id)
+    now_dt = datetime.now(UTC)
+    upcoming: list[dict] = []
+    for row in entries:
+        month = int(row.get("month", 0) or 0)
+        day = int(row.get("day", 0) or 0)
+        try:
+            next_occurrence = next_birthday_occurrence(month, day, now_dt=now_dt)
+        except ValueError:
+            continue
+        days_until = (next_occurrence.date() - now_dt.date()).days
+        if days_until > max(1, int(days_ahead)):
+            continue
+        upcoming.append(
+            {
+                **row,
+                "label": birthday_label(month, day),
+                "next_occurrence": next_occurrence.strftime("%Y-%m-%d"),
+                "days_until": days_until,
+            }
+        )
+    upcoming.sort(key=lambda item: (int(item["days_until"]), str(item["username"]).lower()))
+    return upcoming[: max(1, min(int(limit), 25))]
 
 
 def resolve_command_permission_state(command_key: str, guild_id: int) -> tuple[str, str, list[int]]:
@@ -3371,6 +3900,7 @@ class ModerationBot(commands.Bot):
 
 
 bot = ModerationBot()
+birthday_group = app_commands.Group(name="birthday", description="Birthday commands")
 
 
 def record_action_safe(
@@ -3602,7 +4132,7 @@ async def ping(interaction: discord.Interaction) -> None:
     if not await ensure_interaction_command_access(interaction, "ping"):
         return
     await interaction.response.send_message(
-        "WickedYoda's Little Helper is online.",
+        "Wicked Yoda's Little Helper is online.",
         ephemeral=COMMAND_RESPONSES_EPHEMERAL,
     )
     await log_interaction(interaction, action="ping", success=True)
@@ -3612,7 +4142,7 @@ async def ping(interaction: discord.Interaction) -> None:
 async def sayhi(interaction: discord.Interaction) -> None:
     if not await ensure_interaction_command_access(interaction, "sayhi"):
         return
-    intro = "Hi everyone, I am WickedYoda's Little Helper.\nI can help with moderation, URL short links, and uptime checks."
+    intro = "Hi everyone, I am Wicked Yoda's Little Helper.\nI can help with moderation, URL short links, and uptime checks."
     await interaction.response.send_message(intro)
     await log_interaction(interaction, action="sayhi", reason="Posted channel introduction", success=True)
 
@@ -3648,6 +4178,465 @@ async def happy(interaction: discord.Interaction) -> None:
             reason=truncate_log_text(str(exc)),
             success=False,
         )
+
+
+@bot.tree.command(name="cat", description="Post a random cat picture.")
+async def cat(interaction: discord.Interaction) -> None:
+    if not await ensure_interaction_command_access(interaction, "cat"):
+        return
+    await interaction.response.defer(ephemeral=COMMAND_RESPONSES_EPHEMERAL)
+    try:
+        image_url = await asyncio.to_thread(fetch_random_cat_image_url)
+        embed = discord.Embed(title="Cat Break", description="Here is a random cat picture.", color=discord.Color.gold())
+        embed.set_image(url=image_url)
+        await interaction.followup.send(embed=embed, ephemeral=COMMAND_RESPONSES_EPHEMERAL)
+        await log_interaction(interaction, action="cat", reason=truncate_log_text(image_url), success=True)
+    except RuntimeError as exc:
+        await interaction.followup.send(f"Failed to fetch cat picture: {exc}", ephemeral=COMMAND_RESPONSES_EPHEMERAL)
+        await log_interaction(interaction, action="cat", reason=truncate_log_text(str(exc)), success=False)
+
+
+@bot.tree.command(name="meme", description="Post a random meme.")
+async def meme(interaction: discord.Interaction) -> None:
+    if not await ensure_interaction_command_access(interaction, "meme"):
+        return
+    await interaction.response.defer(ephemeral=COMMAND_RESPONSES_EPHEMERAL)
+    try:
+        meme_payload = await asyncio.to_thread(fetch_random_meme)
+        embed = discord.Embed(
+            title=meme_payload["title"],
+            description=f"Source: r/{meme_payload['subreddit']}" if meme_payload["subreddit"] else "Random meme",
+            color=discord.Color.orange(),
+            url=meme_payload["post_url"] or None,
+        )
+        embed.set_image(url=meme_payload["image_url"])
+        await interaction.followup.send(embed=embed, ephemeral=COMMAND_RESPONSES_EPHEMERAL)
+        await log_interaction(
+            interaction,
+            action="meme",
+            reason=truncate_log_text(f"{meme_payload['subreddit']} - {meme_payload['title']}"),
+            success=True,
+        )
+    except RuntimeError as exc:
+        await interaction.followup.send(f"Failed to fetch meme: {exc}", ephemeral=COMMAND_RESPONSES_EPHEMERAL)
+        await log_interaction(interaction, action="meme", reason=truncate_log_text(str(exc)), success=False)
+
+
+@bot.tree.command(name="dadjoke", description="Get a random dad joke.")
+async def dadjoke(interaction: discord.Interaction) -> None:
+    if not await ensure_interaction_command_access(interaction, "dadjoke"):
+        return
+    await interaction.response.defer(ephemeral=COMMAND_RESPONSES_EPHEMERAL)
+    try:
+        joke = await asyncio.to_thread(fetch_dad_joke)
+        await interaction.followup.send(joke, ephemeral=COMMAND_RESPONSES_EPHEMERAL)
+        await log_interaction(interaction, action="dadjoke", reason=truncate_log_text(joke), success=True)
+    except RuntimeError as exc:
+        await interaction.followup.send(f"Failed to fetch a dad joke: {exc}", ephemeral=COMMAND_RESPONSES_EPHEMERAL)
+        await log_interaction(interaction, action="dadjoke", reason=truncate_log_text(str(exc)), success=False)
+
+
+@bot.tree.command(name="eightball", description="Ask the magic eight-ball a question.")
+@app_commands.describe(question="Question to ask the magic eight-ball")
+async def eightball(interaction: discord.Interaction, question: str) -> None:
+    if not await ensure_interaction_command_access(interaction, "eightball"):
+        return
+    cleaned = truncate_log_text(question.strip(), max_length=160)
+    if not cleaned:
+        await reply_ephemeral(interaction, "Ask a real question first.")
+        await log_interaction(interaction, action="eightball", reason="empty question", success=False)
+        return
+    answer = random.choice(EIGHTBALL_RESPONSES)
+    await interaction.response.send_message(
+        f"Question: {cleaned}\nAnswer: **{answer}**",
+        ephemeral=COMMAND_RESPONSES_EPHEMERAL,
+    )
+    await log_interaction(interaction, action="eightball", reason=truncate_log_text(f"{cleaned} -> {answer}"), success=True)
+
+
+@bot.tree.command(name="coinflip", description="Flip a coin.")
+async def coinflip(interaction: discord.Interaction) -> None:
+    if not await ensure_interaction_command_access(interaction, "coinflip"):
+        return
+    result = random.choice(["Heads", "Tails"])
+    await interaction.response.send_message(f"The coin says: **{result}**", ephemeral=COMMAND_RESPONSES_EPHEMERAL)
+    await log_interaction(interaction, action="coinflip", reason=result.lower(), success=True)
+
+
+@bot.tree.command(name="roll", description="Roll dice like 1d20 or 2d6+3.")
+@app_commands.describe(expression="Dice expression, for example 1d20, 2d6+3, or 4d8-1")
+async def roll(interaction: discord.Interaction, expression: str = "1d20") -> None:
+    if not await ensure_interaction_command_access(interaction, "roll"):
+        return
+    try:
+        result = execute_roll_expression(expression)
+    except ValueError as exc:
+        await reply_ephemeral(interaction, str(exc))
+        await log_interaction(interaction, action="roll", reason=truncate_log_text(str(exc)), success=False)
+        return
+    rolls_text = ", ".join(str(value) for value in result["rolls"])
+    modifier = int(result["modifier"])
+    modifier_text = f" | Modifier: {modifier:+d}" if modifier else ""
+    message = (
+        f"Expression: `{result['expression']}`\n"
+        f"Rolls: [{rolls_text}]\n"
+        f"Subtotal: {result['subtotal']}{modifier_text}\n"
+        f"Total: **{result['total']}**"
+    )
+    await interaction.response.send_message(message, ephemeral=COMMAND_RESPONSES_EPHEMERAL)
+    await log_interaction(interaction, action="roll", reason=truncate_log_text(f"{result['expression']}={result['total']}"), success=True)
+
+
+@bot.tree.command(name="choose", description="Choose between multiple options.")
+@app_commands.describe(options="Comma-separated, pipe-separated, or line-separated options")
+async def choose(interaction: discord.Interaction, options: str) -> None:
+    if not await ensure_interaction_command_access(interaction, "choose"):
+        return
+    parsed_options = split_option_values(options)
+    if len(parsed_options) < 2:
+        await reply_ephemeral(interaction, "Provide at least two options separated by commas, pipes, or new lines.")
+        await log_interaction(interaction, action="choose", reason="not enough options", success=False)
+        return
+    selected = random.choice(parsed_options)
+    await interaction.response.send_message(f"I choose: **{selected}**", ephemeral=COMMAND_RESPONSES_EPHEMERAL)
+    await log_interaction(interaction, action="choose", reason=truncate_log_text(selected), success=True)
+
+
+@bot.tree.command(name="roastme", description="Get a playful roast.")
+@app_commands.describe(target="Optional member to roast instead of yourself")
+async def roastme(interaction: discord.Interaction, target: discord.Member | None = None) -> None:
+    if not await ensure_interaction_command_access(interaction, "roastme"):
+        return
+    selected_target = target or interaction.user
+    line = random.choice(PLAYFUL_ROASTS)
+    await interaction.response.send_message(f"{selected_target.mention}: {line}", ephemeral=COMMAND_RESPONSES_EPHEMERAL)
+    await log_interaction(interaction, action="roastme", target=selected_target, reason=truncate_log_text(line), success=True)
+
+
+@bot.tree.command(name="compliment", description="Send a friendly compliment.")
+@app_commands.describe(target="Optional member to compliment instead of yourself")
+async def compliment(interaction: discord.Interaction, target: discord.Member | None = None) -> None:
+    if not await ensure_interaction_command_access(interaction, "compliment"):
+        return
+    selected_target = target or interaction.user
+    line = random.choice(COMPLIMENTS)
+    await interaction.response.send_message(f"{selected_target.mention}: {line}", ephemeral=COMMAND_RESPONSES_EPHEMERAL)
+    await log_interaction(interaction, action="compliment", target=selected_target, reason=truncate_log_text(line), success=True)
+
+
+@bot.tree.command(name="wisdom", description="Receive a Yoda-style bit of wisdom.")
+async def wisdom(interaction: discord.Interaction) -> None:
+    if not await ensure_interaction_command_access(interaction, "wisdom"):
+        return
+    line = random.choice(YODA_WISDOM_LINES)
+    await interaction.response.send_message(line, ephemeral=COMMAND_RESPONSES_EPHEMERAL)
+    await log_interaction(interaction, action="wisdom", reason=truncate_log_text(line), success=True)
+
+
+@bot.tree.command(name="gif", description="Post a reaction GIF.")
+@app_commands.describe(theme="Reaction theme")
+@app_commands.choices(
+    theme=[
+        app_commands.Choice(name="Random", value="random"),
+        app_commands.Choice(name="Celebrate", value="celebrate"),
+        app_commands.Choice(name="Laugh", value="laugh"),
+        app_commands.Choice(name="Hype", value="hype"),
+        app_commands.Choice(name="Cute", value="cute"),
+    ]
+)
+async def gif(interaction: discord.Interaction, theme: app_commands.Choice[str] | None = None) -> None:
+    if not await ensure_interaction_command_access(interaction, "gif"):
+        return
+    selected = choose_random_gif(theme.value if theme else "random")
+    embed = discord.Embed(title=selected["title"], description=f"Theme: {selected['theme']}", color=discord.Color.purple())
+    embed.set_image(url=selected["url"])
+    await interaction.response.send_message(embed=embed, ephemeral=COMMAND_RESPONSES_EPHEMERAL)
+    await log_interaction(interaction, action="gif", reason=selected["theme"], success=True)
+
+
+@bot.tree.command(name="poll", description="Create a quick poll in the current channel.")
+@app_commands.describe(question="Poll question", options="Two to ten options separated by commas or pipes")
+async def poll(interaction: discord.Interaction, question: str, options: str) -> None:
+    if not await ensure_interaction_command_access(interaction, "poll"):
+        return
+    parsed_options = split_option_values(options, max_options=10)
+    if len(parsed_options) < 2:
+        await reply_ephemeral(interaction, "A poll needs at least two options.")
+        await log_interaction(interaction, action="poll", reason="not enough options", success=False)
+        return
+    lines = [f"**{truncate_log_text(question.strip(), max_length=200) or 'Quick Poll'}**", ""]
+    for index, option in enumerate(parsed_options):
+        lines.append(f"{NUMBER_EMOJIS[index]} {option}")
+    await interaction.response.send_message("\n".join(lines))
+    try:
+        original = await interaction.original_response()
+        for index in range(len(parsed_options)):
+            await original.add_reaction(NUMBER_EMOJIS[index])
+    except Exception:
+        logger.debug("Unable to add poll reactions for interaction %s", getattr(interaction, "id", "unknown"))
+    await log_interaction(interaction, action="poll", reason=truncate_log_text(question), success=True)
+
+
+@bot.tree.command(name="questionoftheday", description="Post a random question of the day.")
+async def questionoftheday(interaction: discord.Interaction) -> None:
+    if not await ensure_interaction_command_access(interaction, "questionoftheday"):
+        return
+    prompt = random.choice(QUESTION_OF_THE_DAY_PROMPTS)
+    await interaction.response.send_message(f"Question of the Day:\n**{prompt}**")
+    await log_interaction(interaction, action="questionoftheday", reason=truncate_log_text(prompt), success=True)
+
+
+@bot.tree.command(name="countdown", description="Count down to a future date.")
+@app_commands.describe(event="Event name", when="Date in YYYY-MM-DD or YYYY-MM-DD HH:MM (UTC unless timezone provided)")
+async def countdown(interaction: discord.Interaction, event: str, when: str) -> None:
+    if not await ensure_interaction_command_access(interaction, "countdown"):
+        return
+    try:
+        target_dt = parse_countdown_target(when)
+    except ValueError as exc:
+        await reply_ephemeral(interaction, str(exc))
+        await log_interaction(interaction, action="countdown", reason=truncate_log_text(str(exc)), success=False)
+        return
+    duration = format_duration_until(target_dt)
+    if duration == "already passed":
+        await reply_ephemeral(interaction, "That time has already passed.")
+        await log_interaction(interaction, action="countdown", reason="date already passed", success=False)
+        return
+    event_label = truncate_log_text(event.strip(), max_length=120) or "Event"
+    await interaction.response.send_message(
+        f"Countdown to **{event_label}**: {duration}\nTarget: `{target_dt.isoformat()}`",
+        ephemeral=COMMAND_RESPONSES_EPHEMERAL,
+    )
+    await log_interaction(
+        interaction, action="countdown", reason=truncate_log_text(f"{event_label} @ {target_dt.isoformat()}"), success=True
+    )
+
+
+@bot.tree.command(name="leaderboard", description="Show member activity leaderboard.")
+@app_commands.describe(window="Activity window")
+@app_commands.choices(
+    window=[
+        app_commands.Choice(name="24 Hours", value="1d"),
+        app_commands.Choice(name="7 Days", value="7d"),
+        app_commands.Choice(name="30 Days", value="30d"),
+        app_commands.Choice(name="90 Days", value="90d"),
+    ]
+)
+async def leaderboard(interaction: discord.Interaction, window: app_commands.Choice[str] | None = None) -> None:
+    if not await ensure_interaction_command_access(interaction, "leaderboard"):
+        return
+    if interaction.guild is None:
+        await reply_ephemeral(interaction, "This command can only be used in a server.")
+        await log_interaction(interaction, action="leaderboard", reason="no guild context", success=False)
+        return
+    selected_window = window.value if window else "7d"
+    try:
+        label, entries = build_activity_leaderboard(selected_window, interaction.guild.id, limit=10)
+    except Exception as exc:
+        await reply_ephemeral(interaction, f"Failed to build leaderboard: {exc}")
+        await log_interaction(interaction, action="leaderboard", reason=truncate_log_text(str(exc)), success=False)
+        return
+    if not entries:
+        await reply_ephemeral(interaction, "No activity data is available for that leaderboard yet.")
+        await log_interaction(interaction, action="leaderboard", reason="no activity data", success=False)
+        return
+    lines = [f"**{interaction.guild.name} - {label}**", ""]
+    for entry in entries:
+        display_name = str(entry.get("display_name") or entry.get("username") or entry.get("user_id"))
+        lines.append(f"{int(entry.get('rank') or 0)}. {display_name} - {int(entry.get('message_count') or 0)} messages")
+    await interaction.response.send_message("\n".join(lines), ephemeral=COMMAND_RESPONSES_EPHEMERAL)
+    await log_interaction(interaction, action="leaderboard", reason=selected_window, success=True)
+
+
+@bot.tree.command(name="trivia", description="Get a random trivia question.")
+async def trivia(interaction: discord.Interaction) -> None:
+    if not await ensure_interaction_command_access(interaction, "trivia"):
+        return
+    selected = random.choice(TRIVIA_QUESTIONS)
+    choices = selected["choices"]
+    lines = ["**Trivia Time**", selected["question"], ""]
+    for index, choice in enumerate(choices):
+        lines.append(f"{NUMBER_EMOJIS[index]} {choice}")
+    lines.append("")
+    lines.append(f"Answer: ||{selected['answer']}||")
+    await interaction.response.send_message("\n".join(lines), ephemeral=COMMAND_RESPONSES_EPHEMERAL)
+    await log_interaction(interaction, action="trivia", reason=truncate_log_text(selected["question"]), success=True)
+
+
+@bot.tree.command(name="wouldyourather", description="Get a would-you-rather prompt.")
+async def wouldyourather(interaction: discord.Interaction) -> None:
+    if not await ensure_interaction_command_access(interaction, "wouldyourather"):
+        return
+    prompt = random.choice(WOULD_YOU_RATHER_PROMPTS)
+    await interaction.response.send_message(prompt, ephemeral=COMMAND_RESPONSES_EPHEMERAL)
+    await log_interaction(interaction, action="wouldyourather", reason=truncate_log_text(prompt), success=True)
+
+
+@bot.tree.command(name="rps", description="Play rock paper scissors against the bot.")
+@app_commands.describe(choice="Your choice")
+@app_commands.choices(
+    choice=[
+        app_commands.Choice(name="Rock", value="rock"),
+        app_commands.Choice(name="Paper", value="paper"),
+        app_commands.Choice(name="Scissors", value="scissors"),
+    ]
+)
+async def rps(interaction: discord.Interaction, choice: app_commands.Choice[str]) -> None:
+    if not await ensure_interaction_command_access(interaction, "rps"):
+        return
+    user_choice = choice.value
+    bot_choice = random.choice(sorted(RPS_BEATS))
+    if bot_choice == user_choice:
+        outcome = "It's a tie."
+    elif RPS_BEATS[user_choice] == bot_choice:
+        outcome = "You win."
+    else:
+        outcome = "I win."
+    await interaction.response.send_message(
+        f"You picked **{user_choice}**. I picked **{bot_choice}**. {outcome}",
+        ephemeral=COMMAND_RESPONSES_EPHEMERAL,
+    )
+    await log_interaction(interaction, action="rps", reason=f"{user_choice}/{bot_choice}", success=True)
+
+
+@bot.tree.command(name="guess", description="Play the guild guessing game.")
+@app_commands.describe(number="Guess a number between 1 and 100")
+async def guess(interaction: discord.Interaction, number: int | None = None) -> None:
+    if not await ensure_interaction_command_access(interaction, "guess"):
+        return
+    if interaction.guild is None:
+        await reply_ephemeral(interaction, "This command can only be used in a server.")
+        await log_interaction(interaction, action="guess", reason="no guild context", success=False)
+        return
+    if number is not None and (int(number) < 1 or int(number) > 100):
+        await reply_ephemeral(interaction, "Guess must be between 1 and 100.")
+        await log_interaction(interaction, action="guess", reason=f"invalid guess: {number}", success=False)
+        return
+    guild_id = interaction.guild.id
+    game = ACTION_STORE.get_guess_game(guild_id)
+    if game is None:
+        ACTION_STORE.save_guess_game(guild_id, random.randint(1, 100), interaction.user.id, attempt_count=0)
+        game = ACTION_STORE.get_guess_game(guild_id)
+    if game is None:
+        await reply_ephemeral(interaction, "Failed to start the guessing game.")
+        await log_interaction(interaction, action="guess", reason="game init failed", success=False)
+        return
+    if number is None:
+        await interaction.response.send_message(
+            "I picked a number between **1** and **100**. Use `/guess number:<value>` to make a guess.",
+            ephemeral=COMMAND_RESPONSES_EPHEMERAL,
+        )
+        await log_interaction(interaction, action="guess", reason="game prompt", success=True)
+        return
+    target_number = int(game.get("target_number", 0) or 0)
+    attempts = int(game.get("attempt_count", 0) or 0) + 1
+    if int(number) == target_number:
+        ACTION_STORE.clear_guess_game(guild_id)
+        await interaction.response.send_message(
+            f"Correct. The number was **{target_number}**. Solved in {attempts} attempt(s). Starting a fresh game now.",
+            ephemeral=COMMAND_RESPONSES_EPHEMERAL,
+        )
+        ACTION_STORE.save_guess_game(guild_id, random.randint(1, 100), interaction.user.id, attempt_count=0)
+        await log_interaction(interaction, action="guess", reason=f"solved in {attempts}", success=True)
+        return
+    ACTION_STORE.update_guess_game_attempts(guild_id, attempts)
+    hint = "higher" if int(number) < target_number else "lower"
+    await interaction.response.send_message(
+        f"Not it. Try **{hint}**. Attempts so far: {attempts}.",
+        ephemeral=COMMAND_RESPONSES_EPHEMERAL,
+    )
+    await log_interaction(interaction, action="guess", reason=f"{number} -> {hint}", success=True)
+
+
+@birthday_group.command(name="set", description="Set your birthday.")
+@app_commands.describe(date="Birthday in MM-DD, MM/DD, or YYYY-MM-DD format")
+async def birthday_set(interaction: discord.Interaction, date: str) -> None:
+    if not await ensure_interaction_command_access(interaction, "birthday_set"):
+        return
+    if interaction.guild is None:
+        await reply_ephemeral(interaction, "This command can only be used in a server.")
+        await log_interaction(interaction, action="birthday_set", reason="no guild context", success=False)
+        return
+    try:
+        month, day = parse_month_day_input(date)
+        next_occurrence = next_birthday_occurrence(month, day)
+    except ValueError as exc:
+        await reply_ephemeral(interaction, str(exc))
+        await log_interaction(interaction, action="birthday_set", reason=truncate_log_text(str(exc)), success=False)
+        return
+    ACTION_STORE.save_birthday(interaction.guild.id, interaction.user.id, str(interaction.user), month, day)
+    await interaction.response.send_message(
+        f"Birthday saved as **{birthday_label(month, day)}**. Next one is `{next_occurrence.strftime('%Y-%m-%d')}`.",
+        ephemeral=COMMAND_RESPONSES_EPHEMERAL,
+    )
+    await log_interaction(interaction, action="birthday_set", reason=f"{month:02d}-{day:02d}", success=True)
+
+
+@birthday_group.command(name="view", description="View a stored birthday.")
+@app_commands.describe(member="Member to view; defaults to you")
+async def birthday_view(interaction: discord.Interaction, member: discord.Member | None = None) -> None:
+    if not await ensure_interaction_command_access(interaction, "birthday_view"):
+        return
+    if interaction.guild is None:
+        await reply_ephemeral(interaction, "This command can only be used in a server.")
+        await log_interaction(interaction, action="birthday_view", reason="no guild context", success=False)
+        return
+    target = member or interaction.user
+    stored = ACTION_STORE.get_birthday(interaction.guild.id, target.id)
+    if stored is None:
+        await reply_ephemeral(interaction, f"No birthday is stored for {target.mention}.")
+        await log_interaction(interaction, action="birthday_view", target=target, reason="not set", success=False)
+        return
+    month = int(stored["month"])
+    day = int(stored["day"])
+    next_occurrence = next_birthday_occurrence(month, day)
+    days_until = (next_occurrence.date() - datetime.now(UTC).date()).days
+    await interaction.response.send_message(
+        f"{target.mention}'s birthday is **{birthday_label(month, day)}**.\nNext occurrence: `{next_occurrence.strftime('%Y-%m-%d')}` ({days_until} day(s) away).",
+        ephemeral=COMMAND_RESPONSES_EPHEMERAL,
+    )
+    await log_interaction(interaction, action="birthday_view", target=target, reason=f"{month:02d}-{day:02d}", success=True)
+
+
+@birthday_group.command(name="upcoming", description="Show upcoming birthdays for this server.")
+@app_commands.describe(days="How many days ahead to include")
+async def birthday_upcoming(interaction: discord.Interaction, days: app_commands.Range[int, 1, 365] = 30) -> None:
+    if not await ensure_interaction_command_access(interaction, "birthday_upcoming"):
+        return
+    if interaction.guild is None:
+        await reply_ephemeral(interaction, "This command can only be used in a server.")
+        await log_interaction(interaction, action="birthday_upcoming", reason="no guild context", success=False)
+        return
+    upcoming = list_upcoming_birthdays(interaction.guild.id, days_ahead=int(days), limit=10)
+    if not upcoming:
+        await reply_ephemeral(interaction, f"No birthdays are coming up in the next {int(days)} day(s).")
+        await log_interaction(interaction, action="birthday_upcoming", reason="no upcoming birthdays", success=False)
+        return
+    lines = [f"**Upcoming birthdays in {interaction.guild.name}**", ""]
+    for entry in upcoming:
+        lines.append(f"- {entry['username']}: {entry['label']} ({entry['days_until']} day(s), next `{entry['next_occurrence']}`)")
+    await interaction.response.send_message("\n".join(lines), ephemeral=COMMAND_RESPONSES_EPHEMERAL)
+    await log_interaction(interaction, action="birthday_upcoming", reason=f"days={int(days)}", success=True)
+
+
+@birthday_group.command(name="remove", description="Remove your stored birthday.")
+async def birthday_remove(interaction: discord.Interaction) -> None:
+    if not await ensure_interaction_command_access(interaction, "birthday_remove"):
+        return
+    if interaction.guild is None:
+        await reply_ephemeral(interaction, "This command can only be used in a server.")
+        await log_interaction(interaction, action="birthday_remove", reason="no guild context", success=False)
+        return
+    deleted = ACTION_STORE.delete_birthday(interaction.guild.id, interaction.user.id)
+    if not deleted:
+        await reply_ephemeral(interaction, "You do not have a stored birthday to remove.")
+        await log_interaction(interaction, action="birthday_remove", reason="not set", success=False)
+        return
+    await interaction.response.send_message("Your birthday has been removed.", ephemeral=COMMAND_RESPONSES_EPHEMERAL)
+    await log_interaction(interaction, action="birthday_remove", success=True)
+
+
+bot.tree.add_command(birthday_group)
 
 
 @bot.tree.command(name="shorten", description="Create a short URL.")
@@ -3831,8 +4820,10 @@ async def help_command(interaction: discord.Interaction) -> None:
     if not await ensure_interaction_command_access(interaction, "help"):
         return
     message = (
-        "**WickedYoda's Little Helper**\n"
-        "General: `/ping`, `/sayhi`, `/happy`, `/help`\n"
+        "**Wicked Yoda's Little Helper**\n"
+        "General: `/ping`, `/sayhi`, `/happy`, `/cat`, `/meme`, `/dadjoke`, `/help`\n"
+        "Fun: `/eightball`, `/coinflip`, `/roll`, `/choose`, `/roastme`, `/compliment`, `/wisdom`, `/gif`, `/poll`, `/questionoftheday`, `/countdown`, `/trivia`, `/wouldyourather`, `/rps`, `/guess`\n"
+        "Community: `/birthday set`, `/birthday view`, `/birthday upcoming`, `/birthday remove`, `/leaderboard`\n"
         "Utilities: `/shorten`, `/expand`, `/uptime`, `/logs`, `/stats`\n"
         "Tags: `/tags`, `/tag <name>`, message tags like `!rules`\n"
         "Moderation: `/kick`, `/ban`, `/timeout`, `/untimeout`, `/purge`, `/unban`, `/addrole`, `/removerole`\n"

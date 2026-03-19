@@ -1438,7 +1438,7 @@ PAGE_TEMPLATE = """
 <body data-theme="light">
   <nav class="navbar navbar-expand-lg border-bottom sticky-top">
     <div class="container-fluid px-3 px-lg-4">
-      <a class="navbar-brand brand" href="{{ url_for('home') }}">WickedYoda's Little Helper</a>
+      <a class="navbar-brand brand" href="{{ url_for('home') }}">Wicked Yoda's Little Helper</a>
       <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#topNav">
         <span class="navbar-toggler-icon"></span>
       </button>
@@ -2552,7 +2552,7 @@ PAGE_TEMPLATE = """
               </div>
               <div class="mb-3">
                 <label class="form-label" for="server_nickname">Server Nickname (optional)</label>
-                <input class="form-control" id="server_nickname" name="server_nickname" placeholder="WickedYoda's Little Helper" {% if not session.get("is_admin") %}disabled{% endif %}>
+                <input class="form-control" id="server_nickname" name="server_nickname" placeholder="Wicked Yoda's Little Helper" {% if not session.get("is_admin") %}disabled{% endif %}>
                 <div class="form-text">Nickname applies only to selected guild.</div>
               </div>
               <div class="form-check mb-3">
