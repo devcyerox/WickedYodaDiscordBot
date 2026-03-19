@@ -82,3 +82,51 @@ def test_action_store_birthdays_and_guess_game(tmp_path: Path, monkeypatch) -> N
     assert store.clear_guess_game(1234567890) is True
     assert store.get_guess_game(1234567890) is None
     assert store.delete_birthday(1234567890, 42) is True
+
+
+def test_guild_spicy_settings_and_prompt_cache(tmp_path: Path, monkeypatch) -> None:
+    bot = _load_bot_module(tmp_path, monkeypatch)
+    store = bot.ActionStore(str(tmp_path / "spicy.db"))
+
+    store.save_guild_settings(
+        1234567890,
+        bot_log_channel_id=None,
+        spicy_prompts_enabled=True,
+        spicy_prompts_channel_id=222,
+    )
+    settings = store.get_guild_settings(1234567890)
+    assert settings["spicy_prompts_enabled"] == 1
+    assert settings["spicy_prompts_channel_id"] == 222
+
+    store.replace_spicy_prompt_catalog(
+        {
+            "repo_url": "https://github.com/wickedyoda/SpicyGameAndBookTokQuiz",
+            "repo_branch": "main",
+            "manifest_path": "manifests/index.json",
+            "manifest_url": "https://raw.githubusercontent.com/wickedyoda/SpicyGameAndBookTokQuiz/main/manifests/index.json",
+            "packs": [
+                {
+                    "pack_id": "spicy-core",
+                    "pack_name": "Spicy Core",
+                    "source_path": "packs/spicy-core.json",
+                    "prompt_count": 1,
+                }
+            ],
+            "prompts": [
+                {
+                    "pack_id": "spicy-core",
+                    "prompt_id": "prompt_001",
+                    "prompt_type": "prompt",
+                    "category": "flirty",
+                    "rating": "18+",
+                    "text": "Describe your ideal late-night date in one sentence.",
+                    "tags": ["adult", "text-only"],
+                }
+            ],
+        }
+    )
+    prompt = store.get_random_spicy_prompt()
+    assert prompt is not None
+    assert prompt["pack_id"] == "spicy-core"
+    assert prompt["prompt_id"] == "prompt_001"
+    assert prompt["text"] == "Describe your ideal late-night date in one sentence."

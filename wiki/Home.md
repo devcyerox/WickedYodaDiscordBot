@@ -4,7 +4,7 @@ Last Updated: 2026-03-19
 
 This folder contains internal project wiki docs for bot operations, command behavior, feed automation, and web admin usage.
 
-Current feature areas include moderation commands, fun/community slash commands, feed automation, guild-scoped member activity reporting, and the multi-guild web admin portal.
+Current feature areas include moderation commands, fun/community slash commands, feed automation, repo-backed Spicy Prompts content refresh, guild-scoped member activity reporting, and the multi-guild web admin portal.
 
 ## Pages
 
@@ -34,6 +34,7 @@ Current feature areas include moderation commands, fun/community slash commands,
   - `/admin/wordpress`
   - `/admin/linkedin`
   - `/admin/youtube`
+  - `/admin/spicy-prompts`
   - `/admin/documentation`
   - `/admin/logs`
   - `/admin/wiki`

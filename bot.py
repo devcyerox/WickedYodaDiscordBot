@@ -124,6 +124,14 @@ YOUTUBE_POLL_INTERVAL_SECONDS = env_int("YOUTUBE_POLL_INTERVAL_SECONDS", 300)
 YOUTUBE_REQUEST_TIMEOUT_SECONDS = env_int("YOUTUBE_REQUEST_TIMEOUT_SECONDS", 12)
 WORDPRESS_REQUEST_TIMEOUT_SECONDS = env_int("WORDPRESS_REQUEST_TIMEOUT_SECONDS", 12)
 LINKEDIN_REQUEST_TIMEOUT_SECONDS = env_int("LINKEDIN_REQUEST_TIMEOUT_SECONDS", 12)
+SPICY_PROMPTS_ENABLED = env_bool("SPICY_PROMPTS_ENABLED", False)
+SPICY_PROMPTS_REPO_URL = os.getenv(
+    "SPICY_PROMPTS_REPO_URL",
+    "https://github.com/wickedyoda/SpicyGameAndBookTokQuiz",
+).strip()
+SPICY_PROMPTS_REPO_BRANCH = os.getenv("SPICY_PROMPTS_REPO_BRANCH", "main").strip() or "main"
+SPICY_PROMPTS_MANIFEST_PATH = os.getenv("SPICY_PROMPTS_MANIFEST_PATH", "manifests/index.json").strip() or "manifests/index.json"
+SPICY_PROMPTS_REQUEST_TIMEOUT_SECONDS = env_int("SPICY_PROMPTS_REQUEST_TIMEOUT_SECONDS", 12)
 UPTIME_STATUS_ENABLED = env_bool("UPTIME_STATUS_ENABLED", True)
 UPTIME_STATUS_TIMEOUT_SECONDS = env_int("UPTIME_STATUS_TIMEOUT_SECONDS", 8)
 WEB_RESTART_ENABLED = env_bool("WEB_RESTART_ENABLED", False)
@@ -194,6 +202,36 @@ LINKEDIN_ACTIVITY_URN_PATTERN = re.compile(r"urn:li:activity:(\d{8,})")
 LINKEDIN_POST_URL_PATTERN = re.compile(r"https://www\.linkedin\.com/(?:feed/update/urn:li:activity:\d+|posts/[^\"'<>\s]+)")
 LINKEDIN_TEXT_PATTERN = re.compile(r'"text":"([^"]+)"')
 LINKEDIN_OG_TITLE_PATTERN = re.compile(r'<meta\s+property="og:title"\s+content="([^"]+)"', re.IGNORECASE)
+SPICY_PROMPT_ALLOWED_TYPES = {"prompt", "truth", "dare", "would_you_rather", "icebreaker", "quiz"}
+SPICY_PROMPT_BLOCKED_TAGS = {
+    "minor",
+    "minors",
+    "underage",
+    "teen",
+    "incest",
+    "coercion",
+    "non-consensual",
+    "nonconsensual",
+    "sexual-violence",
+    "assault",
+    "bestiality",
+    "trafficking",
+    "exploitation",
+}
+SPICY_PROMPT_BLOCKED_CATEGORIES = {
+    "minor",
+    "minors",
+    "underage",
+    "incest",
+    "coercion",
+    "non-consensual",
+    "nonconsensual",
+    "sexual-violence",
+    "assault",
+    "bestiality",
+    "trafficking",
+    "exploitation",
+}
 
 COMMAND_PERMISSION_MODE_DEFAULT = "default"
 COMMAND_PERMISSION_MODE_PUBLIC = "public"
@@ -229,6 +267,7 @@ COMMAND_PERMISSION_METADATA: dict[str, dict[str, str]] = {
         "description": "Conversation starter",
         "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
     },
+    "spicy": {"label": "/spicy", "description": "Random spicy prompt", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
     "countdown": {"label": "/countdown", "description": "Countdown to a date", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
     "leaderboard": {
         "label": "/leaderboard",
@@ -707,6 +746,133 @@ def fetch_json_url(url: str, timeout_seconds: int, *, accept: str = "application
     if not isinstance(payload, dict | list):
         raise RuntimeError("API returned an unexpected response.")
     return payload
+
+
+def build_github_raw_url(repo_url: str, branch: str, relative_path: str) -> str:
+    normalized_repo_url = str(repo_url or "").strip()
+    normalized_branch = str(branch or "").strip() or "main"
+    normalized_path = str(relative_path or "").strip().lstrip("/")
+    if not normalized_repo_url or not normalized_path:
+        raise RuntimeError("Spicy Prompts repo URL and manifest path are required.")
+
+    parsed = urllib.parse.urlparse(normalized_repo_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise RuntimeError("Spicy Prompts repo URL is invalid.")
+
+    host = parsed.netloc.lower()
+    path_parts = [part for part in parsed.path.split("/") if part]
+    if host == "raw.githubusercontent.com":
+        if len(path_parts) >= 2:
+            owner, repo = path_parts[0], path_parts[1]
+            return f"https://raw.githubusercontent.com/{owner}/{repo}/{normalized_branch}/{normalized_path}"
+        raise RuntimeError("Spicy Prompts raw repo URL must include owner and repo.")
+    if host.startswith("www."):
+        host = host[4:]
+    if host != "github.com" or len(path_parts) < 2:
+        raise RuntimeError("Spicy Prompts repo URL must point to a GitHub repository.")
+
+    owner, repo = path_parts[0], path_parts[1]
+    if repo.endswith(".git"):
+        repo = repo[:-4]
+    return f"https://raw.githubusercontent.com/{owner}/{repo}/{normalized_branch}/{normalized_path}"
+
+
+def normalize_spicy_prompt_entry(pack_id: str, entry: dict) -> dict | None:
+    prompt_id = str(entry.get("id", "")).strip()
+    prompt_type = str(entry.get("type", "prompt")).strip().lower() or "prompt"
+    category = str(entry.get("category", "general")).strip().lower() or "general"
+    rating = str(entry.get("rating", "18+")).strip() or "18+"
+    text = str(entry.get("text", "")).strip()
+    if not prompt_id or not text:
+        return None
+    if prompt_type not in SPICY_PROMPT_ALLOWED_TYPES:
+        return None
+    if category in SPICY_PROMPT_BLOCKED_CATEGORIES:
+        return None
+
+    raw_tags = entry.get("tags", [])
+    tags = [str(item).strip().lower() for item in raw_tags if str(item).strip()] if isinstance(raw_tags, list) else []
+    if any(tag in SPICY_PROMPT_BLOCKED_TAGS for tag in tags):
+        return None
+
+    if entry.get("enabled", True) is False:
+        return None
+
+    return {
+        "pack_id": pack_id,
+        "prompt_id": prompt_id,
+        "prompt_type": prompt_type,
+        "category": category,
+        "rating": rating,
+        "text": text,
+        "tags": tags,
+    }
+
+
+def fetch_spicy_prompt_catalog() -> dict:
+    manifest_url = build_github_raw_url(SPICY_PROMPTS_REPO_URL, SPICY_PROMPTS_REPO_BRANCH, SPICY_PROMPTS_MANIFEST_PATH)
+    manifest_payload = fetch_json_url(manifest_url, SPICY_PROMPTS_REQUEST_TIMEOUT_SECONDS)
+    if not isinstance(manifest_payload, dict):
+        raise RuntimeError("Spicy Prompts manifest returned an unexpected payload.")
+
+    raw_packs = manifest_payload.get("packs", [])
+    if not isinstance(raw_packs, list):
+        raise RuntimeError("Spicy Prompts manifest is missing a valid packs list.")
+
+    prompt_rows: list[dict] = []
+    pack_rows: list[dict] = []
+
+    for raw_pack in raw_packs:
+        if not isinstance(raw_pack, dict):
+            continue
+        if raw_pack.get("enabled", True) is False:
+            continue
+        pack_id = str(raw_pack.get("id", "")).strip()
+        pack_name = str(raw_pack.get("name", pack_id)).strip() or pack_id
+        pack_path = str(raw_pack.get("path", "")).strip()
+        if not pack_id or not pack_path:
+            continue
+
+        pack_url = pack_path
+        if not urllib.parse.urlparse(pack_path).scheme:
+            pack_url = build_github_raw_url(SPICY_PROMPTS_REPO_URL, SPICY_PROMPTS_REPO_BRANCH, pack_path)
+
+        pack_payload = fetch_json_url(pack_url, SPICY_PROMPTS_REQUEST_TIMEOUT_SECONDS)
+        if not isinstance(pack_payload, dict):
+            raise RuntimeError(f"Spicy Prompts pack {pack_id} returned an unexpected payload.")
+        raw_prompts = pack_payload.get("prompts", [])
+        if not isinstance(raw_prompts, list):
+            raise RuntimeError(f"Spicy Prompts pack {pack_id} is missing a valid prompts list.")
+
+        accepted_count = 0
+        for raw_entry in raw_prompts:
+            if not isinstance(raw_entry, dict):
+                continue
+            normalized = normalize_spicy_prompt_entry(pack_id, raw_entry)
+            if normalized is None:
+                continue
+            prompt_rows.append(normalized)
+            accepted_count += 1
+
+        pack_rows.append(
+            {
+                "pack_id": pack_id,
+                "pack_name": pack_name,
+                "source_path": pack_path,
+                "prompt_count": accepted_count,
+            }
+        )
+
+    return {
+        "repo_url": SPICY_PROMPTS_REPO_URL,
+        "repo_branch": SPICY_PROMPTS_REPO_BRANCH,
+        "manifest_path": SPICY_PROMPTS_MANIFEST_PATH,
+        "manifest_url": manifest_url,
+        "pack_count": len(pack_rows),
+        "prompt_count": len(prompt_rows),
+        "packs": pack_rows,
+        "prompts": prompt_rows,
+    }
 
 
 def fetch_random_cat_image_url() -> str:
@@ -1230,14 +1396,14 @@ def _xml_local_name(tag: str) -> str:
     return tag.rsplit("}", 1)[-1] if "}" in tag else tag
 
 
-def _find_xml_child_text(element: DefusedET.Element, candidate_names: tuple[str, ...]) -> str:
+def _find_xml_child_text(element: object, candidate_names: tuple[str, ...]) -> str:
     for child in list(element):
         if _xml_local_name(child.tag) in candidate_names:
             return (child.text or "").strip()
     return ""
 
 
-def _find_xml_link(element: DefusedET.Element) -> str:
+def _find_xml_link(element: object) -> str:
     for child in list(element):
         if _xml_local_name(child.tag) != "link":
             continue
@@ -1833,6 +1999,49 @@ class ActionStore:
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS spicy_prompt_packs (
+                    pack_id TEXT PRIMARY KEY,
+                    pack_name TEXT NOT NULL,
+                    source_path TEXT NOT NULL,
+                    prompt_count INTEGER NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS spicy_prompt_entries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    pack_id TEXT NOT NULL,
+                    prompt_id TEXT NOT NULL,
+                    prompt_type TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    rating TEXT NOT NULL,
+                    text TEXT NOT NULL,
+                    tags_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(pack_id, prompt_id)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS spicy_prompt_sync_state (
+                    state_id INTEGER PRIMARY KEY CHECK (state_id = 1),
+                    repo_url TEXT NOT NULL,
+                    repo_branch TEXT NOT NULL,
+                    manifest_path TEXT NOT NULL,
+                    manifest_url TEXT NOT NULL,
+                    last_refresh_at TEXT,
+                    last_success_at TEXT,
+                    last_error TEXT,
+                    pack_count INTEGER NOT NULL DEFAULT 0,
+                    prompt_count INTEGER NOT NULL DEFAULT 0
+                )
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS command_permissions (
                     command_key TEXT PRIMARY KEY,
                     mode TEXT NOT NULL,
@@ -1855,10 +2064,20 @@ class ActionStore:
                 CREATE TABLE IF NOT EXISTS guild_settings (
                     guild_id INTEGER PRIMARY KEY,
                     bot_log_channel_id INTEGER,
+                    spicy_prompts_enabled INTEGER NOT NULL DEFAULT 0,
+                    spicy_prompts_channel_id INTEGER,
                     updated_at TEXT NOT NULL
                 )
                 """
             )
+            guild_settings_columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(guild_settings)").fetchall()}
+            guild_settings_migrations = {
+                "spicy_prompts_enabled": "ALTER TABLE guild_settings ADD COLUMN spicy_prompts_enabled INTEGER NOT NULL DEFAULT 0",
+                "spicy_prompts_channel_id": "ALTER TABLE guild_settings ADD COLUMN spicy_prompts_channel_id INTEGER",
+            }
+            for column, statement in guild_settings_migrations.items():
+                if column not in guild_settings_columns:
+                    conn.execute(statement)
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS member_activity_summary (
@@ -1963,8 +2182,10 @@ class ActionStore:
                     if int(existing_guild_setting) == 0:
                         conn.execute(
                             """
-                            INSERT INTO guild_settings (guild_id, bot_log_channel_id, updated_at)
-                            VALUES (?, ?, ?)
+                            INSERT INTO guild_settings (
+                                guild_id, bot_log_channel_id, spicy_prompts_enabled, spicy_prompts_channel_id, updated_at
+                            )
+                            VALUES (?, ?, 0, NULL, ?)
                             """,
                             (guild_id, BOT_LOG_CHANNEL, now),
                         )
@@ -2228,6 +2449,184 @@ class ActionStore:
                 )
                 conn.commit()
 
+    def replace_spicy_prompt_catalog(self, catalog: dict) -> dict:
+        repo_url = str(catalog.get("repo_url", "")).strip()
+        repo_branch = str(catalog.get("repo_branch", "")).strip()
+        manifest_path = str(catalog.get("manifest_path", "")).strip()
+        manifest_url = str(catalog.get("manifest_url", "")).strip()
+        pack_rows = [item for item in catalog.get("packs", []) if isinstance(item, dict)]
+        prompt_rows = [item for item in catalog.get("prompts", []) if isinstance(item, dict)]
+        now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
+
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute("DELETE FROM spicy_prompt_entries")
+                conn.execute("DELETE FROM spicy_prompt_packs")
+                for pack in pack_rows:
+                    conn.execute(
+                        """
+                        INSERT INTO spicy_prompt_packs (pack_id, pack_name, source_path, prompt_count, updated_at)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (
+                            str(pack.get("pack_id", "")).strip(),
+                            str(pack.get("pack_name", "")).strip(),
+                            str(pack.get("source_path", "")).strip(),
+                            int(pack.get("prompt_count", 0) or 0),
+                            now,
+                        ),
+                    )
+                for prompt in prompt_rows:
+                    conn.execute(
+                        """
+                        INSERT INTO spicy_prompt_entries (
+                            pack_id, prompt_id, prompt_type, category, rating, text, tags_json, updated_at
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            str(prompt.get("pack_id", "")).strip(),
+                            str(prompt.get("prompt_id", "")).strip(),
+                            str(prompt.get("prompt_type", "prompt")).strip(),
+                            str(prompt.get("category", "general")).strip(),
+                            str(prompt.get("rating", "18+")).strip(),
+                            str(prompt.get("text", "")).strip(),
+                            json.dumps(prompt.get("tags", [])),
+                            now,
+                        ),
+                    )
+                conn.execute(
+                    """
+                    INSERT INTO spicy_prompt_sync_state (
+                        state_id, repo_url, repo_branch, manifest_path, manifest_url,
+                        last_refresh_at, last_success_at, last_error, pack_count, prompt_count
+                    )
+                    VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(state_id) DO UPDATE SET
+                        repo_url = excluded.repo_url,
+                        repo_branch = excluded.repo_branch,
+                        manifest_path = excluded.manifest_path,
+                        manifest_url = excluded.manifest_url,
+                        last_refresh_at = excluded.last_refresh_at,
+                        last_success_at = excluded.last_success_at,
+                        last_error = excluded.last_error,
+                        pack_count = excluded.pack_count,
+                        prompt_count = excluded.prompt_count
+                    """,
+                    (
+                        repo_url,
+                        repo_branch,
+                        manifest_path,
+                        manifest_url,
+                        now,
+                        now,
+                        "",
+                        len(pack_rows),
+                        len(prompt_rows),
+                    ),
+                )
+                conn.commit()
+        return self.get_spicy_prompt_status()
+
+    def update_spicy_prompt_sync_failure(self, *, error: str) -> dict:
+        now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
+        manifest_url = ""
+        try:
+            manifest_url = build_github_raw_url(SPICY_PROMPTS_REPO_URL, SPICY_PROMPTS_REPO_BRANCH, SPICY_PROMPTS_MANIFEST_PATH)
+        except RuntimeError:
+            manifest_url = ""
+        with self._lock:
+            with self._connect() as conn:
+                existing_counts = conn.execute(
+                    "SELECT COUNT(*), COALESCE((SELECT COUNT(*) FROM spicy_prompt_packs), 0) FROM spicy_prompt_entries"
+                ).fetchone()
+                prompt_count = int(existing_counts[0] or 0)
+                pack_count = int(existing_counts[1] or 0)
+                conn.execute(
+                    """
+                    INSERT INTO spicy_prompt_sync_state (
+                        state_id, repo_url, repo_branch, manifest_path, manifest_url,
+                        last_refresh_at, last_success_at, last_error, pack_count, prompt_count
+                    )
+                    VALUES (1, ?, ?, ?, ?, ?, COALESCE((SELECT last_success_at FROM spicy_prompt_sync_state WHERE state_id = 1), NULL), ?, ?, ?)
+                    ON CONFLICT(state_id) DO UPDATE SET
+                        repo_url = excluded.repo_url,
+                        repo_branch = excluded.repo_branch,
+                        manifest_path = excluded.manifest_path,
+                        manifest_url = excluded.manifest_url,
+                        last_refresh_at = excluded.last_refresh_at,
+                        last_error = excluded.last_error,
+                        pack_count = excluded.pack_count,
+                        prompt_count = excluded.prompt_count
+                    """,
+                    (
+                        SPICY_PROMPTS_REPO_URL,
+                        SPICY_PROMPTS_REPO_BRANCH,
+                        SPICY_PROMPTS_MANIFEST_PATH,
+                        manifest_url,
+                        now,
+                        truncate_log_text(error, max_length=500),
+                        pack_count,
+                        prompt_count,
+                    ),
+                )
+                conn.commit()
+        return self.get_spicy_prompt_status()
+
+    def get_spicy_prompt_status(self) -> dict:
+        with self._lock:
+            with self._connect() as conn:
+                conn.row_factory = sqlite3.Row
+                state_row = conn.execute(
+                    """
+                    SELECT repo_url, repo_branch, manifest_path, manifest_url, last_refresh_at, last_success_at,
+                           last_error, pack_count, prompt_count
+                    FROM spicy_prompt_sync_state
+                    WHERE state_id = 1
+                    """
+                ).fetchone()
+                pack_rows = conn.execute(
+                    """
+                    SELECT pack_id, pack_name, source_path, prompt_count, updated_at
+                    FROM spicy_prompt_packs
+                    ORDER BY pack_name ASC, pack_id ASC
+                    """
+                ).fetchall()
+                preview_rows = conn.execute(
+                    """
+                    SELECT pack_id, prompt_id, prompt_type, category, rating, text, tags_json
+                    FROM spicy_prompt_entries
+                    ORDER BY pack_id ASC, prompt_id ASC
+                    LIMIT 25
+                    """
+                ).fetchall()
+        state = dict(state_row) if state_row else {}
+        packs = [dict(row) for row in pack_rows]
+        preview: list[dict] = []
+        for row in preview_rows:
+            item = dict(row)
+            try:
+                tags = json.loads(str(item.get("tags_json", "[]")))
+            except json.JSONDecodeError:
+                tags = []
+            item["tags"] = [str(tag).strip() for tag in tags if str(tag).strip()]
+            preview.append(item)
+        return {
+            "ok": True,
+            "enabled": SPICY_PROMPTS_ENABLED,
+            "repo_url": state.get("repo_url", SPICY_PROMPTS_REPO_URL),
+            "repo_branch": state.get("repo_branch", SPICY_PROMPTS_REPO_BRANCH),
+            "manifest_path": state.get("manifest_path", SPICY_PROMPTS_MANIFEST_PATH),
+            "manifest_url": state.get("manifest_url", ""),
+            "last_refresh_at": state.get("last_refresh_at", ""),
+            "last_success_at": state.get("last_success_at", ""),
+            "last_error": state.get("last_error", ""),
+            "pack_count": int(state.get("pack_count", len(packs)) or 0),
+            "prompt_count": int(state.get("prompt_count", len(preview)) or 0),
+            "packs": packs,
+            "preview": preview,
+        }
+
     def get_command_permissions(self, guild_id: int) -> dict[str, dict[str, str | list[int]]]:
         prefix = f"{int(guild_id)}:"
         with self._lock:
@@ -2346,32 +2745,89 @@ class ActionStore:
             with self._connect() as conn:
                 conn.row_factory = sqlite3.Row
                 row = conn.execute(
-                    "SELECT guild_id, bot_log_channel_id FROM guild_settings WHERE guild_id = ?",
+                    """
+                    SELECT guild_id, bot_log_channel_id, spicy_prompts_enabled, spicy_prompts_channel_id
+                    FROM guild_settings
+                    WHERE guild_id = ?
+                    """,
                     (int(guild_id),),
                 ).fetchone()
         if row is None:
-            return {"guild_id": int(guild_id), "bot_log_channel_id": None}
+            return {
+                "guild_id": int(guild_id),
+                "bot_log_channel_id": None,
+                "spicy_prompts_enabled": 0,
+                "spicy_prompts_channel_id": None,
+            }
         return {
             "guild_id": int(row["guild_id"]),
             "bot_log_channel_id": int(row["bot_log_channel_id"]) if row["bot_log_channel_id"] else None,
+            "spicy_prompts_enabled": int(row["spicy_prompts_enabled"] or 0),
+            "spicy_prompts_channel_id": int(row["spicy_prompts_channel_id"]) if row["spicy_prompts_channel_id"] else None,
         }
 
-    def save_guild_settings(self, guild_id: int, *, bot_log_channel_id: int | None) -> dict[str, int | None]:
+    def save_guild_settings(
+        self,
+        guild_id: int,
+        *,
+        bot_log_channel_id: int | None,
+        spicy_prompts_enabled: bool | None = None,
+        spicy_prompts_channel_id: int | None = None,
+    ) -> dict[str, int | None]:
         now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
+        current = self.get_guild_settings(guild_id)
+        if spicy_prompts_enabled is None:
+            spicy_prompts_enabled = bool(int(current.get("spicy_prompts_enabled", 0) or 0))
+        if spicy_prompts_channel_id is None and current.get("spicy_prompts_channel_id") is not None:
+            spicy_prompts_channel_id = int(current.get("spicy_prompts_channel_id", 0) or 0)
         with self._lock:
             with self._connect() as conn:
                 conn.execute(
                     """
-                    INSERT INTO guild_settings (guild_id, bot_log_channel_id, updated_at)
-                    VALUES (?, ?, ?)
+                    INSERT INTO guild_settings (
+                        guild_id, bot_log_channel_id, spicy_prompts_enabled, spicy_prompts_channel_id, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?)
                     ON CONFLICT(guild_id) DO UPDATE SET
                         bot_log_channel_id = excluded.bot_log_channel_id,
+                        spicy_prompts_enabled = excluded.spicy_prompts_enabled,
+                        spicy_prompts_channel_id = excluded.spicy_prompts_channel_id,
                         updated_at = excluded.updated_at
                     """,
-                    (int(guild_id), bot_log_channel_id, now),
+                    (
+                        int(guild_id),
+                        bot_log_channel_id,
+                        1 if spicy_prompts_enabled else 0,
+                        spicy_prompts_channel_id,
+                        now,
+                    ),
                 )
                 conn.commit()
         return self.get_guild_settings(guild_id)
+
+    def get_random_spicy_prompt(self, *, prompt_type: str | None = None) -> dict | None:
+        query = """
+            SELECT pack_id, prompt_id, prompt_type, category, rating, text, tags_json
+            FROM spicy_prompt_entries
+        """
+        params: list[object] = []
+        if prompt_type:
+            query += " WHERE prompt_type = ?"
+            params.append(str(prompt_type).strip().lower())
+        query += " ORDER BY RANDOM() LIMIT 1"
+        with self._lock:
+            with self._connect() as conn:
+                conn.row_factory = sqlite3.Row
+                row = conn.execute(query, tuple(params)).fetchone()
+        if row is None:
+            return None
+        item = dict(row)
+        try:
+            tags = json.loads(str(item.get("tags_json", "[]")))
+        except json.JSONDecodeError:
+            tags = []
+        item["tags"] = [str(tag).strip() for tag in tags if str(tag).strip()]
+        return item
 
     def record_member_activity(
         self,
@@ -2960,12 +3416,60 @@ def run_web_export_member_activity(guild_id: int, role_id: int | None = None) ->
         return {"ok": False, "error": str(exc)}
 
 
+def run_web_get_spicy_prompts_status() -> dict:
+    try:
+        return ACTION_STORE.get_spicy_prompt_status()
+    except Exception as exc:
+        logger.exception("Failed to load Spicy Prompts status: %s", exc)
+        return {"ok": False, "error": "Failed to load Spicy Prompts status."}
+
+
+def run_web_refresh_spicy_prompts(actor_email: str) -> dict:
+    try:
+        catalog = fetch_spicy_prompt_catalog()
+        status = ACTION_STORE.replace_spicy_prompt_catalog(catalog)
+    except Exception as exc:
+        logger.exception("Failed to refresh Spicy Prompts via web admin (%s): %s", actor_email, exc)
+        ACTION_STORE.update_spicy_prompt_sync_failure(error=str(exc))
+        record_action_safe(
+            action="spicy_prompts_refresh",
+            status="failed",
+            moderator=actor_email,
+            target="spicy-prompts",
+            reason=truncate_log_text(str(exc), max_length=250),
+            guild="system",
+        )
+        return {"ok": False, "error": f"Failed to refresh Spicy Prompts: {exc}"}
+
+    record_action_safe(
+        action="spicy_prompts_refresh",
+        status="success",
+        moderator=actor_email,
+        target="spicy-prompts",
+        reason=f"{status.get('pack_count', 0)} packs, {status.get('prompt_count', 0)} prompts",
+        guild="system",
+    )
+    return {
+        "ok": True,
+        "message": f"Refreshed Spicy Prompts: {status.get('pack_count', 0)} packs, {status.get('prompt_count', 0)} prompts.",
+        **status,
+    }
+
+
 def build_activity_leaderboard(window_key: str, guild_id: int, *, limit: int = 10) -> tuple[str, list[dict]]:
     window_spec = next((item for item in MEMBER_ACTIVITY_WINDOW_SPECS if item[0] == window_key), None)
     if window_spec is None:
         raise ValueError(f"Unsupported leaderboard window: {window_key}")
     _, label, _ = window_spec
     return label, list_member_activity_top_window(guild_id, window_key, limit=limit)
+
+
+def get_spicy_prompt_channel_lock(guild_id: int) -> dict:
+    settings = ACTION_STORE.get_guild_settings(guild_id)
+    return {
+        "enabled": bool(int(settings.get("spicy_prompts_enabled", 0) or 0)),
+        "channel_id": int(settings.get("spicy_prompts_channel_id", 0) or 0),
+    }
 
 
 def list_upcoming_birthdays(guild_id: int, *, days_ahead: int = 30, limit: int = 10) -> list[dict]:
@@ -3152,18 +3656,37 @@ def run_web_save_guild_settings(payload: dict, _actor_email: str, guild_id: int)
     if not isinstance(payload, dict):
         return {"ok": False, "error": "Invalid payload."}
     raw_channel_id = str(payload.get("bot_log_channel_id", "")).strip()
+    has_spicy_channel = "spicy_prompts_channel_id" in payload
+    has_spicy_enabled = "spicy_prompts_enabled" in payload
+    raw_spicy_channel_id = str(payload.get("spicy_prompts_channel_id", "")).strip()
+    raw_spicy_enabled = str(payload.get("spicy_prompts_enabled", "")).strip().lower()
     bot_log_channel_id: int | None
+    spicy_prompts_channel_id: int | None
+    spicy_prompts_enabled: bool | None
     if not raw_channel_id:
         bot_log_channel_id = None
     elif raw_channel_id.isdigit():
         bot_log_channel_id = int(raw_channel_id)
     else:
         return {"ok": False, "error": "Bot log channel ID must be numeric."}
+    if not has_spicy_channel:
+        spicy_prompts_channel_id = None
+    elif not raw_spicy_channel_id:
+        spicy_prompts_channel_id = None
+    elif raw_spicy_channel_id.isdigit():
+        spicy_prompts_channel_id = int(raw_spicy_channel_id)
+    else:
+        return {"ok": False, "error": "Spicy Prompts channel ID must be numeric."}
+    spicy_prompts_enabled = raw_spicy_enabled in {"1", "true", "yes", "on"} if has_spicy_enabled else None
+    if spicy_prompts_enabled and spicy_prompts_channel_id is None:
+        return {"ok": False, "error": "Spicy Prompts requires a configured Discord channel."}
 
     try:
         saved = ACTION_STORE.save_guild_settings(
             guild_id=guild_id,
             bot_log_channel_id=bot_log_channel_id,
+            spicy_prompts_enabled=spicy_prompts_enabled,
+            spicy_prompts_channel_id=spicy_prompts_channel_id,
         )
     except Exception as exc:
         logger.exception("Failed to save guild settings for %s: %s", guild_id, exc)
@@ -3302,6 +3825,36 @@ def run_web_request_restart(actor_email: str) -> dict:
     return {"ok": True, "message": "Restart requested. Container should restart shortly."}
 
 
+async def _leave_guild(guild_id: int) -> None:
+    guild = bot.get_guild(int(guild_id))
+    if guild is None:
+        raise RuntimeError("Guild is not currently available to this bot.")
+    await guild.leave()
+
+
+def run_web_leave_guild(actor_email: str, guild_id: int) -> dict:
+    selected_guild_id = int(guild_id)
+    guild = bot.get_guild(selected_guild_id) if "bot" in globals() else None
+    if guild is None:
+        return {"ok": False, "error": "Guild is not currently available to this bot."}
+    guild_name = guild.name
+    try:
+        future = asyncio.run_coroutine_threadsafe(_leave_guild(selected_guild_id), bot.loop)
+        future.result(timeout=30)
+    except Exception as exc:
+        logger.exception("Failed to leave guild %s via web admin (%s): %s", selected_guild_id, actor_email, exc)
+        return {"ok": False, "error": f"Failed to leave guild: {exc}"}
+    record_action_safe(
+        action="leave_guild",
+        status="success",
+        moderator=actor_email,
+        target=f"{guild_name} ({selected_guild_id})",
+        reason="Web admin leave guild request",
+        guild=str(selected_guild_id),
+    )
+    return {"ok": True, "message": f"Left guild {guild_name}.", "guild_id": selected_guild_id}
+
+
 class ModerationBot(commands.Bot):
     def __init__(self) -> None:
         super().__init__(command_prefix=commands.when_mentioned, intents=intents)
@@ -3359,6 +3912,9 @@ class ModerationBot(commands.Bot):
                 update_bot_avatar=run_web_update_bot_avatar,
                 get_member_activity=run_web_get_member_activity,
                 export_member_activity=run_web_export_member_activity,
+                get_spicy_prompts_status=run_web_get_spicy_prompts_status,
+                refresh_spicy_prompts=run_web_refresh_spicy_prompts,
+                leave_guild=run_web_leave_guild,
                 request_restart=run_web_request_restart,
                 resolve_youtube_subscription=lambda source_url: resolve_youtube_subscription_seed(source_url),
                 resolve_youtube_community_seed=lambda source_url: resolve_youtube_community_seed(source_url),
@@ -3397,6 +3953,9 @@ class ModerationBot(commands.Bot):
                         update_bot_avatar=run_web_update_bot_avatar,
                         get_member_activity=run_web_get_member_activity,
                         export_member_activity=run_web_export_member_activity,
+                        get_spicy_prompts_status=run_web_get_spicy_prompts_status,
+                        refresh_spicy_prompts=run_web_refresh_spicy_prompts,
+                        leave_guild=run_web_leave_guild,
                         request_restart=run_web_request_restart,
                         resolve_youtube_subscription=lambda source_url: resolve_youtube_subscription_seed(source_url),
                         resolve_youtube_community_seed=lambda source_url: resolve_youtube_community_seed(source_url),
@@ -3463,7 +4022,7 @@ class ModerationBot(commands.Bot):
             return []
         options: list[dict] = []
         for channel in sorted(guild.text_channels, key=lambda item: (item.position, item.name.lower())):
-            options.append({"id": channel.id, "name": f"#{channel.name}"})
+            options.append({"id": channel.id, "name": f"#{channel.name}", "nsfw": bool(channel.is_nsfw())})
         return options
 
     def build_web_role_options(self, guild_id: int) -> list[dict]:
@@ -3967,6 +4526,15 @@ async def get_text_channel(client: commands.Bot, channel_id: int) -> discord.Tex
     return None
 
 
+def channel_supports_spicy_prompts(channel: discord.abc.GuildChannel | None) -> bool:
+    if not isinstance(channel, discord.TextChannel):
+        return False
+    try:
+        return bool(channel.is_nsfw())
+    except AttributeError:
+        return False
+
+
 def resolve_bot_log_channel_id(guild_id: int | None = None) -> int:
     if guild_id is not None:
         try:
@@ -4384,6 +4952,52 @@ async def questionoftheday(interaction: discord.Interaction) -> None:
     prompt = random.choice(QUESTION_OF_THE_DAY_PROMPTS)
     await interaction.response.send_message(f"Question of the Day:\n**{prompt}**")
     await log_interaction(interaction, action="questionoftheday", reason=truncate_log_text(prompt), success=True)
+
+
+@bot.tree.command(name="spicy", description="Post a random spicy prompt in the configured 18+ channel.")
+async def spicy(interaction: discord.Interaction) -> None:
+    if not await ensure_interaction_command_access(interaction, "spicy"):
+        return
+    if interaction.guild is None or interaction.channel is None:
+        await reply_ephemeral(interaction, "This command can only be used in a server.")
+        await log_interaction(interaction, action="spicy", reason="no guild context", success=False)
+        return
+    if not SPICY_PROMPTS_ENABLED:
+        await reply_ephemeral(interaction, "Spicy Prompts is disabled.")
+        await log_interaction(interaction, action="spicy", reason="feature disabled", success=False)
+        return
+
+    lock = get_spicy_prompt_channel_lock(interaction.guild.id)
+    locked_channel_id = int(lock.get("channel_id", 0) or 0)
+    if not bool(lock.get("enabled")) or locked_channel_id <= 0:
+        await reply_ephemeral(interaction, "Spicy Prompts is not configured for this server yet.")
+        await log_interaction(interaction, action="spicy", reason="guild config missing", success=False)
+        return
+    if interaction.channel.id != locked_channel_id:
+        await reply_ephemeral(interaction, f"This command can only be used in <#{locked_channel_id}>.")
+        await log_interaction(interaction, action="spicy", reason=f"wrong channel: {interaction.channel.id}", success=False)
+        return
+    if not channel_supports_spicy_prompts(interaction.channel):
+        await reply_ephemeral(interaction, "The configured Spicy Prompts channel must be age-restricted.")
+        await log_interaction(interaction, action="spicy", reason="configured channel not age-restricted", success=False)
+        return
+
+    prompt = ACTION_STORE.get_random_spicy_prompt()
+    if prompt is None:
+        await reply_ephemeral(interaction, "No Spicy Prompts are cached yet. Refresh the repo in the web GUI first.")
+        await log_interaction(interaction, action="spicy", reason="no cached prompts", success=False)
+        return
+
+    prompt_type = str(prompt.get("prompt_type", "prompt")).replace("_", " ").title()
+    category = str(prompt.get("category", "general")).replace("_", " ").title()
+    text = str(prompt.get("text", "")).strip()
+    await interaction.response.send_message(f"**Spicy Prompt**\nType: {prompt_type}\nCategory: {category}\n\n{text}")
+    await log_interaction(
+        interaction,
+        action="spicy",
+        reason=truncate_log_text(f"{prompt.get('pack_id', '')}:{prompt.get('prompt_id', '')}"),
+        success=True,
+    )
 
 
 @bot.tree.command(name="countdown", description="Count down to a future date.")
@@ -4822,7 +5436,7 @@ async def help_command(interaction: discord.Interaction) -> None:
     message = (
         "**Wicked Yoda's Little Helper**\n"
         "General: `/ping`, `/sayhi`, `/happy`, `/cat`, `/meme`, `/dadjoke`, `/help`\n"
-        "Fun: `/eightball`, `/coinflip`, `/roll`, `/choose`, `/roastme`, `/compliment`, `/wisdom`, `/gif`, `/poll`, `/questionoftheday`, `/countdown`, `/trivia`, `/wouldyourather`, `/rps`, `/guess`\n"
+        "Fun: `/eightball`, `/coinflip`, `/roll`, `/choose`, `/roastme`, `/compliment`, `/wisdom`, `/gif`, `/poll`, `/questionoftheday`, `/spicy`, `/countdown`, `/trivia`, `/wouldyourather`, `/rps`, `/guess`\n"
         "Community: `/birthday set`, `/birthday view`, `/birthday upcoming`, `/birthday remove`, `/leaderboard`\n"
         "Utilities: `/shorten`, `/expand`, `/uptime`, `/logs`, `/stats`\n"
         "Tags: `/tags`, `/tag <name>`, message tags like `!rules`\n"

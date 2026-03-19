@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from werkzeug.security import generate_password_hash
 
-from web_admin import create_app
+from web_admin import _ensure_spicy_prompt_tables, create_app
 
 
 def _bot_snapshot() -> dict:
@@ -515,6 +515,184 @@ def test_linkedin_feed_add_and_render(tmp_path: Path, monkeypatch) -> None:
     assert b"Shipping a new update" in response.data
 
 
+def test_spicy_prompts_refresh_and_render(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_USERNAME", "admin@example.com")
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_PASSWORD", "TestPass123!")
+    monkeypatch.setenv("SPICY_PROMPTS_ENABLED", "true")
+    monkeypatch.setenv("SPICY_PROMPTS_REPO_URL", "https://github.com/wickedyoda/SpicyGameAndBookTokQuiz")
+    monkeypatch.setenv("SPICY_PROMPTS_REPO_BRANCH", "main")
+    monkeypatch.setenv("SPICY_PROMPTS_MANIFEST_PATH", "manifests/index.json")
+
+    db_path = tmp_path / "actions.db"
+
+    def refresh_callback(_actor_email: str) -> dict:
+        _ensure_spicy_prompt_tables(str(db_path))
+        with sqlite3.connect(db_path) as conn:
+            now = "2026-03-19 12:00:00"
+            conn.execute("DELETE FROM spicy_prompt_entries")
+            conn.execute("DELETE FROM spicy_prompt_packs")
+            conn.execute("DELETE FROM spicy_prompt_sync_state")
+            conn.execute(
+                """
+                INSERT INTO spicy_prompt_packs (pack_id, pack_name, source_path, prompt_count, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                ("spicy-core", "Spicy Core", "packs/spicy-core.json", 1, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO spicy_prompt_entries (
+                    pack_id, prompt_id, prompt_type, category, rating, text, tags_json, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "spicy-core",
+                    "truth_001",
+                    "truth",
+                    "flirty",
+                    "18+",
+                    "What is the boldest message you have ever wanted to send someone?",
+                    '["adult","text-only"]',
+                    now,
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO spicy_prompt_sync_state (
+                    state_id, repo_url, repo_branch, manifest_path, manifest_url,
+                    last_refresh_at, last_success_at, last_error, pack_count, prompt_count
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    1,
+                    "https://github.com/wickedyoda/SpicyGameAndBookTokQuiz",
+                    "main",
+                    "manifests/index.json",
+                    "https://raw.githubusercontent.com/wickedyoda/SpicyGameAndBookTokQuiz/main/manifests/index.json",
+                    now,
+                    now,
+                    "",
+                    1,
+                    1,
+                ),
+            )
+            conn.commit()
+        return {"ok": True, "message": "Refreshed Spicy Prompts: 1 packs, 1 prompts."}
+
+    app = create_app(
+        str(db_path),
+        _bot_snapshot,
+        refresh_spicy_prompts=refresh_callback,
+    )
+    client = app.test_client()
+    csrf_token = _login(client)
+
+    response = client.post(
+        "/admin/spicy-prompts/refresh",
+        headers={"X-CSRF-Token": csrf_token},
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert b"Refreshed Spicy Prompts: 1 packs, 1 prompts." in response.data
+    assert b"Spicy Core" in response.data
+    assert b"What is the boldest message you have ever wanted to send someone?" in response.data
+    assert b"SpicyGameAndBookTokQuiz" in response.data
+
+
+def test_spicy_prompts_settings_require_nsfw_channel(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_USERNAME", "admin@example.com")
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_PASSWORD", "TestPass123!")
+
+    def get_discord_catalog(_guild_id: int) -> dict:
+        return {
+            "ok": True,
+            "guild": {"id": 1234567890, "name": "Guild"},
+            "channels": [
+                {"id": 111, "name": "#general", "nsfw": False},
+                {"id": 222, "name": "#spicy", "nsfw": True},
+            ],
+            "roles": [],
+        }
+
+    def get_guild_settings(_guild_id: int) -> dict:
+        return {"ok": True, "guild_id": 1234567890, "bot_log_channel_id": None, "spicy_prompts_enabled": 0, "spicy_prompts_channel_id": None}
+
+    app = create_app(
+        str(tmp_path / "actions.db"),
+        _bot_snapshot,
+        get_discord_catalog=get_discord_catalog,
+        get_guild_settings=get_guild_settings,
+    )
+    client = app.test_client()
+    csrf_token = _login(client)
+
+    response = client.post(
+        "/admin/spicy-prompts/settings",
+        data={"spicy_prompts_enabled": "1", "spicy_prompts_channel_id": "111"},
+        headers={"X-CSRF-Token": csrf_token},
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert b"Spicy Prompts must use an age-restricted Discord channel." in response.data
+
+
+def test_spicy_prompts_settings_save_uses_guild_settings_callback(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_USERNAME", "admin@example.com")
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_PASSWORD", "TestPass123!")
+    saved_payloads: list[dict] = []
+
+    def get_discord_catalog(_guild_id: int) -> dict:
+        return {
+            "ok": True,
+            "guild": {"id": 1234567890, "name": "Guild"},
+            "channels": [
+                {"id": 222, "name": "#spicy", "nsfw": True},
+            ],
+            "roles": [],
+        }
+
+    def get_guild_settings(_guild_id: int) -> dict:
+        return {"ok": True, "guild_id": 1234567890, "bot_log_channel_id": None, "spicy_prompts_enabled": 0, "spicy_prompts_channel_id": None}
+
+    def save_guild_settings(payload: dict, _actor: str, _guild_id: int) -> dict:
+        saved_payloads.append(payload)
+        return {
+            "ok": True,
+            "guild_id": 1234567890,
+            "bot_log_channel_id": None,
+            "spicy_prompts_enabled": 1,
+            "spicy_prompts_channel_id": 222,
+            "message": "Spicy Prompts settings updated.",
+        }
+
+    app = create_app(
+        str(tmp_path / "actions.db"),
+        _bot_snapshot,
+        get_discord_catalog=get_discord_catalog,
+        get_guild_settings=get_guild_settings,
+        save_guild_settings=save_guild_settings,
+    )
+    client = app.test_client()
+    csrf_token = _login(client)
+
+    response = client.post(
+        "/admin/spicy-prompts/settings",
+        data={"spicy_prompts_enabled": "1", "spicy_prompts_channel_id": "222"},
+        headers={"X-CSRF-Token": csrf_token},
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert b"Spicy Prompts settings updated." in response.data
+    assert saved_payloads
+    assert saved_payloads[0]["spicy_prompts_enabled"] == "1"
+    assert saved_payloads[0]["spicy_prompts_channel_id"] == "222"
+
+
 def test_settings_save_updates_env_file(tmp_path: Path, monkeypatch) -> None:
     env_file = tmp_path / "env.env"
     env_file.write_text("DISCORD_TOKEN=token123\nWEB_PORT=8080\n", encoding="utf-8")
@@ -587,6 +765,74 @@ def test_guilds_page_renders_managed_servers(tmp_path: Path, monkeypatch) -> Non
     assert b"Discord Servers" in response.data
     assert b"Alpha Guild" in response.data
     assert b"Beta Guild" in response.data
+
+
+def test_admin_can_leave_guild_from_guilds_page(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_USERNAME", "admin@example.com")
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_PASSWORD", "TestPass123!")
+
+    def get_managed_guilds() -> list[dict]:
+        return [
+            {"id": 111111111111111111, "name": "Alpha Guild", "member_count": 42, "is_primary": True},
+            {"id": 222222222222222222, "name": "Beta Guild", "member_count": 13, "is_primary": False},
+        ]
+
+    leave_calls: list[tuple[str, int]] = []
+
+    def leave_guild(actor: str, guild_id: int) -> dict:
+        leave_calls.append((actor, guild_id))
+        return {"ok": True, "message": "Left guild Beta Guild.", "guild_id": guild_id}
+
+    app = create_app(
+        str(tmp_path / "actions.db"),
+        _bot_snapshot,
+        get_managed_guilds=get_managed_guilds,
+        leave_guild=leave_guild,
+    )
+    client = app.test_client()
+    csrf_token = _login(client)
+
+    response = client.post(
+        "/admin/guilds/leave",
+        data={"guild_id": "222222222222222222"},
+        headers={"X-CSRF-Token": csrf_token},
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert b"Left guild Beta Guild." in response.data
+    assert leave_calls == [("admin@example.com", 222222222222222222)]
+
+
+def test_read_only_cannot_leave_guild(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_USERNAME", "admin@example.com")
+    monkeypatch.setenv("WEB_ADMIN_DEFAULT_PASSWORD", "TestPass123!")
+    app = create_app(str(tmp_path / "actions.db"), _bot_snapshot)
+    client = app.test_client()
+    admin_csrf = _login(client)
+
+    add_response = _add_user(
+        client,
+        admin_csrf,
+        email="viewer@example.com",
+        password="ViewerPass123!",
+        is_admin=False,
+        display_name="Viewer",
+    )
+    assert add_response.status_code == 200
+
+    client.get("/logout", follow_redirects=True)
+    viewer_csrf = _login_as(client, "viewer@example.com", "ViewerPass123!")
+
+    response = client.post(
+        "/admin/guilds/leave",
+        data={"guild_id": "111111111111111111"},
+        headers={"X-CSRF-Token": viewer_csrf},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 302
+    assert "/admin" in response.headers["Location"]
 
 
 def test_member_activity_page_renders_tables(tmp_path: Path, monkeypatch) -> None:

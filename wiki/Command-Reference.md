@@ -184,6 +184,20 @@ Response visibility for most slash commands is controlled by `COMMAND_RESPONSES_
   - Posts the prompt publicly in the channel.
   - Logs the interaction to configured guild log channel (or global `Bot_Log_Channel` fallback) and SQLite.
 
+## `/spicy`
+
+- Description: Post a random spicy prompt from the cached repo-backed prompt library.
+- Parameters: none
+- Required user permissions: none
+- Bot action:
+  - Only works when `SPICY_PROMPTS_ENABLED=true`.
+  - Only works in the guild-specific channel configured from `/admin/spicy-prompts`.
+  - Rejects use outside the configured channel.
+  - Rejects use if the configured channel is not age-restricted.
+  - Rejects use when the prompt cache is empty and instructs admins to refresh from the web GUI.
+  - Posts the prompt publicly in the configured channel.
+  - Logs success/failure to configured guild log channel (or global `Bot_Log_Channel` fallback) and SQLite action history.
+
 ## `/countdown`
 
 - Description: Count down to a future date.
