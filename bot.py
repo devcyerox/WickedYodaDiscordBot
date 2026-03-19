@@ -1,4 +1,6 @@
 import asyncio
+import concurrent.futures
+import csv
 import http.client
 import importlib.util
 import io
@@ -10,6 +12,7 @@ import sqlite3
 import tempfile
 import threading
 import urllib.parse
+import zipfile
 from datetime import UTC, datetime, timedelta
 
 import discord
@@ -122,6 +125,14 @@ WEB_RESTART_ENABLED = env_bool("WEB_RESTART_ENABLED", False)
 WEB_AVATAR_MAX_UPLOAD_BYTES = max(1024, env_int("WEB_AVATAR_MAX_UPLOAD_BYTES", 2 * 1024 * 1024))
 FEED_INTERVAL_OPTIONS = {300, 600, 900, 1800, 3600, 10800, 21600}
 NOTIFICATION_LOOP_SECONDS = 60
+MEMBER_ACTIVITY_RECENT_RETENTION_DAYS = 90
+MEMBER_ACTIVITY_WEB_TOP_LIMIT = 20
+MEMBER_ACTIVITY_WINDOW_SPECS = (
+    ("90d", "Last 90 Days", timedelta(days=90)),
+    ("30d", "Last 30 Days", timedelta(days=30)),
+    ("7d", "Last 7 Days", timedelta(days=7)),
+    ("1d", "Last 24 Hours", timedelta(days=1)),
+)
 
 if WEB_TLS_ENABLED and bool(WEB_TLS_CERT_FILE) != bool(WEB_TLS_KEY_FILE):
     raise RuntimeError("WEB_TLS_CERT_FILE and WEB_TLS_KEY_FILE must both be set when using custom TLS certificates.")
@@ -196,6 +207,7 @@ COMMAND_PERMISSION_METADATA: dict[str, dict[str, str]] = {
     "expand": {"label": "/expand", "description": "Expand short URL", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
     "uptime": {"label": "/uptime", "description": "Uptime monitor summary", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
     "logs": {"label": "/logs", "description": "Read recent error logs", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR},
+    "stats": {"label": "/stats", "description": "Your private activity summary", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
     "help": {"label": "/help", "description": "Command overview", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
     "tags": {"label": "/tags", "description": "List configured tags", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
     "tag": {"label": "/tag", "description": "Post a configured tag", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
@@ -302,6 +314,60 @@ def is_moderator_member(member: discord.Member | discord.User) -> bool:
         or perms.manage_messages
         or perms.manage_roles
         or perms.moderate_members
+    )
+
+
+def normalize_activity_timestamp(raw_value: datetime | None = None) -> datetime:
+    if isinstance(raw_value, datetime):
+        if raw_value.tzinfo is None:
+            return raw_value.replace(tzinfo=UTC)
+        return raw_value.astimezone(UTC)
+    return datetime.now(UTC)
+
+
+def require_managed_guild_id(guild_id: int | None, *, context: str) -> int:
+    try:
+        safe_guild_id = int(guild_id or 0)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Invalid {context}.") from exc
+    if safe_guild_id <= 0:
+        raise ValueError(f"Invalid {context}.")
+    if MANAGED_GUILD_IDS is not None and safe_guild_id not in MANAGED_GUILD_IDS:
+        raise ValueError(f"Guild {safe_guild_id} is not managed by this bot.")
+    return safe_guild_id
+
+
+def build_member_activity_window_record(
+    key: str,
+    label: str,
+    message_count: int,
+    active_days: int,
+    *,
+    last_message_at: str = "",
+) -> dict[str, str | int]:
+    return {
+        "key": key,
+        "label": label,
+        "message_count": int(message_count or 0),
+        "active_days": int(active_days or 0),
+        "last_message_at": str(last_message_at or ""),
+    }
+
+
+def format_member_activity_last_seen(raw_value: str) -> str:
+    value = str(raw_value or "").strip()
+    return value if value else "n/a"
+
+
+def format_member_activity_window_summary(window: dict) -> str:
+    label = str(window.get("label") or "Activity")
+    return "\n".join(
+        [
+            f"**{label}**",
+            f"- Messages: {int(window.get('message_count') or 0)}",
+            f"- Active Days: {int(window.get('active_days') or 0)}",
+            f"- Last Seen: {format_member_activity_last_seen(str(window.get('last_message_at') or ''))}",
+        ]
     )
 
 
@@ -1436,6 +1502,59 @@ class ActionStore:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS member_activity_summary (
+                    guild_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    username TEXT NOT NULL DEFAULT '',
+                    display_name TEXT NOT NULL DEFAULT '',
+                    first_message_at TEXT NOT NULL,
+                    last_message_at TEXT NOT NULL,
+                    PRIMARY KEY (guild_id, user_id)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS member_activity_recent_hourly (
+                    guild_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    hour_bucket TEXT NOT NULL,
+                    message_count INTEGER NOT NULL DEFAULT 0,
+                    last_message_at TEXT NOT NULL,
+                    PRIMARY KEY (guild_id, user_id, hour_bucket)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS member_activity_seen_messages (
+                    guild_id INTEGER NOT NULL,
+                    message_id INTEGER NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (guild_id, message_id)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_member_activity_summary_last_message
+                    ON member_activity_summary(guild_id, last_message_at)
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_member_activity_recent_hourly_guild_bucket
+                    ON member_activity_recent_hourly(guild_id, hour_bucket)
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_member_activity_seen_messages_guild_created
+                    ON member_activity_seen_messages(guild_id, created_at)
+                """
+            )
             existing_tags = conn.execute("SELECT COUNT(*) FROM tag_responses").fetchone()[0]
             if int(existing_tags) == 0:
                 now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
@@ -1873,12 +1992,469 @@ class ActionStore:
                 conn.commit()
         return self.get_guild_settings(guild_id)
 
+    def record_member_activity(
+        self,
+        *,
+        guild_id: int,
+        user_id: int,
+        username: str,
+        display_name: str,
+        message_id: int,
+        message_dt: datetime,
+    ) -> bool:
+        safe_guild_id = require_managed_guild_id(guild_id, context="member activity guild")
+        safe_message_dt = normalize_activity_timestamp(message_dt)
+        message_iso = safe_message_dt.isoformat()
+        hour_bucket = safe_message_dt.replace(minute=0, second=0, microsecond=0).isoformat()
+        cutoff_dt = safe_message_dt - timedelta(days=MEMBER_ACTIVITY_RECENT_RETENTION_DAYS)
+        cutoff_bucket = cutoff_dt.replace(minute=0, second=0, microsecond=0).isoformat()
+        with self._lock:
+            with self._connect() as conn:
+                inserted = conn.execute(
+                    """
+                    INSERT OR IGNORE INTO member_activity_seen_messages (guild_id, message_id, created_at)
+                    VALUES (?, ?, ?)
+                    """,
+                    (safe_guild_id, int(message_id), message_iso),
+                )
+                if inserted.rowcount == 0:
+                    return False
+                conn.execute(
+                    "DELETE FROM member_activity_recent_hourly WHERE guild_id = ? AND hour_bucket < ?",
+                    (safe_guild_id, cutoff_bucket),
+                )
+                conn.execute(
+                    "DELETE FROM member_activity_seen_messages WHERE guild_id = ? AND created_at < ?",
+                    (safe_guild_id, cutoff_dt.isoformat()),
+                )
+                conn.execute(
+                    "DELETE FROM member_activity_summary WHERE guild_id = ? AND last_message_at < ?",
+                    (safe_guild_id, cutoff_dt.isoformat()),
+                )
+                summary_row = conn.execute(
+                    """
+                    SELECT first_message_at
+                    FROM member_activity_summary
+                    WHERE guild_id = ? AND user_id = ?
+                    """,
+                    (safe_guild_id, int(user_id)),
+                ).fetchone()
+                if summary_row is None:
+                    conn.execute(
+                        """
+                        INSERT INTO member_activity_summary (
+                            guild_id, user_id, username, display_name, first_message_at, last_message_at
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            safe_guild_id,
+                            int(user_id),
+                            truncate_log_text(username, max_length=120),
+                            truncate_log_text(display_name, max_length=120),
+                            message_iso,
+                            message_iso,
+                        ),
+                    )
+                else:
+                    conn.execute(
+                        """
+                        UPDATE member_activity_summary
+                        SET username = ?, display_name = ?, last_message_at = ?
+                        WHERE guild_id = ? AND user_id = ?
+                        """,
+                        (
+                            truncate_log_text(username, max_length=120),
+                            truncate_log_text(display_name, max_length=120),
+                            message_iso,
+                            safe_guild_id,
+                            int(user_id),
+                        ),
+                    )
+                conn.execute(
+                    """
+                    INSERT INTO member_activity_recent_hourly (
+                        guild_id, user_id, hour_bucket, message_count, last_message_at
+                    )
+                    VALUES (?, ?, ?, 1, ?)
+                    ON CONFLICT(guild_id, user_id, hour_bucket) DO UPDATE SET
+                        message_count = member_activity_recent_hourly.message_count + 1,
+                        last_message_at = excluded.last_message_at
+                    """,
+                    (safe_guild_id, int(user_id), hour_bucket, message_iso),
+                )
+                conn.commit()
+        return True
+
+    def list_member_activity_window_rows(self, guild_id: int, *, since_dt: datetime) -> list[dict]:
+        safe_guild_id = require_managed_guild_id(guild_id, context="member activity guild")
+        cutoff_bucket = normalize_activity_timestamp(since_dt).replace(minute=0, second=0, microsecond=0).isoformat()
+        with self._lock:
+            with self._connect() as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    """
+                    SELECT
+                        h.user_id,
+                        s.username,
+                        s.display_name,
+                        MAX(h.last_message_at) AS last_message_at,
+                        SUM(h.message_count) AS message_count,
+                        COUNT(DISTINCT substr(h.hour_bucket, 1, 10)) AS active_days
+                    FROM member_activity_recent_hourly h
+                    LEFT JOIN member_activity_summary s
+                      ON s.guild_id = h.guild_id AND s.user_id = h.user_id
+                    WHERE h.guild_id = ?
+                      AND h.hour_bucket >= ?
+                    GROUP BY h.user_id, s.username, s.display_name
+                    ORDER BY message_count DESC, last_message_at DESC
+                    """,
+                    (safe_guild_id, cutoff_bucket),
+                ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_member_activity_snapshot_rows(self, guild_id: int, user_id: int) -> tuple[dict | None, list[dict]]:
+        safe_guild_id = require_managed_guild_id(guild_id, context="member activity guild")
+        now_dt = datetime.now(UTC)
+        windows: list[dict] = []
+        with self._lock:
+            with self._connect() as conn:
+                conn.row_factory = sqlite3.Row
+                summary_row = conn.execute(
+                    """
+                    SELECT user_id, username, display_name, first_message_at, last_message_at
+                    FROM member_activity_summary
+                    WHERE guild_id = ? AND user_id = ?
+                    """,
+                    (safe_guild_id, int(user_id)),
+                ).fetchone()
+                if summary_row is None:
+                    return None, []
+                for window_key, label, duration in MEMBER_ACTIVITY_WINDOW_SPECS:
+                    cutoff_dt = now_dt - duration
+                    row = conn.execute(
+                        """
+                        SELECT
+                            SUM(message_count) AS message_count,
+                            COUNT(DISTINCT substr(hour_bucket, 1, 10)) AS active_days,
+                            MAX(last_message_at) AS last_message_at
+                        FROM member_activity_recent_hourly
+                        WHERE guild_id = ?
+                          AND user_id = ?
+                          AND hour_bucket >= ?
+                        """,
+                        (
+                            safe_guild_id,
+                            int(user_id),
+                            cutoff_dt.replace(minute=0, second=0, microsecond=0).isoformat(),
+                        ),
+                    ).fetchone()
+                    windows.append(
+                        build_member_activity_window_record(
+                            window_key,
+                            label,
+                            int((row["message_count"] or 0) if row is not None else 0),
+                            int((row["active_days"] or 0) if row is not None else 0),
+                            last_message_at=str((row["last_message_at"] or "") if row is not None else ""),
+                        )
+                    )
+        return dict(summary_row), windows
+
+    def export_member_activity_rows(self, guild_id: int) -> tuple[list[dict], list[dict]]:
+        safe_guild_id = require_managed_guild_id(guild_id, context="member activity guild")
+        with self._lock:
+            with self._connect() as conn:
+                conn.row_factory = sqlite3.Row
+                summary_rows = conn.execute(
+                    """
+                    SELECT guild_id, user_id, username, display_name, first_message_at, last_message_at
+                    FROM member_activity_summary
+                    WHERE guild_id = ?
+                    ORDER BY last_message_at DESC, user_id ASC
+                    """,
+                    (safe_guild_id,),
+                ).fetchall()
+                hourly_rows = conn.execute(
+                    """
+                    SELECT guild_id, user_id, hour_bucket, message_count, last_message_at
+                    FROM member_activity_recent_hourly
+                    WHERE guild_id = ?
+                    ORDER BY hour_bucket DESC, user_id ASC
+                    """,
+                    (safe_guild_id,),
+                ).fetchall()
+        return [dict(row) for row in summary_rows], [dict(row) for row in hourly_rows]
+
 
 ACTION_DB_PATH = resolve_action_db_path()
 ACTIONS_DIR = os.path.dirname(ACTION_DB_PATH) or "."
 LOG_DIR = resolve_log_dir(ACTION_DB_PATH)
 BOT_LOG_FILE, BOT_CHANNEL_LOG_FILE, CONTAINER_ERROR_LOG_FILE = configure_runtime_logging(LOG_DIR)
 ACTION_STORE = ActionStore(ACTION_DB_PATH)
+
+
+async def resolve_member_activity_members_async(guild_id: int, user_ids: list[int]) -> dict[int, discord.Member]:
+    guild = bot.get_guild(int(guild_id))
+    if guild is None:
+        return {}
+    members_by_id: dict[int, discord.Member] = {}
+    for user_id in user_ids:
+        member = guild.get_member(int(user_id))
+        if member is not None:
+            members_by_id[int(user_id)] = member
+    missing_ids = [user_id for user_id in user_ids if user_id not in members_by_id]
+    for user_id in missing_ids:
+        try:
+            member = await guild.fetch_member(int(user_id))
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            continue
+        members_by_id[int(user_id)] = member
+    return members_by_id
+
+
+def resolve_member_activity_members(guild_id: int, user_ids: list[int]) -> dict[int, discord.Member]:
+    unique_user_ids: list[int] = []
+    seen: set[int] = set()
+    for user_id in user_ids:
+        try:
+            normalized = int(user_id)
+        except (TypeError, ValueError):
+            continue
+        if normalized <= 0 or normalized in seen:
+            continue
+        seen.add(normalized)
+        unique_user_ids.append(normalized)
+    if not unique_user_ids:
+        return {}
+
+    loop = getattr(bot, "loop", None)
+    if loop is None or not loop.is_running():
+        guild = bot.get_guild(int(guild_id))
+        if guild is None:
+            return {}
+        return {user_id: member for user_id in unique_user_ids if (member := guild.get_member(user_id)) is not None}
+
+    future = asyncio.run_coroutine_threadsafe(resolve_member_activity_members_async(int(guild_id), unique_user_ids), loop)
+    try:
+        return future.result(timeout=20)
+    except concurrent.futures.TimeoutError:
+        future.cancel()
+        logger.warning("Timed out resolving guild members for member activity (guild=%s).", guild_id)
+        return {}
+    except Exception:
+        logger.exception("Failed resolving guild members for member activity (guild=%s).", guild_id)
+        return {}
+
+
+def is_member_activity_ranking_eligible(member: discord.Member | None, role_id: int | None = None) -> bool:
+    if not isinstance(member, discord.Member):
+        return False
+    if member.bot or is_moderator_member(member):
+        return False
+    if role_id is not None and not member_has_any_role_id(member, [role_id]):
+        return False
+    return True
+
+
+def record_member_message_activity(message: discord.Message) -> bool:
+    if message.guild is None or message.author.bot:
+        return False
+    try:
+        safe_guild_id = require_managed_guild_id(message.guild.id, context="member activity guild")
+    except ValueError:
+        return False
+    author = message.author
+    display_name = getattr(author, "display_name", str(author))
+    return ACTION_STORE.record_member_activity(
+        guild_id=safe_guild_id,
+        user_id=int(author.id),
+        username=truncate_log_text(str(author), max_length=120),
+        display_name=truncate_log_text(str(display_name), max_length=120),
+        message_id=int(message.id),
+        message_dt=normalize_activity_timestamp(getattr(message, "created_at", None)),
+    )
+
+
+def list_member_activity_top_window(guild_id: int | None, window_key: str, *, limit: int = MEMBER_ACTIVITY_WEB_TOP_LIMIT, role_id: int | None = None) -> list[dict]:
+    safe_guild_id = require_managed_guild_id(guild_id, context="member activity guild")
+    window_spec = next((item for item in MEMBER_ACTIVITY_WINDOW_SPECS if item[0] == window_key), None)
+    if window_spec is None:
+        raise ValueError(f"Unsupported member activity window: {window_key}")
+    _, label, duration = window_spec
+    cutoff_dt = datetime.now(UTC) - duration
+    rows = ACTION_STORE.list_member_activity_window_rows(safe_guild_id, since_dt=cutoff_dt)
+    member_map = resolve_member_activity_members(safe_guild_id, [int(row.get("user_id", 0)) for row in rows])
+    members: list[dict] = []
+    safe_role_id = int(role_id) if isinstance(role_id, int) and role_id > 0 else None
+    for row in rows:
+        user_id = int(row.get("user_id", 0) or 0)
+        if not is_member_activity_ranking_eligible(member_map.get(user_id), role_id=safe_role_id):
+            continue
+        stats = build_member_activity_window_record(
+            window_key,
+            label,
+            int(row.get("message_count", 0) or 0),
+            int(row.get("active_days", 0) or 0),
+            last_message_at=str(row.get("last_message_at", "") or ""),
+        )
+        stats.update(
+            {
+                "rank": len(members) + 1,
+                "user_id": user_id,
+                "username": str(row.get("username", "") or ""),
+                "display_name": str(row.get("display_name", "") or ""),
+            }
+        )
+        members.append(stats)
+        if len(members) >= max(1, min(int(limit), 100)):
+            break
+    return members
+
+
+def get_member_activity_snapshot(guild_id: int | None, user_id: int) -> dict:
+    safe_guild_id = require_managed_guild_id(guild_id, context="member activity guild")
+    summary_row, windows = ACTION_STORE.get_member_activity_snapshot_rows(safe_guild_id, int(user_id))
+    if summary_row is None:
+        return {"ok": True, "user_id": int(user_id), "username": "", "display_name": "", "windows": []}
+    return {
+        "ok": True,
+        "user_id": int(summary_row.get("user_id", 0) or 0),
+        "username": str(summary_row.get("username", "") or ""),
+        "display_name": str(summary_row.get("display_name", "") or ""),
+        "windows": windows,
+    }
+
+
+def build_member_activity_web_payload(guild_id: int, role_id: int | None = None) -> dict:
+    safe_guild_id = require_managed_guild_id(guild_id, context="member activity guild")
+    safe_role_id = int(role_id) if isinstance(role_id, int) and role_id > 0 else None
+    windows = []
+    for window_key, label, _ in MEMBER_ACTIVITY_WINDOW_SPECS:
+        windows.append(
+            {
+                "key": window_key,
+                "label": label,
+                "members": list_member_activity_top_window(safe_guild_id, window_key, limit=MEMBER_ACTIVITY_WEB_TOP_LIMIT, role_id=safe_role_id),
+            }
+        )
+    return {
+        "ok": True,
+        "guild_id": safe_guild_id,
+        "generated_at": datetime.now(UTC).isoformat(),
+        "top_limit": MEMBER_ACTIVITY_WEB_TOP_LIMIT,
+        "selected_role_id": safe_role_id or 0,
+        "excluded_role_ids": [],
+        "excluded_role_names": [],
+        "windows": windows,
+    }
+
+
+def export_member_activity_archive(guild_id: int, role_id: int | None = None) -> dict:
+    safe_guild_id = require_managed_guild_id(guild_id, context="member activity guild")
+    safe_role_id = int(role_id) if isinstance(role_id, int) and role_id > 0 else None
+    payload = build_member_activity_web_payload(safe_guild_id, role_id=safe_role_id)
+    generated_at = datetime.now(UTC).replace(microsecond=0)
+    summary_rows, hourly_rows = ACTION_STORE.export_member_activity_rows(safe_guild_id)
+
+    def build_csv_bytes(headers: list[str], rows: list[list[object]]) -> bytes:
+        buffer = io.StringIO()
+        writer = csv.writer(buffer)
+        writer.writerow(headers)
+        writer.writerows(rows)
+        return buffer.getvalue().encode("utf-8")
+
+    archive_buffer = io.BytesIO()
+    with zipfile.ZipFile(archive_buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "summary.json",
+            json.dumps(
+                {
+                    "guild_id": safe_guild_id,
+                    "generated_at": generated_at.isoformat(),
+                    "retention_days": MEMBER_ACTIVITY_RECENT_RETENTION_DAYS,
+                    "windows": payload.get("windows", []),
+                },
+                indent=2,
+                sort_keys=True,
+            ).encode("utf-8"),
+        )
+        for window in payload.get("windows", []):
+            members = window.get("members", []) if isinstance(window, dict) else []
+            archive.writestr(
+                f"{str(window.get('key') or 'window')}.csv",
+                build_csv_bytes(
+                    ["rank", "user_id", "display_name", "username", "message_count", "active_days", "last_message_at"],
+                    [
+                        [
+                            int(member.get("rank") or 0),
+                            int(member.get("user_id") or 0),
+                            str(member.get("display_name") or ""),
+                            str(member.get("username") or ""),
+                            int(member.get("message_count") or 0),
+                            int(member.get("active_days") or 0),
+                            str(member.get("last_message_at") or ""),
+                        ]
+                        for member in members
+                    ],
+                ),
+            )
+        archive.writestr(
+            "member_activity_summary.csv",
+            build_csv_bytes(
+                ["guild_id", "user_id", "username", "display_name", "first_message_at", "last_message_at"],
+                [
+                    [
+                        int(row.get("guild_id", 0) or 0),
+                        int(row.get("user_id", 0) or 0),
+                        str(row.get("username", "") or ""),
+                        str(row.get("display_name", "") or ""),
+                        str(row.get("first_message_at", "") or ""),
+                        str(row.get("last_message_at", "") or ""),
+                    ]
+                    for row in summary_rows
+                ],
+            ),
+        )
+        archive.writestr(
+            "member_activity_recent_hourly.csv",
+            build_csv_bytes(
+                ["guild_id", "user_id", "hour_bucket", "message_count", "last_message_at"],
+                [
+                    [
+                        int(row.get("guild_id", 0) or 0),
+                        int(row.get("user_id", 0) or 0),
+                        str(row.get("hour_bucket", "") or ""),
+                        int(row.get("message_count", 0) or 0),
+                        str(row.get("last_message_at", "") or ""),
+                    ]
+                    for row in hourly_rows
+                ],
+            ),
+        )
+    role_suffix = f"_role_{safe_role_id}" if safe_role_id is not None else ""
+    return {
+        "ok": True,
+        "filename": f"member_activity_guild_{safe_guild_id}{role_suffix}_{generated_at.strftime('%Y%m%dT%H%M%SZ')}.zip",
+        "content_type": "application/zip",
+        "data": archive_buffer.getvalue(),
+        "generated_at": generated_at.isoformat(),
+    }
+
+
+def run_web_get_member_activity(guild_id: int, role_id: int | None = None) -> dict:
+    try:
+        return build_member_activity_web_payload(guild_id, role_id=role_id)
+    except Exception as exc:
+        logger.exception("Failed to build member activity web payload")
+        return {"ok": False, "error": str(exc)}
+
+
+def run_web_export_member_activity(guild_id: int, role_id: int | None = None) -> dict:
+    try:
+        return export_member_activity_archive(guild_id, role_id=role_id)
+    except Exception as exc:
+        logger.exception("Failed to export member activity archive")
+        return {"ok": False, "error": str(exc)}
 
 
 def resolve_command_permission_state(command_key: str, guild_id: int) -> tuple[str, str, list[int]]:
@@ -2244,6 +2820,8 @@ class ModerationBot(commands.Bot):
                 get_bot_profile=run_web_get_bot_profile,
                 update_bot_profile=run_web_update_bot_profile,
                 update_bot_avatar=run_web_update_bot_avatar,
+                get_member_activity=run_web_get_member_activity,
+                export_member_activity=run_web_export_member_activity,
                 request_restart=run_web_request_restart,
                 resolve_youtube_subscription=lambda source_url: resolve_youtube_subscription_seed(source_url),
                 resolve_youtube_community_seed=lambda source_url: resolve_youtube_community_seed(source_url),
@@ -2280,6 +2858,8 @@ class ModerationBot(commands.Bot):
                         get_bot_profile=run_web_get_bot_profile,
                         update_bot_profile=run_web_update_bot_profile,
                         update_bot_avatar=run_web_update_bot_avatar,
+                        get_member_activity=run_web_get_member_activity,
+                        export_member_activity=run_web_export_member_activity,
                         request_restart=run_web_request_restart,
                         resolve_youtube_subscription=lambda source_url: resolve_youtube_subscription_seed(source_url),
                         resolve_youtube_community_seed=lambda source_url: resolve_youtube_community_seed(source_url),
@@ -2404,6 +2984,15 @@ class ModerationBot(commands.Bot):
         if message.author.bot:
             return
         managed_ids = {guild.id for guild in self.get_managed_guilds()}
+        if message.guild and message.guild.id in managed_ids:
+            try:
+                record_member_message_activity(message)
+            except Exception:
+                logger.exception(
+                    "Failed to record member activity for message %s in guild %s",
+                    getattr(message, "id", "unknown"),
+                    message.guild.id,
+                )
         if isinstance(message.author, discord.Member) and message.guild and message.guild.id in managed_ids:
             content = (message.content or "").strip()
             if content.startswith("!"):
@@ -3197,7 +3786,7 @@ async def help_command(interaction: discord.Interaction) -> None:
     message = (
         "**WickedYoda's Little Helper**\n"
         "General: `/ping`, `/sayhi`, `/happy`, `/help`\n"
-        "Utilities: `/shorten`, `/expand`, `/uptime`, `/logs`\n"
+        "Utilities: `/shorten`, `/expand`, `/uptime`, `/logs`, `/stats`\n"
         "Tags: `/tags`, `/tag <name>`, message tags like `!rules`\n"
         "Moderation: `/kick`, `/ban`, `/timeout`, `/untimeout`, `/purge`, `/unban`, `/addrole`, `/removerole`\n"
         "Use the web admin panel for settings, users, logs, wiki, command permissions, and tag responses."
