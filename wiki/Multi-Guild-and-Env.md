@@ -1,6 +1,6 @@
 # Multi-Guild and Env Setup
 
-Last Updated: 2026-03-18
+Last Updated: 2026-03-19
 
 ## Required vs Optional Vars
 
@@ -11,7 +11,16 @@ Last Updated: 2026-03-18
   - `GUILD_ID`
   - `Bot_Log_Channel`
   - Web/admin integration vars (`WEB_*`)
+  - Storage vars (`DATA_DIR`, `ACTION_DB_PATH`, `LOG_DIR`)
   - Feed integration timeouts (`YOUTUBE_REQUEST_TIMEOUT_SECONDS`, `WORDPRESS_REQUEST_TIMEOUT_SECONDS`, `LINKEDIN_REQUEST_TIMEOUT_SECONDS`)
+
+## Storage Paths
+
+- `DATA_DIR` is the primary writable container path for SQLite, member activity data, feed state, and logs.
+- `ACTION_DB_PATH` defaults to `DATA_DIR/mod_actions.db` when unset.
+- `LOG_DIR` defaults under `DATA_DIR` when unset or invalid.
+- The shipped `docker-compose.yml` example mounts `wickedyoda_data` to `${DATA_DIR:-/app/data}`.
+- Docker Compose resolves `${DATA_DIR:-...}` from the shell or `.env`, not from `env.env`, so keep the Compose mount target and `env.env` value aligned.
 
 ## How Guild Selection Works
 
@@ -52,6 +61,7 @@ WEB_BIND_HOST=0.0.0.0
 WEB_PORT=8080
 WEB_TLS_ENABLED=true
 WEB_TLS_PORT=8081
+DATA_DIR=/app/data
 ```
 
 ## Single-Guild Legacy Example
@@ -64,4 +74,5 @@ WEB_ENABLED=true
 WEB_PORT=8080
 WEB_TLS_ENABLED=true
 WEB_TLS_PORT=8081
+DATA_DIR=/app/data
 ```

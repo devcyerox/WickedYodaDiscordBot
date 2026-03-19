@@ -214,8 +214,9 @@ GitHub workflows included:
 docker compose up -d
 ```
 
-Compose mounts a persistent writable volume at `/app/data` for SQLite and log files.
-If you change `DATA_DIR` in `env.env`, update the container volume target in [`docker-compose.yml`](docker-compose.yml) to match.
+Compose mounts a persistent writable volume at the configured `DATA_DIR` path for SQLite and log files.
+[`docker-compose.yml`](docker-compose.yml) uses `${DATA_DIR:-/app/data}` for the container mount target, but Docker Compose resolves that from the shell or `.env`, not from `env.env`.
+Keep the `DATA_DIR` value in `env.env` and the Compose mount target aligned.
 
 ## Docker Image Publish (GitHub Packages / GHCR)
 
