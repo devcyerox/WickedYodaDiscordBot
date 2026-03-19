@@ -1,6 +1,8 @@
-# WickedYoda's Little Helper
+# Wicked Yoda's Little Helper
 
 Basic moderation Discord bot with a mobile-friendly web admin GUI, designed to run in Docker using `env.env`.
+
+Invite the bot: [Discord OAuth2 Invite](https://discord.com/oauth2/authorize?client_id=1478110480806576259)
 
 ## Wiki
 

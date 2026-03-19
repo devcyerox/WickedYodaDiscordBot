@@ -4132,7 +4132,7 @@ async def ping(interaction: discord.Interaction) -> None:
     if not await ensure_interaction_command_access(interaction, "ping"):
         return
     await interaction.response.send_message(
-        "WickedYoda's Little Helper is online.",
+        "Wicked Yoda's Little Helper is online.",
         ephemeral=COMMAND_RESPONSES_EPHEMERAL,
     )
     await log_interaction(interaction, action="ping", success=True)
@@ -4142,7 +4142,7 @@ async def ping(interaction: discord.Interaction) -> None:
 async def sayhi(interaction: discord.Interaction) -> None:
     if not await ensure_interaction_command_access(interaction, "sayhi"):
         return
-    intro = "Hi everyone, I am WickedYoda's Little Helper.\nI can help with moderation, URL short links, and uptime checks."
+    intro = "Hi everyone, I am Wicked Yoda's Little Helper.\nI can help with moderation, URL short links, and uptime checks."
     await interaction.response.send_message(intro)
     await log_interaction(interaction, action="sayhi", reason="Posted channel introduction", success=True)
 
@@ -4820,7 +4820,7 @@ async def help_command(interaction: discord.Interaction) -> None:
     if not await ensure_interaction_command_access(interaction, "help"):
         return
     message = (
-        "**WickedYoda's Little Helper**\n"
+        "**Wicked Yoda's Little Helper**\n"
         "General: `/ping`, `/sayhi`, `/happy`, `/cat`, `/meme`, `/dadjoke`, `/help`\n"
         "Fun: `/eightball`, `/coinflip`, `/roll`, `/choose`, `/roastme`, `/compliment`, `/wisdom`, `/gif`, `/poll`, `/questionoftheday`, `/countdown`, `/trivia`, `/wouldyourather`, `/rps`, `/guess`\n"
         "Community: `/birthday set`, `/birthday view`, `/birthday upcoming`, `/birthday remove`, `/leaderboard`\n"

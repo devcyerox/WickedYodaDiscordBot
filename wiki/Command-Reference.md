@@ -16,7 +16,7 @@ Response visibility for most slash commands is controlled by `COMMAND_RESPONSES_
 - Parameters: none
 - Required user permissions: none
 - Bot action:
-  - Replies with `WickedYoda's Little Helper is online.`.
+  - Replies with `Wicked Yoda's Little Helper is online.`.
   - Reply visibility follows `COMMAND_RESPONSES_EPHEMERAL`.
   - Logs success to configured guild log channel (or global `Bot_Log_Channel` fallback) and SQLite action history.
 

@@ -1,4 +1,4 @@
-# WickedYoda's Little Helper Wiki
+# Wicked Yoda's Little Helper Wiki
 
 Last Updated: 2026-03-19
 
