@@ -61,6 +61,11 @@ SETTINGS_FIELD_ORDER = [
     "YOUTUBE_NOTIFY_ENABLED",
     "YOUTUBE_POLL_INTERVAL_SECONDS",
     "YOUTUBE_REQUEST_TIMEOUT_SECONDS",
+    "SPICY_PROMPTS_ENABLED",
+    "SPICY_PROMPTS_REPO_URL",
+    "SPICY_PROMPTS_REPO_BRANCH",
+    "SPICY_PROMPTS_MANIFEST_PATH",
+    "SPICY_PROMPTS_REQUEST_TIMEOUT_SECONDS",
     "UPTIME_STATUS_ENABLED",
     "UPTIME_STATUS_PAGE_URL",
     "UPTIME_STATUS_TIMEOUT_SECONDS",
@@ -87,6 +92,7 @@ SETTINGS_DROPDOWN_OPTIONS: dict[str, tuple[str, ...]] = {
     "COMMAND_RESPONSES_EPHEMERAL": BOOL_SELECT_OPTIONS,
     "SHORTENER_ENABLED": BOOL_SELECT_OPTIONS,
     "YOUTUBE_NOTIFY_ENABLED": BOOL_SELECT_OPTIONS,
+    "SPICY_PROMPTS_ENABLED": BOOL_SELECT_OPTIONS,
     "UPTIME_STATUS_ENABLED": BOOL_SELECT_OPTIONS,
     "WEB_SESSION_COOKIE_SECURE": BOOL_SELECT_OPTIONS,
     "WEB_ENFORCE_CSRF": BOOL_SELECT_OPTIONS,
@@ -101,6 +107,7 @@ SETTINGS_DROPDOWN_OPTIONS: dict[str, tuple[str, ...]] = {
     "SHORTENER_TIMEOUT_SECONDS": ("5", "8", "10", "15", "30"),
     "YOUTUBE_POLL_INTERVAL_SECONDS": ("60", "120", "300", "600", "900"),
     "YOUTUBE_REQUEST_TIMEOUT_SECONDS": ("8", "10", "12", "15", "30"),
+    "SPICY_PROMPTS_REQUEST_TIMEOUT_SECONDS": ("8", "10", "12", "15", "30"),
     "UPTIME_STATUS_TIMEOUT_SECONDS": ("5", "8", "10", "15", "30"),
 }
 
@@ -415,6 +422,57 @@ def _ensure_linkedin_feeds_table(db_path: str) -> None:
         conn.commit()
 
 
+def _ensure_spicy_prompt_tables(db_path: str) -> None:
+    directory = os.path.dirname(db_path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    with _sqlite_connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS spicy_prompt_packs (
+                pack_id TEXT PRIMARY KEY,
+                pack_name TEXT NOT NULL,
+                source_path TEXT NOT NULL,
+                prompt_count INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS spicy_prompt_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                pack_id TEXT NOT NULL,
+                prompt_id TEXT NOT NULL,
+                prompt_type TEXT NOT NULL,
+                category TEXT NOT NULL,
+                rating TEXT NOT NULL,
+                text TEXT NOT NULL,
+                tags_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(pack_id, prompt_id)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS spicy_prompt_sync_state (
+                state_id INTEGER PRIMARY KEY CHECK (state_id = 1),
+                repo_url TEXT NOT NULL,
+                repo_branch TEXT NOT NULL,
+                manifest_path TEXT NOT NULL,
+                manifest_url TEXT NOT NULL,
+                last_refresh_at TEXT,
+                last_success_at TEXT,
+                last_error TEXT,
+                pack_count INTEGER NOT NULL DEFAULT 0,
+                prompt_count INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
+        conn.commit()
+
+
 def _fetch_actions(db_path: str, limit: int = 200, guild_id: int | None = None) -> list[dict]:
     _ensure_actions_table(db_path)
     query = """
@@ -524,6 +582,60 @@ def _fetch_linkedin_feeds(db_path: str, limit: int = 300, channel_ids: list[int]
         conn.row_factory = sqlite3.Row
         rows = conn.execute(query, tuple(params)).fetchall()
     return [dict(row) for row in rows]
+
+
+def _fetch_spicy_prompt_status(db_path: str) -> dict:
+    _ensure_spicy_prompt_tables(db_path)
+    with _sqlite_connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        state_row = conn.execute(
+            """
+            SELECT repo_url, repo_branch, manifest_path, manifest_url, last_refresh_at, last_success_at,
+                   last_error, pack_count, prompt_count
+            FROM spicy_prompt_sync_state
+            WHERE state_id = 1
+            """
+        ).fetchone()
+        pack_rows = conn.execute(
+            """
+            SELECT pack_id, pack_name, source_path, prompt_count, updated_at
+            FROM spicy_prompt_packs
+            ORDER BY pack_name ASC, pack_id ASC
+            LIMIT 100
+            """
+        ).fetchall()
+        preview_rows = conn.execute(
+            """
+            SELECT pack_id, prompt_id, prompt_type, category, rating, text, tags_json
+            FROM spicy_prompt_entries
+            ORDER BY pack_id ASC, prompt_id ASC
+            LIMIT 25
+            """
+        ).fetchall()
+    state = dict(state_row) if state_row else {}
+    preview: list[dict] = []
+    for row in preview_rows:
+        item = dict(row)
+        try:
+            tags = json.loads(str(item.get("tags_json", "[]")))
+        except json.JSONDecodeError:
+            tags = []
+        item["tags"] = [str(tag).strip() for tag in tags if str(tag).strip()]
+        preview.append(item)
+    return {
+        "repo_url": state.get("repo_url", os.getenv("SPICY_PROMPTS_REPO_URL", "")),
+        "repo_branch": state.get("repo_branch", os.getenv("SPICY_PROMPTS_REPO_BRANCH", "main")),
+        "manifest_path": state.get("manifest_path", os.getenv("SPICY_PROMPTS_MANIFEST_PATH", "manifests/index.json")),
+        "manifest_url": state.get("manifest_url", ""),
+        "last_refresh_at": state.get("last_refresh_at", ""),
+        "last_success_at": state.get("last_success_at", ""),
+        "last_error": state.get("last_error", ""),
+        "pack_count": int(state.get("pack_count", len(pack_rows)) or 0),
+        "prompt_count": int(state.get("prompt_count", len(preview)) or 0),
+        "enabled": _env_bool("SPICY_PROMPTS_ENABLED", False),
+        "packs": [dict(row) for row in pack_rows],
+        "preview": preview,
+    }
 
 
 def _upsert_youtube_subscription(
@@ -1458,6 +1570,7 @@ PAGE_TEMPLATE = """
           <li class="nav-item"><a class="nav-link" href="{{ url_for('wordpress_feeds') }}">WordPress</a></li>
           <li class="nav-item"><a class="nav-link" href="{{ url_for('linkedin_feeds') }}">LinkedIn</a></li>
           <li class="nav-item"><a class="nav-link" href="{{ url_for('youtube_subscriptions') }}">YouTube</a></li>
+          <li class="nav-item"><a class="nav-link" href="{{ url_for('spicy_prompts') }}">Spicy Prompts</a></li>
           <li class="nav-item"><a class="nav-link" href="{{ url_for('status_page') }}">Status</a></li>
           <li class="nav-item"><a class="nav-link" href="{{ url_for('logs') }}">Logs</a></li>
           <li class="nav-item"><a class="nav-link" href="{{ url_for('documentation') }}">Documentation</a></li>
@@ -1482,6 +1595,7 @@ PAGE_TEMPLATE = """
             <option value="{{ url_for('wordpress_feeds') }}">WordPress</option>
             <option value="{{ url_for('linkedin_feeds') }}">LinkedIn</option>
             <option value="{{ url_for('youtube_subscriptions') }}">YouTube</option>
+            <option value="{{ url_for('spicy_prompts') }}">Spicy Prompts</option>
             <option value="{{ url_for('status_page') }}">Status</option>
             <option value="{{ url_for('logs') }}">Logs</option>
             <option value="{{ url_for('documentation') }}">Documentation</option>
@@ -2206,6 +2320,144 @@ PAGE_TEMPLATE = """
           </table>
         </div>
       </div>
+    {% elif page == "spicy_prompts" %}
+      <div class="card card-soft p-3 mb-3">
+        <div class="d-flex flex-column flex-lg-row justify-content-between align-items-lg-center gap-3">
+          <div>
+            <h1 class="h5 mb-1">Spicy Prompts</h1>
+            <p class="small text-secondary mb-0">Refresh prompt packs from the configured GitHub repo without restarting the bot. This only updates cached prompt data.</p>
+          </div>
+          <form method="post" action="{{ url_for('spicy_prompts_refresh') }}">
+            <button class="btn btn-primary" type="submit" {% if not session.get("is_admin") %}disabled{% endif %}>Refresh From Repo</button>
+          </form>
+        </div>
+      </div>
+      <div class="card card-soft p-3 mb-3">
+        <h2 class="h6 mb-3">Guild Access Control</h2>
+        <form method="post" action="{{ url_for('spicy_prompts_settings_save') }}">
+          <div class="row g-3">
+            <div class="col-12 col-lg-4">
+              <div class="form-check mt-4">
+                <input class="form-check-input" type="checkbox" id="spicy_prompts_enabled" name="spicy_prompts_enabled" value="1" {% if spicy_settings.spicy_prompts_enabled %}checked{% endif %} {% if not session.get("is_admin") %}disabled{% endif %}>
+                <label class="form-check-label" for="spicy_prompts_enabled">Enable `/spicy` for this guild</label>
+              </div>
+            </div>
+            <div class="col-12 col-lg-8">
+              <label class="form-label" for="spicy_prompts_channel_id">Allowed Channel</label>
+              <select class="form-select" id="spicy_prompts_channel_id" name="spicy_prompts_channel_id" {% if not session.get("is_admin") %}disabled{% endif %}>
+                <option value="">Select age-restricted channel...</option>
+                {% for channel in notification_channels %}
+                <option value="{{ channel.id }}" {% if selected_spicy_channel_id == channel.id|string %}selected{% endif %}>
+                  {{ channel.name }}{% if channel.nsfw %} [18+]{% endif %} ({{ channel.id }})
+                </option>
+                {% endfor %}
+              </select>
+              <div class="form-text">`/spicy` only works in the configured age-restricted channel. Non-NSFW channels are rejected.</div>
+            </div>
+            <div class="col-12">
+              <button class="btn btn-primary" type="submit" {% if not session.get("is_admin") %}disabled{% endif %}>Save Spicy Prompt Settings</button>
+            </div>
+          </div>
+        </form>
+      </div>
+      <div class="row g-3 mb-3">
+        <div class="col-12 col-md-6 col-xl-3">
+          <div class="card card-soft p-3 h-100">
+            <p class="text-secondary small mb-1">Feature Enabled</p>
+            <p class="mb-0 fw-semibold">{{ "Yes" if spicy_prompts.enabled else "No" }}</p>
+          </div>
+        </div>
+        <div class="col-12 col-md-6 col-xl-3">
+          <div class="card card-soft p-3 h-100">
+            <p class="text-secondary small mb-1">Cached Packs</p>
+            <p class="mb-0 fw-semibold">{{ spicy_prompts.pack_count }}</p>
+          </div>
+        </div>
+        <div class="col-12 col-md-6 col-xl-3">
+          <div class="card card-soft p-3 h-100">
+            <p class="text-secondary small mb-1">Cached Prompts</p>
+            <p class="mb-0 fw-semibold">{{ spicy_prompts.prompt_count }}</p>
+          </div>
+        </div>
+        <div class="col-12 col-md-6 col-xl-3">
+          <div class="card card-soft p-3 h-100">
+            <p class="text-secondary small mb-1">Last Success</p>
+            <p class="mb-0 fw-semibold">{{ spicy_prompts.last_success_at or "-" }}</p>
+          </div>
+        </div>
+      </div>
+      <div class="card card-soft p-3 mb-3">
+        <h2 class="h6 mb-3">Repository</h2>
+        <div class="row g-2">
+          <div class="col-12">
+            <div class="small text-secondary">Repo URL</div>
+            <div class="fw-semibold">{{ spicy_prompts.repo_url or "-" }}</div>
+          </div>
+          <div class="col-12 col-lg-4">
+            <div class="small text-secondary">Branch</div>
+            <div class="fw-semibold">{{ spicy_prompts.repo_branch or "-" }}</div>
+          </div>
+          <div class="col-12 col-lg-8">
+            <div class="small text-secondary">Manifest Path</div>
+            <div class="fw-semibold">{{ spicy_prompts.manifest_path or "-" }}</div>
+          </div>
+          <div class="col-12">
+            <div class="small text-secondary">Resolved Manifest URL</div>
+            <div class="small">{{ spicy_prompts.manifest_url or "-" }}</div>
+          </div>
+          {% if spicy_prompts.last_error %}
+          <div class="col-12">
+            <div class="alert alert-warning mb-0">
+              <strong>Last refresh error:</strong> {{ spicy_prompts.last_error }}
+            </div>
+          </div>
+          {% endif %}
+        </div>
+      </div>
+      <div class="card card-soft p-3 mb-3">
+        <h2 class="h6 mb-3">Prompt Packs</h2>
+        <div class="table-wrap">
+          <table class="table table-sm align-middle">
+            <thead><tr><th>Pack</th><th>Source Path</th><th>Prompts</th><th>Updated</th></tr></thead>
+            <tbody>
+              {% for row in spicy_prompts.packs %}
+              <tr>
+                <td class="small">
+                  <div class="fw-semibold">{{ row.pack_name }}</div>
+                  <div class="text-secondary">{{ row.pack_id }}</div>
+                </td>
+                <td class="small">{{ row.source_path }}</td>
+                <td class="small">{{ row.prompt_count }}</td>
+                <td class="small">{{ row.updated_at or "-" }}</td>
+              </tr>
+              {% else %}
+              <tr><td colspan="4" class="text-secondary">No cached prompt packs yet. Use Refresh From Repo after populating the content repo.</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="card card-soft p-3">
+        <h2 class="h6 mb-3">Prompt Preview</h2>
+        <div class="table-wrap">
+          <table class="table table-sm align-middle">
+            <thead><tr><th>Pack</th><th>Type</th><th>Category</th><th>Prompt</th><th>Tags</th></tr></thead>
+            <tbody>
+              {% for row in spicy_prompts.preview %}
+              <tr>
+                <td class="small">{{ row.pack_id }}</td>
+                <td class="small">{{ row.prompt_type }}</td>
+                <td class="small">{{ row.category }}</td>
+                <td class="small">{{ row.text }}</td>
+                <td class="small">{{ row.tags|join(", ") if row.tags else "-" }}</td>
+              </tr>
+              {% else %}
+              <tr><td colspan="5" class="text-secondary">No cached prompts yet.</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
     {% elif page == "logs" %}
       <div class="card card-soft p-3 mb-3">
         <h1 class="h5 mb-3">Logs</h1>
@@ -2252,6 +2504,12 @@ PAGE_TEMPLATE = """
                 {% if guild.selected %}Currently Selected{% else %}Manage This Server{% endif %}
               </button>
             </form>
+            {% if session.get("is_admin") %}
+            <form method="post" action="{{ url_for('leave_guild_route') }}" class="mt-2" onsubmit="return confirm('Leave {{ guild.name|escape }}? The bot will immediately leave this server.');">
+              <input type="hidden" name="guild_id" value="{{ guild.id }}">
+              <button class="btn btn-outline-danger btn-sm guild-card-action" type="submit">Leave Guild</button>
+            </form>
+            {% endif %}
           </div>
         </div>
         {% else %}
@@ -2753,6 +3011,9 @@ def create_app(
     update_bot_avatar: Callable[[bytes, str, str, int], dict] | Callable[[bytes, str, str], dict] | None = None,
     get_member_activity: Callable[[int, int | None], dict] | Callable[[int], dict] | None = None,
     export_member_activity: Callable[[int, int | None], dict] | Callable[[int], dict] | None = None,
+    get_spicy_prompts_status: Callable[[], dict] | None = None,
+    refresh_spicy_prompts: Callable[[str], dict] | None = None,
+    leave_guild: Callable[[str, int], dict] | None = None,
     request_restart: Callable[[str], dict] | None = None,
     resolve_youtube_subscription: Callable[[str], dict] | None = None,
     resolve_youtube_community_seed: Callable[[str], dict] | None = None,
@@ -3103,10 +3364,28 @@ def create_app(
             except TypeError:
                 return {"ok": False, "error": "Member activity export callback could not be called."}
 
+    def _call_get_spicy_prompts_status() -> dict:
+        if callable(get_spicy_prompts_status):
+            try:
+                return get_spicy_prompts_status()
+            except TypeError:
+                return {"ok": False, "error": "Spicy Prompts status callback could not be called."}
+        return {"ok": True, **_fetch_spicy_prompt_status(db_path)}
+
+    def _call_refresh_spicy_prompts(actor: str) -> dict:
+        if not callable(refresh_spicy_prompts):
+            return {"ok": False, "error": "Spicy Prompts refresh callback is not configured."}
+        return refresh_spicy_prompts(actor)
+
     def _call_request_restart(actor: str) -> dict:
         if not callable(request_restart):
             return {"ok": False, "error": "Restart callback is not configured."}
         return request_restart(actor)
+
+    def _call_leave_guild(actor: str, guild_id: int | None) -> dict:
+        if guild_id is None or not callable(leave_guild):
+            return {"ok": False, "error": "Leave guild callback is not configured."}
+        return leave_guild(actor, guild_id)
 
     def _collect_observability_snapshot() -> dict:
         now_mono = time.monotonic()
@@ -3582,6 +3861,26 @@ def create_app(
             guild_cards=guild_cards,
         )
 
+    @app.post("/admin/guilds/leave")
+    @admin_required
+    def leave_guild_route():
+        raw_guild_id = request.form.get("guild_id", "").strip()
+        if not raw_guild_id.isdigit():
+            flash("Invalid guild selection.", "danger")
+            return redirect(url_for("guilds_page"))
+        guild_id = int(raw_guild_id)
+        result = _call_leave_guild(str(session.get("user", "")), guild_id)
+        if isinstance(result, dict) and result.get("ok"):
+            if session.get("selected_guild_id") == guild_id:
+                session.pop("selected_guild_id", None)
+            flash(str(result.get("message", "Left guild.")), "success")
+        else:
+            flash(
+                str(result.get("error", "Failed to leave guild.")) if isinstance(result, dict) else "Failed to leave guild.",
+                "danger",
+            )
+        return redirect(url_for("guilds_page"))
+
     @app.get("/admin/status")
     @login_required
     def status_page():
@@ -3758,6 +4057,7 @@ def create_app(
             "wordpress_feeds",
             "linkedin_feeds",
             "youtube_subscriptions",
+            "spicy_prompts",
             "logs",
             "wiki",
             "documentation",
@@ -4245,6 +4545,82 @@ def create_app(
         else:
             flash("LinkedIn feed not found.", "warning")
         return redirect(url_for("linkedin_feeds"))
+
+    @app.get("/admin/spicy-prompts")
+    @login_required
+    def spicy_prompts():
+        selected_guild_id, _, _ = _selected_guild_context()
+        catalog_payload = _call_get_discord_catalog(selected_guild_id)
+        channels: list[dict] = []
+        if isinstance(catalog_payload, dict) and catalog_payload.get("ok"):
+            raw_channels = catalog_payload.get("channels", [])
+            if isinstance(raw_channels, list):
+                channels = [item for item in raw_channels if isinstance(item, dict)]
+        if not channels:
+            channels = _call_get_notification_channels(selected_guild_id)
+        settings_payload = _call_get_guild_settings(selected_guild_id)
+        selected_spicy_channel_id = ""
+        if isinstance(settings_payload, dict):
+            raw_channel_id = settings_payload.get("spicy_prompts_channel_id", "")
+            selected_spicy_channel_id = str(raw_channel_id).strip() if raw_channel_id is not None else ""
+        return _render_page(
+            "spicy_prompts",
+            "Spicy Prompts",
+            spicy_prompts=_call_get_spicy_prompts_status(),
+            spicy_settings=settings_payload if isinstance(settings_payload, dict) else {"ok": False},
+            notification_channels=channels,
+            selected_spicy_channel_id=selected_spicy_channel_id,
+        )
+
+    @app.post("/admin/spicy-prompts/refresh")
+    @admin_required
+    def spicy_prompts_refresh():
+        result = _call_refresh_spicy_prompts(str(session.get("user", "")).strip().lower())
+        if result.get("ok"):
+            flash(str(result.get("message", "Spicy Prompts refreshed.")), "success")
+        else:
+            flash(str(result.get("error", "Failed to refresh Spicy Prompts.")), "danger")
+        return redirect(url_for("spicy_prompts"))
+
+    @app.post("/admin/spicy-prompts/settings")
+    @admin_required
+    def spicy_prompts_settings_save():
+        selected_guild_id, _, _ = _selected_guild_context()
+        catalog_payload = _call_get_discord_catalog(selected_guild_id)
+        channels: list[dict] = []
+        if isinstance(catalog_payload, dict) and catalog_payload.get("ok"):
+            raw_channels = catalog_payload.get("channels", [])
+            if isinstance(raw_channels, list):
+                channels = [item for item in raw_channels if isinstance(item, dict)]
+        if not channels:
+            channels = _call_get_notification_channels(selected_guild_id)
+        channel_map = {str(item.get("id", "")): item for item in channels}
+        raw_channel_id = request.form.get("spicy_prompts_channel_id", "").strip()
+        spicy_prompts_enabled = bool(request.form.get("spicy_prompts_enabled"))
+        if spicy_prompts_enabled:
+            selected_channel = channel_map.get(raw_channel_id)
+            if selected_channel is None:
+                flash("Please select a valid Discord channel for Spicy Prompts.", "danger")
+                return redirect(url_for("spicy_prompts"))
+            if not bool(selected_channel.get("nsfw")):
+                flash("Spicy Prompts must use an age-restricted Discord channel.", "danger")
+                return redirect(url_for("spicy_prompts"))
+        payload = {
+            "bot_log_channel_id": str(_call_get_guild_settings(selected_guild_id).get("bot_log_channel_id", "") or ""),
+            "spicy_prompts_enabled": "1" if spicy_prompts_enabled else "0",
+            "spicy_prompts_channel_id": raw_channel_id,
+        }
+        result = _call_save_guild_settings(payload, str(session.get("user", "")), selected_guild_id)
+        if isinstance(result, dict) and result.get("ok"):
+            flash(str(result.get("message", "Spicy Prompts settings updated.")), "success")
+        else:
+            flash(
+                str(result.get("error", "Failed to update Spicy Prompts settings."))
+                if isinstance(result, dict)
+                else "Failed to update Spicy Prompts settings.",
+                "danger",
+            )
+        return redirect(url_for("spicy_prompts"))
 
     @app.get("/admin/logs")
     @login_required
@@ -4772,6 +5148,9 @@ def start_web_admin(
     update_bot_avatar: Callable[[bytes, str, str, int], dict] | Callable[[bytes, str, str], dict] | None = None,
     get_member_activity: Callable[[int, int | None], dict] | Callable[[int], dict] | None = None,
     export_member_activity: Callable[[int, int | None], dict] | Callable[[int], dict] | None = None,
+    get_spicy_prompts_status: Callable[[], dict] | None = None,
+    refresh_spicy_prompts: Callable[[str], dict] | None = None,
+    leave_guild: Callable[[str, int], dict] | None = None,
     request_restart: Callable[[str], dict] | None = None,
     resolve_youtube_subscription: Callable[[str], dict] | None = None,
     resolve_youtube_community_seed: Callable[[str], dict] | None = None,
@@ -4798,6 +5177,9 @@ def start_web_admin(
         update_bot_avatar=update_bot_avatar,
         get_member_activity=get_member_activity,
         export_member_activity=export_member_activity,
+        get_spicy_prompts_status=get_spicy_prompts_status,
+        refresh_spicy_prompts=refresh_spicy_prompts,
+        leave_guild=leave_guild,
         request_restart=request_restart,
         resolve_youtube_subscription=resolve_youtube_subscription,
         resolve_youtube_community_seed=resolve_youtube_community_seed,

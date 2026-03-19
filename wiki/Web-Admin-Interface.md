@@ -42,6 +42,7 @@ The web admin is served by `web_admin.py` and is mobile-friendly.
 - WordPress feeds: `/admin/wordpress`
 - LinkedIn feeds: `/admin/linkedin`
 - YouTube subscriptions: `/admin/youtube`
+- Spicy Prompts: `/admin/spicy-prompts`
 - Logs: `/admin/logs`
 - Documentation viewer: `/admin/documentation`
 - Wiki redirect: `/admin/wiki`
@@ -100,6 +101,23 @@ Each feed page allows:
 - deletion of existing feed subscriptions
 
 See [Feed Integrations](./Feed-Integrations.md) for feed-specific behavior and limitations.
+
+## Spicy Prompts
+
+The web GUI includes a repo-backed `Spicy Prompts` page at `/admin/spicy-prompts`.
+
+- Admin-only refresh button pulls prompt data from the configured GitHub repo without restarting the bot
+- Displays configured repo URL, branch, manifest path, and resolved manifest URL
+- Shows last refresh time, last successful sync, last error, cached pack count, and cached prompt count
+- Includes cached pack listing and prompt preview from SQLite
+
+Related env vars:
+
+- `SPICY_PROMPTS_ENABLED`
+- `SPICY_PROMPTS_REPO_URL`
+- `SPICY_PROMPTS_REPO_BRANCH`
+- `SPICY_PROMPTS_MANIFEST_PATH`
+- `SPICY_PROMPTS_REQUEST_TIMEOUT_SECONDS`
 
 ## Restart Control
 

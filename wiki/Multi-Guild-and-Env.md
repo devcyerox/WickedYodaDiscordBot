@@ -13,6 +13,7 @@ Last Updated: 2026-03-19
   - Web/admin integration vars (`WEB_*`)
   - Storage vars (`DATA_DIR`, `ACTION_DB_PATH`, `LOG_DIR`)
   - Feed integration timeouts (`YOUTUBE_REQUEST_TIMEOUT_SECONDS`, `WORDPRESS_REQUEST_TIMEOUT_SECONDS`, `LINKEDIN_REQUEST_TIMEOUT_SECONDS`)
+  - Spicy Prompts repo vars (`SPICY_PROMPTS_*`)
 
 ## Storage Paths
 
@@ -53,6 +54,18 @@ Feed subscriptions are configured per guild from the web GUI. The selected guild
 - YouTube feeds
 
 Feed source URLs, selected notify channels, and last-seen state do not cross between guilds.
+
+## Spicy Prompts Repo Settings
+
+The repo-backed Spicy Prompts cache is global to the bot runtime and refreshed from the web GUI.
+
+- `SPICY_PROMPTS_ENABLED`
+- `SPICY_PROMPTS_REPO_URL`
+- `SPICY_PROMPTS_REPO_BRANCH`
+- `SPICY_PROMPTS_MANIFEST_PATH`
+- `SPICY_PROMPTS_REQUEST_TIMEOUT_SECONDS`
+
+The refresh action pulls the current manifest and pack files from the configured GitHub repo without restarting the bot.
 
 ## Recommended Multi-Guild Example
 

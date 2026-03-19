@@ -48,6 +48,11 @@ Set these in `env.env`:
 - `YOUTUBE_REQUEST_TIMEOUT_SECONDS` - timeout for YouTube URL/feed requests
 - `WORDPRESS_REQUEST_TIMEOUT_SECONDS` - timeout for WordPress feed discovery and polling
 - `LINKEDIN_REQUEST_TIMEOUT_SECONDS` - timeout for LinkedIn profile activity requests
+- `SPICY_PROMPTS_ENABLED` - enable the repo-backed Spicy Prompts feature
+- `SPICY_PROMPTS_REPO_URL` - GitHub repo URL used as the source of Spicy Prompts content
+- `SPICY_PROMPTS_REPO_BRANCH` - branch to read from the Spicy Prompts repo
+- `SPICY_PROMPTS_MANIFEST_PATH` - manifest file path inside the Spicy Prompts repo
+- `SPICY_PROMPTS_REQUEST_TIMEOUT_SECONDS` - timeout for Spicy Prompts repo fetches
 - `UPTIME_STATUS_ENABLED` - enable uptime status integration command (`/uptime`)
 - `UPTIME_STATUS_PAGE_URL` - public Uptime Kuma status page URL (example: `https://randy.wickedyoda.com/status/everything`)
 - `UPTIME_STATUS_TIMEOUT_SECONDS` - timeout for uptime API requests
@@ -104,6 +109,7 @@ WEB_TLS_PORT=8081
 - `/gif`
 - `/poll`
 - `/questionoftheday`
+- `/spicy`
 - `/countdown`
 - `/birthday set`
 - `/birthday view`
@@ -165,6 +171,11 @@ SQLite storage is internal to the container at `/app/data/mod_actions.db`.
   - WordPress feeds (`/admin/wordpress`)
   - LinkedIn feeds (`/admin/linkedin`)
   - YouTube subscriptions (`/admin/youtube`)
+  - Spicy Prompts (`/admin/spicy-prompts`)
+    - refreshes prompt packs from the configured GitHub repo without restarting the bot
+    - stores a guild-specific allowed Discord channel for `/spicy`
+    - rejects non-age-restricted channels for Spicy Prompts use
+    - shows cached pack count, prompt count, last sync status, and prompt preview
   - Observability (`/admin/observability`, login required)
   - Bot profile (`/admin/bot-profile`, admin only)
     - Includes bot username/nickname updates and avatar upload
@@ -210,6 +221,16 @@ Each feed integration supports:
 - stored last-seen state in SQLite
 
 LinkedIn support is experimental and depends on public activity being accessible without authentication.
+
+## Spicy Prompts Repo Refresh
+
+- Open `/admin/spicy-prompts` in the web GUI.
+- Set the repo values in `env.env` or through the runtime settings page:
+  - `SPICY_PROMPTS_REPO_URL`
+  - `SPICY_PROMPTS_REPO_BRANCH`
+  - `SPICY_PROMPTS_MANIFEST_PATH`
+- Use the `Refresh From Repo` button to pull the latest prompt manifest and pack files without restarting the bot.
+- The fetched prompt cache is stored in SQLite and visible in the page preview table.
 
 ## Verification And Security Checks
 
