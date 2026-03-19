@@ -56,7 +56,7 @@ Set these in `env.env`:
 - `WEB_ENFORCE_CSRF` - enforce CSRF token checks on POST routes (`true`/`false`)
 - `WEB_ENFORCE_SAME_ORIGIN_POSTS` - block cross-origin POST requests (`true`/`false`)
 - `WEB_RESTART_ENABLED` - allow admin-triggered container restart from web GUI (`true`/`false`)
-- `DATA_DIR` - persistent internal data directory for moderation action history (recommended: `/app/data`)
+- `DATA_DIR` - persistent internal data directory for SQLite, member activity, feed state, and runtime logs (recommended: `/app/data`)
 - `LOG_DIR` - optional override for log file directory shown in web GUI Logs page
 - `WEB_ENV_FILE` - optional path to env file used by web GUI settings editor (default: `./env.env`)
 - `WEB_GITHUB_WIKI_URL` - optional external wiki URL button in the web GUI Wiki page
@@ -215,6 +215,7 @@ docker compose up -d
 ```
 
 Compose mounts a persistent writable volume at `/app/data` for SQLite and log files.
+If you change `DATA_DIR` in `env.env`, update the container volume target in [`docker-compose.yml`](docker-compose.yml) to match.
 
 ## Docker Image Publish (GitHub Packages / GHCR)
 
