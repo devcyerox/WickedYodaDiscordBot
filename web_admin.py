@@ -2578,7 +2578,7 @@ PAGE_TEMPLATE = """
     {% elif page == "command_permissions" %}
       <div class="card card-soft p-3">
         <h1 class="h5 mb-3">Command Permissions</h1>
-        <p class="small text-secondary">Set command access mode. Use custom role IDs for granular control.</p>
+        <p class="small text-secondary">Set command access mode, disable commands, and optionally restrict access to selected roles.</p>
         <form method="post" action="{{ url_for('command_permissions') }}">
           <div class="table-wrap">
             <table class="table table-sm align-middle">
@@ -2595,6 +2595,7 @@ PAGE_TEMPLATE = """
                   <td>
                     <select class="form-select" name="mode__{{ item.key }}" {% if not session.get("is_admin") %}disabled{% endif %}>
                       <option value="default" {% if item.mode == "default" %}selected{% endif %}>Default</option>
+                      <option value="disabled" {% if item.mode == "disabled" %}selected{% endif %}>Disabled</option>
                       <option value="public" {% if item.mode == "public" %}selected{% endif %}>Public</option>
                       <option value="custom_roles" {% if item.mode == "custom_roles" %}selected{% endif %}>Custom roles</option>
                     </select>

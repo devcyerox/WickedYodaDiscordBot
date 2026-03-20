@@ -252,6 +252,7 @@ SPICY_PROMPT_BLOCKED_CATEGORIES = {
 COMMAND_PERMISSION_MODE_DEFAULT = "default"
 COMMAND_PERMISSION_MODE_PUBLIC = "public"
 COMMAND_PERMISSION_MODE_CUSTOM_ROLES = "custom_roles"
+COMMAND_PERMISSION_MODE_DISABLED = "disabled"
 COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC = "public"
 COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR = "moderator"
 COMMAND_PERMISSION_POLICY_LABELS = {
@@ -461,7 +462,12 @@ def normalize_tag(raw_tag: str) -> str:
 
 def normalize_permission_mode(value: str | None) -> str:
     candidate = (value or "").strip().lower()
-    if candidate in {COMMAND_PERMISSION_MODE_DEFAULT, COMMAND_PERMISSION_MODE_PUBLIC, COMMAND_PERMISSION_MODE_CUSTOM_ROLES}:
+    if candidate in {
+        COMMAND_PERMISSION_MODE_DEFAULT,
+        COMMAND_PERMISSION_MODE_PUBLIC,
+        COMMAND_PERMISSION_MODE_CUSTOM_ROLES,
+        COMMAND_PERMISSION_MODE_DISABLED,
+    }:
         return candidate
     return COMMAND_PERMISSION_MODE_DEFAULT
 
@@ -3523,6 +3529,8 @@ def resolve_command_permission_state(command_key: str, guild_id: int) -> tuple[s
 
 def can_use_command(member: discord.Member | discord.User, command_key: str, guild_id: int) -> bool:
     default_policy, mode, role_ids = resolve_command_permission_state(command_key, guild_id=guild_id)
+    if mode == COMMAND_PERMISSION_MODE_DISABLED:
+        return False
     if mode == COMMAND_PERMISSION_MODE_PUBLIC:
         return True
     if mode == COMMAND_PERMISSION_MODE_CUSTOM_ROLES:
