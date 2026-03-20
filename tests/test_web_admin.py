@@ -618,7 +618,13 @@ def test_spicy_prompts_settings_require_nsfw_channel(tmp_path: Path, monkeypatch
         }
 
     def get_guild_settings(_guild_id: int) -> dict:
-        return {"ok": True, "guild_id": 1234567890, "bot_log_channel_id": None, "spicy_prompts_enabled": 0, "spicy_prompts_channel_id": None}
+        return {
+            "ok": True,
+            "guild_id": 1234567890,
+            "bot_log_channel_id": None,
+            "spicy_prompts_enabled": 0,
+            "spicy_prompts_channel_id": None,
+        }
 
     app = create_app(
         str(tmp_path / "actions.db"),
@@ -656,7 +662,13 @@ def test_spicy_prompts_settings_save_uses_guild_settings_callback(tmp_path: Path
         }
 
     def get_guild_settings(_guild_id: int) -> dict:
-        return {"ok": True, "guild_id": 1234567890, "bot_log_channel_id": None, "spicy_prompts_enabled": 0, "spicy_prompts_channel_id": None}
+        return {
+            "ok": True,
+            "guild_id": 1234567890,
+            "bot_log_channel_id": None,
+            "spicy_prompts_enabled": 0,
+            "spicy_prompts_channel_id": None,
+        }
 
     def save_guild_settings(payload: dict, _actor: str, _guild_id: int) -> dict:
         saved_payloads.append(payload)
