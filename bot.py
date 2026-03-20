@@ -7,7 +7,7 @@ import io
 import json
 import logging
 import os
-import random
+import secrets
 import re
 import sqlite3
 import tempfile
@@ -65,6 +65,22 @@ def env_int(name: str, default: int) -> int:
         return int(value)
     except ValueError as exc:
         raise RuntimeError(f"Environment variable {name} must be an integer.") from exc
+
+
+def secure_randint(low: int, high: int) -> int:
+    if high < low:
+        raise ValueError("high must be >= low")
+    return low + secrets.randbelow(high - low + 1)
+
+
+def secure_choice(options):
+    if isinstance(options, (list, tuple)):
+        seq = options
+    else:
+        seq = tuple(options)
+    if not seq:
+        raise ValueError("options must not be empty")
+    return secrets.choice(seq)
 
 
 def apply_best_effort_permissions(path: str, mode: int) -> None:
@@ -939,7 +955,7 @@ def parse_roll_expression(raw_value: str) -> tuple[int, int, int]:
 
 def execute_roll_expression(raw_value: str) -> dict[str, int | list[int] | str]:
     count, sides, modifier = parse_roll_expression(raw_value)
-    rolls = [random.randint(1, sides) for _ in range(count)]
+    rolls = [secure_randint(1, sides) for _ in range(count)]
     subtotal = sum(rolls)
     total = subtotal + modifier
     return {
@@ -1044,8 +1060,8 @@ def next_birthday_occurrence(month: int, day: int, *, now_dt: datetime | None = 
 def choose_random_gif(theme: str) -> dict[str, str]:
     selected_theme = str(theme or "celebrate").strip().lower()
     if selected_theme == "random" or selected_theme not in FUN_GIF_LIBRARY:
-        selected_theme = random.choice(sorted(FUN_GIF_LIBRARY))
-    chosen = random.choice(FUN_GIF_LIBRARY[selected_theme])
+        selected_theme = secure_choice(sorted(FUN_GIF_LIBRARY))
+    chosen = secure_choice(FUN_GIF_LIBRARY[selected_theme])
     return {"theme": selected_theme, "title": chosen["title"], "url": chosen["url"]}
 
 
@@ -4814,7 +4830,7 @@ async def eightball(interaction: discord.Interaction, question: str) -> None:
         await reply_ephemeral(interaction, "Ask a real question first.")
         await log_interaction(interaction, action="eightball", reason="empty question", success=False)
         return
-    answer = random.choice(EIGHTBALL_RESPONSES)
+    answer = secure_choice(EIGHTBALL_RESPONSES)
     await interaction.response.send_message(
         f"Question: {cleaned}\nAnswer: **{answer}**",
         ephemeral=COMMAND_RESPONSES_EPHEMERAL,
@@ -4826,7 +4842,7 @@ async def eightball(interaction: discord.Interaction, question: str) -> None:
 async def coinflip(interaction: discord.Interaction) -> None:
     if not await ensure_interaction_command_access(interaction, "coinflip"):
         return
-    result = random.choice(["Heads", "Tails"])
+    result = secure_choice(["Heads", "Tails"])
     await interaction.response.send_message(f"The coin says: **{result}**", ephemeral=COMMAND_RESPONSES_EPHEMERAL)
     await log_interaction(interaction, action="coinflip", reason=result.lower(), success=True)
 
@@ -4865,7 +4881,7 @@ async def choose(interaction: discord.Interaction, options: str) -> None:
         await reply_ephemeral(interaction, "Provide at least two options separated by commas, pipes, or new lines.")
         await log_interaction(interaction, action="choose", reason="not enough options", success=False)
         return
-    selected = random.choice(parsed_options)
+    selected = secure_choice(parsed_options)
     await interaction.response.send_message(f"I choose: **{selected}**", ephemeral=COMMAND_RESPONSES_EPHEMERAL)
     await log_interaction(interaction, action="choose", reason=truncate_log_text(selected), success=True)
 
@@ -4876,7 +4892,7 @@ async def roastme(interaction: discord.Interaction, target: discord.Member | Non
     if not await ensure_interaction_command_access(interaction, "roastme"):
         return
     selected_target = target or interaction.user
-    line = random.choice(PLAYFUL_ROASTS)
+    line = secure_choice(PLAYFUL_ROASTS)
     await interaction.response.send_message(f"{selected_target.mention}: {line}", ephemeral=COMMAND_RESPONSES_EPHEMERAL)
     await log_interaction(interaction, action="roastme", target=selected_target, reason=truncate_log_text(line), success=True)
 
@@ -4887,7 +4903,7 @@ async def compliment(interaction: discord.Interaction, target: discord.Member | 
     if not await ensure_interaction_command_access(interaction, "compliment"):
         return
     selected_target = target or interaction.user
-    line = random.choice(COMPLIMENTS)
+    line = secure_choice(COMPLIMENTS)
     await interaction.response.send_message(f"{selected_target.mention}: {line}", ephemeral=COMMAND_RESPONSES_EPHEMERAL)
     await log_interaction(interaction, action="compliment", target=selected_target, reason=truncate_log_text(line), success=True)
 
@@ -4896,7 +4912,7 @@ async def compliment(interaction: discord.Interaction, target: discord.Member | 
 async def wisdom(interaction: discord.Interaction) -> None:
     if not await ensure_interaction_command_access(interaction, "wisdom"):
         return
-    line = random.choice(YODA_WISDOM_LINES)
+    line = secure_choice(YODA_WISDOM_LINES)
     await interaction.response.send_message(line, ephemeral=COMMAND_RESPONSES_EPHEMERAL)
     await log_interaction(interaction, action="wisdom", reason=truncate_log_text(line), success=True)
 
@@ -4949,7 +4965,7 @@ async def poll(interaction: discord.Interaction, question: str, options: str) ->
 async def questionoftheday(interaction: discord.Interaction) -> None:
     if not await ensure_interaction_command_access(interaction, "questionoftheday"):
         return
-    prompt = random.choice(QUESTION_OF_THE_DAY_PROMPTS)
+    prompt = secure_choice(QUESTION_OF_THE_DAY_PROMPTS)
     await interaction.response.send_message(f"Question of the Day:\n**{prompt}**")
     await log_interaction(interaction, action="questionoftheday", reason=truncate_log_text(prompt), success=True)
 
@@ -5066,7 +5082,7 @@ async def leaderboard(interaction: discord.Interaction, window: app_commands.Cho
 async def trivia(interaction: discord.Interaction) -> None:
     if not await ensure_interaction_command_access(interaction, "trivia"):
         return
-    selected = random.choice(TRIVIA_QUESTIONS)
+    selected = secure_choice(TRIVIA_QUESTIONS)
     choices = selected["choices"]
     lines = ["**Trivia Time**", selected["question"], ""]
     for index, choice in enumerate(choices):
@@ -5081,7 +5097,7 @@ async def trivia(interaction: discord.Interaction) -> None:
 async def wouldyourather(interaction: discord.Interaction) -> None:
     if not await ensure_interaction_command_access(interaction, "wouldyourather"):
         return
-    prompt = random.choice(WOULD_YOU_RATHER_PROMPTS)
+    prompt = secure_choice(WOULD_YOU_RATHER_PROMPTS)
     await interaction.response.send_message(prompt, ephemeral=COMMAND_RESPONSES_EPHEMERAL)
     await log_interaction(interaction, action="wouldyourather", reason=truncate_log_text(prompt), success=True)
 
@@ -5099,7 +5115,7 @@ async def rps(interaction: discord.Interaction, choice: app_commands.Choice[str]
     if not await ensure_interaction_command_access(interaction, "rps"):
         return
     user_choice = choice.value
-    bot_choice = random.choice(sorted(RPS_BEATS))
+    bot_choice = secure_choice(sorted(RPS_BEATS))
     if bot_choice == user_choice:
         outcome = "It's a tie."
     elif RPS_BEATS[user_choice] == bot_choice:
@@ -5129,7 +5145,7 @@ async def guess(interaction: discord.Interaction, number: int | None = None) -> 
     guild_id = interaction.guild.id
     game = ACTION_STORE.get_guess_game(guild_id)
     if game is None:
-        ACTION_STORE.save_guess_game(guild_id, random.randint(1, 100), interaction.user.id, attempt_count=0)
+        ACTION_STORE.save_guess_game(guild_id, secure_randint(1, 100), interaction.user.id, attempt_count=0)
         game = ACTION_STORE.get_guess_game(guild_id)
     if game is None:
         await reply_ephemeral(interaction, "Failed to start the guessing game.")
@@ -5150,7 +5166,7 @@ async def guess(interaction: discord.Interaction, number: int | None = None) -> 
             f"Correct. The number was **{target_number}**. Solved in {attempts} attempt(s). Starting a fresh game now.",
             ephemeral=COMMAND_RESPONSES_EPHEMERAL,
         )
-        ACTION_STORE.save_guess_game(guild_id, random.randint(1, 100), interaction.user.id, attempt_count=0)
+        ACTION_STORE.save_guess_game(guild_id, secure_randint(1, 100), interaction.user.id, attempt_count=0)
         await log_interaction(interaction, action="guess", reason=f"solved in {attempts}", success=True)
         return
     ACTION_STORE.update_guess_game_attempts(guild_id, attempts)

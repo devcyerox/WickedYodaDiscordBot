@@ -30,7 +30,7 @@ def test_split_option_values_deduplicates_and_limits(tmp_path: Path, monkeypatch
 
 def test_parse_roll_expression_and_execute_roll(tmp_path: Path, monkeypatch) -> None:
     bot = _load_bot_module(tmp_path, monkeypatch)
-    monkeypatch.setattr(bot.random, "randint", lambda _low, _high: 4)
+    monkeypatch.setattr(bot, "secure_randint", lambda _low, _high: 4)
 
     count, sides, modifier = bot.parse_roll_expression("2d6+3")
     result = bot.execute_roll_expression("2d6+3")
