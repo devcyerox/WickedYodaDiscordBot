@@ -4801,10 +4801,16 @@ def subscription_due(last_checked_at: object, interval_seconds: object) -> bool:
 
 
 async def reply_ephemeral(interaction: discord.Interaction, message: str) -> None:
-    if interaction.response.is_done():
-        await interaction.followup.send(message, ephemeral=COMMAND_RESPONSES_EPHEMERAL)
-    else:
-        await interaction.response.send_message(message, ephemeral=COMMAND_RESPONSES_EPHEMERAL)
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(message, ephemeral=COMMAND_RESPONSES_EPHEMERAL)
+        else:
+            await interaction.response.send_message(message, ephemeral=COMMAND_RESPONSES_EPHEMERAL)
+    except discord.NotFound:
+        try:
+            await interaction.followup.send(message, ephemeral=COMMAND_RESPONSES_EPHEMERAL)
+        except discord.HTTPException:
+            logger.warning("Unable to respond to interaction; token expired.")
 
 
 async def get_text_channel(client: commands.Bot, channel_id: int) -> discord.TextChannel | None:
