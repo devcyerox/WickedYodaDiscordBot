@@ -959,7 +959,7 @@ def _write_env_file(path: Path, updates: dict[str, str]) -> None:
     _apply_best_effort_permissions(path, 0o600)
 
 
-def _build_settings_fields() -> list[dict]:
+def _build_settings_fields(channel_options: list[dict] | None = None) -> list[dict]:
     env_file_values = _read_env_file(_resolve_env_file_path())
     ordered_keys = list(SETTINGS_FIELD_ORDER)
     for key in sorted(env_file_values):
@@ -969,32 +969,55 @@ def _build_settings_fields() -> list[dict]:
         if key.startswith("WEB_") and key not in ordered_keys:
             ordered_keys.append(key)
 
+    channel_option_items: list[dict] = []
+    if channel_options:
+        channel_option_items = [
+            {"value": "", "label": "Unset (use per-guild default)"},
+            *[
+                {"value": str(item.get("id", "")).strip(), "label": str(item.get("label", "")).strip() or str(item.get("name", "")).strip()}
+                for item in channel_options
+                if str(item.get("id", "")).strip()
+            ],
+        ]
+
     fields: list[dict] = []
     for key in ordered_keys:
         raw = os.getenv(key)
         value = env_file_values.get(key, raw or "")
         is_sensitive = _is_sensitive_key(key)
+        options = SETTINGS_DROPDOWN_OPTIONS.get(key, ())
+        if key == "Bot_Log_Channel" and channel_option_items:
+            options = channel_option_items
         fields.append(
             {
                 "key": key,
                 "value": value,
                 "masked_value": "********" if is_sensitive and value else value,
                 "is_sensitive": is_sensitive,
-                "options": SETTINGS_DROPDOWN_OPTIONS.get(key, ()),
+                "options": options,
             }
         )
     return fields
 
 
-def _validate_settings_payload(payload: dict[str, str], allowed_keys: list[str]) -> tuple[dict[str, str], list[str]]:
+def _validate_settings_payload(
+    payload: dict[str, str],
+    allowed_keys: list[str],
+    options_lookup: dict[str, object] | None = None,
+) -> tuple[dict[str, str], list[str]]:
     validated: dict[str, str] = {}
     errors: list[str] = []
     for key in allowed_keys:
         raw_value = payload.get(key, "").strip()
-        options = SETTINGS_DROPDOWN_OPTIONS.get(key)
-        if options and raw_value and raw_value not in options:
-            errors.append(f"{key} has an invalid option.")
-            continue
+        options = (options_lookup or {}).get(key, SETTINGS_DROPDOWN_OPTIONS.get(key))
+        if options:
+            if isinstance(options, list) and options and isinstance(options[0], dict):
+                allowed = {str(item.get("value", "")).strip() for item in options}
+            else:
+                allowed = {str(item).strip() for item in options}
+            if raw_value and raw_value not in allowed:
+                errors.append(f"{key} has an invalid option.")
+                continue
         if key in {"GUILD_ID", "Bot_Log_Channel", "WEB_PORT", "WEB_TLS_PORT", "WEB_AVATAR_MAX_UPLOAD_BYTES"} and raw_value:
             if not raw_value.isdigit():
                 errors.append(f"{key} must be numeric.")
@@ -3163,7 +3186,11 @@ PAGE_TEMPLATE = """
               {% if item.options %}
               <select class="form-select" id="field_{{ item.key }}" name="{{ item.key }}" {% if not session.get("is_admin") %}disabled{% endif %}>
                 {% for option in item.options %}
+                {% if option is mapping %}
+                <option value="{{ option.value }}" {% if option.value == item.value %}selected{% endif %}>{{ option.label }}</option>
+                {% else %}
                 <option value="{{ option }}" {% if option == item.value %}selected{% endif %}>{{ option }}</option>
+                {% endif %}
                 {% endfor %}
               </select>
               {% elif item.is_sensitive %}
@@ -5429,7 +5456,14 @@ def create_app(
     @app.get("/admin/settings")
     @login_required
     def settings():
-        settings_view = _build_settings_fields()
+        selected_guild_id, _, _ = _selected_guild_context()
+        catalog_payload = _call_get_discord_catalog(selected_guild_id)
+        channel_options: list[dict] = []
+        if isinstance(catalog_payload, dict) and catalog_payload.get("ok"):
+            raw_channels = catalog_payload.get("channels", [])
+            if isinstance(raw_channels, list):
+                channel_options = [item for item in raw_channels if isinstance(item, dict)]
+        settings_view = _build_settings_fields(channel_options=channel_options)
         return _render_page(
             "settings",
             "Web Admin Settings",
@@ -5441,9 +5475,17 @@ def create_app(
     def settings_save():
         if not _current_user_is_admin():
             return _reject_read_only_write("settings")
-        settings_fields = _build_settings_fields()
+        selected_guild_id, _, _ = _selected_guild_context()
+        catalog_payload = _call_get_discord_catalog(selected_guild_id)
+        channel_options: list[dict] = []
+        if isinstance(catalog_payload, dict) and catalog_payload.get("ok"):
+            raw_channels = catalog_payload.get("channels", [])
+            if isinstance(raw_channels, list):
+                channel_options = [item for item in raw_channels if isinstance(item, dict)]
+        settings_fields = _build_settings_fields(channel_options=channel_options)
         allowed_keys = [item["key"] for item in settings_fields]
         current_values = {item["key"]: item["value"] for item in settings_fields}
+        options_lookup = {item["key"]: item.get("options") for item in settings_fields}
 
         payload = {key: request.form.get(key, current_values.get(key, "")) for key in allowed_keys}
         for key in allowed_keys:
@@ -5452,7 +5494,7 @@ def create_app(
                 if raw_value == "********":
                     payload[key] = current_values.get(key, "")
 
-        validated, errors = _validate_settings_payload(payload, allowed_keys)
+        validated, errors = _validate_settings_payload(payload, allowed_keys, options_lookup=options_lookup)
         if errors:
             for error in errors:
                 flash(error, "danger")
