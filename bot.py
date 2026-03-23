@@ -148,6 +148,8 @@ SPICY_PROMPTS_REPO_URL = os.getenv(
 SPICY_PROMPTS_REPO_BRANCH = os.getenv("SPICY_PROMPTS_REPO_BRANCH", "main").strip() or "main"
 SPICY_PROMPTS_MANIFEST_PATH = os.getenv("SPICY_PROMPTS_MANIFEST_PATH", "manifests/index.json").strip() or "manifests/index.json"
 SPICY_PROMPTS_REQUEST_TIMEOUT_SECONDS = env_int("SPICY_PROMPTS_REQUEST_TIMEOUT_SECONDS", 12)
+SPICY_PROMPTS_REFRESH_ON_BOOT = env_bool("SPICY_PROMPTS_REFRESH_ON_BOOT", True)
+SPICY_PROMPTS_REFRESH_INTERVAL_HOURS = env_int("SPICY_PROMPTS_REFRESH_INTERVAL_HOURS", 24)
 UPTIME_STATUS_ENABLED = env_bool("UPTIME_STATUS_ENABLED", True)
 UPTIME_STATUS_TIMEOUT_SECONDS = env_int("UPTIME_STATUS_TIMEOUT_SECONDS", 8)
 WEB_RESTART_ENABLED = env_bool("WEB_RESTART_ENABLED", False)
@@ -910,6 +912,15 @@ def fetch_spicy_prompt_catalog() -> dict:
         "packs": pack_rows,
         "prompts": prompt_rows,
     }
+
+
+def parse_db_timestamp(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.strptime(value, "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC)
+    except ValueError:
+        return None
 
 
 def fetch_random_cat_image_url() -> str:
@@ -2558,7 +2569,7 @@ class ActionStore:
                     conn.execute(
                         """
                         INSERT INTO spicy_prompt_packs (pack_id, pack_name, source_path, prompt_count, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?)
                         """,
                         (
                             str(pack.get("pack_id", "")).strip(),
@@ -2852,12 +2863,15 @@ class ActionStore:
                 "spicy_prompts_channel_id": None,
                 "color_role_ids": [],
             }
+        color_role_ids_raw = "[]"
+        if "color_role_ids_json" in row.keys():
+            color_role_ids_raw = row["color_role_ids_json"] or "[]"
         return {
             "guild_id": int(row["guild_id"]),
             "bot_log_channel_id": int(row["bot_log_channel_id"]) if row["bot_log_channel_id"] else None,
             "spicy_prompts_enabled": int(row["spicy_prompts_enabled"] or 0),
             "spicy_prompts_channel_id": int(row["spicy_prompts_channel_id"]) if row["spicy_prompts_channel_id"] else None,
-            "color_role_ids": json.loads(str(row["color_role_ids_json"] or "[]")) if row.get("color_role_ids_json") is not None else [],
+            "color_role_ids": json.loads(str(color_role_ids_raw)),
         }
 
     def save_guild_settings(
@@ -4323,11 +4337,66 @@ class ModerationBot(commands.Bot):
                         await message.channel.send(response)
         await self.process_commands(message)
 
+    async def refresh_spicy_prompt_catalog(self, *, reason: str, actor: str = "system") -> None:
+        if not SPICY_PROMPTS_ENABLED or not SPICY_PROMPTS_REPO_URL:
+            return
+        try:
+            catalog = await asyncio.to_thread(fetch_spicy_prompt_catalog)
+            status = ACTION_STORE.replace_spicy_prompt_catalog(catalog)
+            await log_action(
+                self,
+                "Spicy Prompts Refresh",
+                (
+                    "Action: `spicy_prompts_refresh`\n"
+                    f"Status: **Success**\nReason: {reason}\n"
+                    f"Packs: {status.get('pack_count', 0)} | Prompts: {status.get('prompt_count', 0)}"
+                ),
+                discord.Color.orange(),
+            )
+            record_action_safe(
+                action="spicy_prompts_refresh",
+                status="success",
+                moderator=actor,
+                target="spicy-prompts",
+                reason=truncate_log_text(f"{reason} refresh"),
+                guild="",
+            )
+        except Exception as exc:
+            ACTION_STORE.update_spicy_prompt_sync_failure(error=str(exc))
+            await log_action(
+                self,
+                "Spicy Prompts Refresh",
+                f"Action: `spicy_prompts_refresh`\nStatus: **Failed**\nReason: {reason}\nError: {exc}",
+                discord.Color.red(),
+            )
+            record_action_safe(
+                action="spicy_prompts_refresh",
+                status="failed",
+                moderator=actor,
+                target="spicy-prompts",
+                reason=truncate_log_text(f"{reason} refresh failed: {exc}"),
+                guild="",
+            )
+
     async def youtube_monitor_loop(self) -> None:
         await self.wait_until_ready()
         logger.info("Notification loop started. Tick interval: %ss", NOTIFICATION_LOOP_SECONDS)
+        last_spicy_refresh_at: datetime | None = None
+        if SPICY_PROMPTS_ENABLED and SPICY_PROMPTS_REPO_URL:
+            if SPICY_PROMPTS_REFRESH_ON_BOOT:
+                await self.refresh_spicy_prompt_catalog(reason="boot")
+                last_spicy_refresh_at = datetime.now(UTC)
+            else:
+                status = ACTION_STORE.get_spicy_prompt_status()
+                last_spicy_refresh_at = parse_db_timestamp(str(status.get("last_refresh_at", "")).strip())
         while not self.is_closed():
             try:
+                if SPICY_PROMPTS_ENABLED and SPICY_PROMPTS_REPO_URL and SPICY_PROMPTS_REFRESH_INTERVAL_HOURS > 0:
+                    refresh_interval = timedelta(hours=SPICY_PROMPTS_REFRESH_INTERVAL_HOURS)
+                    now = datetime.now(UTC)
+                    if last_spicy_refresh_at is None or now - last_spicy_refresh_at >= refresh_interval:
+                        await self.refresh_spicy_prompt_catalog(reason="scheduled")
+                        last_spicy_refresh_at = now
                 if YOUTUBE_NOTIFY_ENABLED:
                     await self.poll_youtube_subscriptions()
                 await self.poll_reddit_feeds()
@@ -4732,10 +4801,16 @@ def subscription_due(last_checked_at: object, interval_seconds: object) -> bool:
 
 
 async def reply_ephemeral(interaction: discord.Interaction, message: str) -> None:
-    if interaction.response.is_done():
-        await interaction.followup.send(message, ephemeral=COMMAND_RESPONSES_EPHEMERAL)
-    else:
-        await interaction.response.send_message(message, ephemeral=COMMAND_RESPONSES_EPHEMERAL)
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(message, ephemeral=COMMAND_RESPONSES_EPHEMERAL)
+        else:
+            await interaction.response.send_message(message, ephemeral=COMMAND_RESPONSES_EPHEMERAL)
+    except discord.NotFound:
+        try:
+            await interaction.followup.send(message, ephemeral=COMMAND_RESPONSES_EPHEMERAL)
+        except discord.HTTPException:
+            logger.warning("Unable to respond to interaction; token expired.")
 
 
 async def get_text_channel(client: commands.Bot, channel_id: int) -> discord.TextChannel | None:
