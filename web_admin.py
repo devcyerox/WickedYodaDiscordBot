@@ -38,7 +38,7 @@ AUTH_MODE_STANDARD = "standard"
 AUTH_MODE_REMEMBER = "remember"
 REMEMBER_LOGIN_DAYS = 5
 PASSWORD_ROTATION_DAYS = 90
-PASSWORD_MIN_LENGTH = 12
+PASSWORD_MIN_LENGTH = 6
 SQLITE_TIMEOUT_SECONDS = 10
 SETTINGS_FIELD_ORDER = [
     "DISCORD_TOKEN",
@@ -252,12 +252,12 @@ def _parse_stored_datetime(raw_value: object) -> datetime | None:
 def _password_policy_error(password: str) -> str | None:
     if len(password) < PASSWORD_MIN_LENGTH:
         return f"Password must be at least {PASSWORD_MIN_LENGTH} characters."
-    if not any(char.islower() for char in password):
-        return "Password must include a lowercase letter."
-    if not any(char.isupper() for char in password):
-        return "Password must include an uppercase letter."
-    if not any(char.isdigit() for char in password):
-        return "Password must include a number."
+    digit_count = sum(char.isdigit() for char in password)
+    symbol_count = sum(not char.isalnum() for char in password)
+    if digit_count < 2:
+        return "Password must include at least 2 numbers."
+    if symbol_count < 1:
+        return "Password must include at least 1 symbol."
     return None
 
 
@@ -1560,31 +1560,9 @@ PAGE_TEMPLATE = """
           <button type="button" class="theme-btn" data-theme-choice="black">Black</button>
         </div>
         {% if session.get("user") %}
-        <ul class="navbar-nav me-auto mb-2 mb-lg-0">
-          <li class="nav-item"><a class="nav-link" href="{{ url_for('home') }}">Home</a></li>
-          <li class="nav-item"><a class="nav-link" href="{{ url_for('guilds_page') }}">Servers</a></li>
-          <li class="nav-item"><a class="nav-link" href="{{ url_for('dashboard') }}">Dashboard</a></li>
-          <li class="nav-item"><a class="nav-link" href="{{ url_for('actions') }}">Actions</a></li>
-          <li class="nav-item"><a class="nav-link" href="{{ url_for('member_activity_page') }}">Member Activity</a></li>
-          <li class="nav-item"><a class="nav-link" href="{{ url_for('reddit_feeds') }}">Reddit</a></li>
-          <li class="nav-item"><a class="nav-link" href="{{ url_for('wordpress_feeds') }}">WordPress</a></li>
-          <li class="nav-item"><a class="nav-link" href="{{ url_for('linkedin_feeds') }}">LinkedIn</a></li>
-          <li class="nav-item"><a class="nav-link" href="{{ url_for('youtube_subscriptions') }}">YouTube</a></li>
-          <li class="nav-item"><a class="nav-link" href="{{ url_for('spicy_prompts') }}">Spicy Prompts</a></li>
-          <li class="nav-item"><a class="nav-link" href="{{ url_for('status_page') }}">Status</a></li>
-          <li class="nav-item"><a class="nav-link" href="{{ url_for('logs') }}">Logs</a></li>
-          <li class="nav-item"><a class="nav-link" href="{{ url_for('documentation') }}">Documentation</a></li>
-          <li class="nav-item"><a class="nav-link" href="{{ url_for('users') }}">Users</a></li>
-          <li class="nav-item"><a class="nav-link" href="{{ url_for('observability') }}">Observability</a></li>
-          <li class="nav-item"><a class="nav-link" href="{{ url_for('bot_profile') }}">Bot Profile</a></li>
-          <li class="nav-item"><a class="nav-link" href="{{ url_for('guild_settings') }}">Guild Settings</a></li>
-          <li class="nav-item"><a class="nav-link" href="{{ url_for('command_permissions') }}">Command Permissions</a></li>
-          <li class="nav-item"><a class="nav-link" href="{{ url_for('tag_responses') }}">Tag Responses</a></li>
-          <li class="nav-item"><a class="nav-link" href="{{ url_for('settings') }}">Settings</a></li>
-          <li class="nav-item"><a class="nav-link" href="{{ url_for('account') }}">Account</a></li>
-        </ul>
-        <div class="nav-utility">
-          <select id="nav-page-select" class="form-select form-select-sm go-page-select">
+
+        <div class="nav-utility d-flex align-items-center gap-2">
+          <select id="nav-page-select" class="form-select form-select-sm go-page-select" aria-label="Navigation">
             <option value="">Go to page...</option>
             <option value="{{ url_for('home') }}">Home</option>
             <option value="{{ url_for('guilds_page') }}">Servers</option>
@@ -1618,12 +1596,22 @@ PAGE_TEMPLATE = """
             </select>
           </form>
           {% endif %}
-          {% if restart_enabled %}
-          <form method="post" action="{{ url_for('restart_service') }}" class="restart-form" onsubmit="return confirm('WARNING: This restarts the container process. Continue?');">
-            <button class="btn btn-outline-danger btn-sm" type="submit" {% if not session.get("is_admin") %}disabled{% endif %}>Restart</button>
-          </form>
-          {% endif %}
-          <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('logout') }}">Logout</a>
+          <div class="dropdown">
+            <button class="btn btn-outline-secondary btn-sm dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+              Menu
+            </button>
+            <ul class="dropdown-menu dropdown-menu-end">
+              {% if restart_enabled %}
+              <li>
+                <form method="post" action="{{ url_for('restart_service') }}" class="px-3 py-1" onsubmit="return confirm('WARNING: This restarts the container process. Continue?');">
+                  <button class="btn btn-outline-danger btn-sm w-100" type="submit" {% if not session.get("is_admin") %}disabled{% endif %}>Restart</button>
+                </form>
+              </li>
+              <li><hr class="dropdown-divider"></li>
+              {% endif %}
+              <li><a class="dropdown-item" href="{{ url_for('logout') }}">Log out</a></li>
+            </ul>
+          </div>
         </div>
         {% else %}
         <ul class="navbar-nav me-auto mb-2 mb-lg-0">
