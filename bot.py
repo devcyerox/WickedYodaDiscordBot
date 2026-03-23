@@ -2277,9 +2277,9 @@ class ActionStore:
                             INSERT INTO guild_settings (
                                 guild_id, bot_log_channel_id, spicy_prompts_enabled, spicy_prompts_channel_id, color_role_ids_json, updated_at
                             )
-                            VALUES (?, ?, 0, NULL, ?)
+                            VALUES (?, ?, 0, NULL, ?, ?)
                             """,
-                            (guild_id, BOT_LOG_CHANNEL, now),
+                            (guild_id, BOT_LOG_CHANNEL, "[]", now),
                         )
             conn.commit()
 
