@@ -38,7 +38,7 @@ AUTH_MODE_STANDARD = "standard"
 AUTH_MODE_REMEMBER = "remember"
 REMEMBER_LOGIN_DAYS = 5
 PASSWORD_ROTATION_DAYS = 90
-PASSWORD_MIN_LENGTH = 12
+PASSWORD_MIN_LENGTH = 6
 SQLITE_TIMEOUT_SECONDS = 10
 SETTINGS_FIELD_ORDER = [
     "DISCORD_TOKEN",
@@ -252,12 +252,12 @@ def _parse_stored_datetime(raw_value: object) -> datetime | None:
 def _password_policy_error(password: str) -> str | None:
     if len(password) < PASSWORD_MIN_LENGTH:
         return f"Password must be at least {PASSWORD_MIN_LENGTH} characters."
-    if not any(char.islower() for char in password):
-        return "Password must include a lowercase letter."
-    if not any(char.isupper() for char in password):
-        return "Password must include an uppercase letter."
-    if not any(char.isdigit() for char in password):
-        return "Password must include a number."
+    digit_count = sum(char.isdigit() for char in password)
+    symbol_count = sum(not char.isalnum() for char in password)
+    if digit_count < 2:
+        return "Password must include at least 2 numbers."
+    if symbol_count < 1:
+        return "Password must include at least 1 symbol."
     return None
 
 
