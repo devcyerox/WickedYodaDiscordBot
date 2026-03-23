@@ -3743,6 +3743,20 @@ def run_web_save_tag_responses(mapping: dict, _actor_email: str, guild_id: int) 
     return {"ok": True, "mapping": saved, "message": "Tag responses updated."}
 
 
+def run_web_get_spicy_prompt_status(guild_id: int) -> dict:
+    try:
+        safe_guild_id = require_managed_guild_id(guild_id, context="spicy prompt status")
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    lock = get_spicy_prompt_channel_lock(safe_guild_id)
+    return {
+        "ok": True,
+        "guild_id": safe_guild_id,
+        "enabled": bool(lock.get("enabled")),
+        "channel_id": int(lock.get("channel_id", 0) or 0),
+    }
+
+
 def run_web_get_guild_settings(guild_id: int) -> dict:
     try:
         payload = ACTION_STORE.get_guild_settings(guild_id=guild_id)
@@ -4011,6 +4025,7 @@ class ModerationBot(commands.Bot):
                 update_bot_profile=run_web_update_bot_profile,
                 update_bot_avatar=run_web_update_bot_avatar,
                 get_member_activity=run_web_get_member_activity,
+                get_spicy_prompt_status=run_web_get_spicy_prompt_status,
                 export_member_activity=run_web_export_member_activity,
                 get_spicy_prompts_status=run_web_get_spicy_prompts_status,
                 refresh_spicy_prompts=run_web_refresh_spicy_prompts,
@@ -4052,6 +4067,7 @@ class ModerationBot(commands.Bot):
                         update_bot_profile=run_web_update_bot_profile,
                         update_bot_avatar=run_web_update_bot_avatar,
                         get_member_activity=run_web_get_member_activity,
+                        get_spicy_prompt_status=run_web_get_spicy_prompt_status,
                         export_member_activity=run_web_export_member_activity,
                         get_spicy_prompts_status=run_web_get_spicy_prompts_status,
                         refresh_spicy_prompts=run_web_refresh_spicy_prompts,
