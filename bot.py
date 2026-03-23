@@ -157,6 +157,19 @@ NOTIFICATION_LOOP_SECONDS = 60
 MEMBER_ACTIVITY_RECENT_RETENTION_DAYS = 90
 MEMBER_ACTIVITY_WEB_TOP_LIMIT = 20
 LOG_RETENTION_DAYS = env_int("LOG_RETENTION_DAYS", 90)
+POPULAR_COLOR_ROLES = {
+    "Red": 0xE74C3C,
+    "Orange": 0xE67E22,
+    "Yellow": 0xF1C40F,
+    "Green": 0x2ECC71,
+    "Teal": 0x1ABC9C,
+    "Blue": 0x3498DB,
+    "Navy": 0x2C3E50,
+    "Purple": 0x9B59B6,
+    "Pink": 0xFF69B4,
+    "White": 0xECF0F1,
+}
+
 MEMBER_ACTIVITY_WINDOW_SPECS = (
     ("90d", "Last 90 Days", timedelta(days=90)),
     ("30d", "Last 30 Days", timedelta(days=30)),
@@ -1908,6 +1921,16 @@ def configure_runtime_logging(log_dir: str) -> tuple[str, str, str]:
     return bot_log_file, channel_log_file, error_log_file
 
 
+def write_startup_log_files(log_dir: str, files: list[str]) -> None:
+    timestamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
+    for path in files:
+        try:
+            with open(path, "a", encoding="utf-8") as handle:
+                handle.write(f"{timestamp} [INFO] startup: Logging initialized for {log_dir}\n")
+        except OSError:
+            continue
+
+
 def read_recent_log_lines(path: str, lines: int) -> str:
     if not os.path.exists(path) or not os.path.isfile(path):
         return ""
@@ -3270,6 +3293,7 @@ ACTION_DB_PATH = resolve_action_db_path()
 ACTIONS_DIR = os.path.dirname(ACTION_DB_PATH) or "."
 LOG_DIR = resolve_log_dir(ACTION_DB_PATH)
 BOT_LOG_FILE, BOT_CHANNEL_LOG_FILE, CONTAINER_ERROR_LOG_FILE = configure_runtime_logging(LOG_DIR)
+write_startup_log_files(LOG_DIR, [BOT_LOG_FILE, BOT_CHANNEL_LOG_FILE, CONTAINER_ERROR_LOG_FILE])
 ACTION_STORE = ActionStore(ACTION_DB_PATH)
 
 
@@ -3807,6 +3831,8 @@ def run_web_save_guild_settings(payload: dict, _actor_email: str, guild_id: int)
     has_spicy_enabled = "spicy_prompts_enabled" in payload
     raw_spicy_channel_id = str(payload.get("spicy_prompts_channel_id", "")).strip()
     raw_spicy_enabled = str(payload.get("spicy_prompts_enabled", "")).strip().lower()
+    color_role_names = payload.get("color_role_names", [])
+    color_role_ids_payload = payload.get("color_role_ids", [])
     bot_log_channel_id: int | None
     spicy_prompts_channel_id: int | None
     spicy_prompts_enabled: bool | None
@@ -3828,12 +3854,33 @@ def run_web_save_guild_settings(payload: dict, _actor_email: str, guild_id: int)
     if spicy_prompts_enabled and spicy_prompts_channel_id is None:
         return {"ok": False, "error": "Spicy Prompts requires a configured Discord channel."}
 
+    parsed_role_ids: list[int] = []
+    if isinstance(color_role_ids_payload, list):
+        for value in color_role_ids_payload:
+            if str(value).isdigit():
+                parsed_role_ids.append(int(value))
+    elif isinstance(color_role_ids_payload, str):
+        for part in color_role_ids_payload.split(","):
+            if part.strip().isdigit():
+                parsed_role_ids.append(int(part.strip()))
+    role_names: list[str] = []
+    if isinstance(color_role_names, list):
+        role_names = [str(value) for value in color_role_names]
+    elif isinstance(color_role_names, str):
+        role_names = [color_role_names]
+
     try:
+        created_ids: list[int] = []
+        if role_names:
+            future = asyncio.run_coroutine_threadsafe(_ensure_color_roles(guild_id, role_names), bot.loop)
+            created_ids = future.result(timeout=30)
+        merged_ids = sorted({*parsed_role_ids, *created_ids})
         saved = ACTION_STORE.save_guild_settings(
             guild_id=guild_id,
             bot_log_channel_id=bot_log_channel_id,
             spicy_prompts_enabled=spicy_prompts_enabled,
             spicy_prompts_channel_id=spicy_prompts_channel_id,
+            color_role_ids=merged_ids,
         )
     except Exception as exc:
         logger.exception("Failed to save guild settings for %s: %s", guild_id, exc)
@@ -3970,6 +4017,33 @@ def run_web_request_restart(actor_email: str) -> dict:
     timer.daemon = True
     timer.start()
     return {"ok": True, "message": "Restart requested. Container should restart shortly."}
+
+
+async def _ensure_color_roles(guild_id: int, names: list[str]) -> list[int]:
+    guild = bot.get_guild(int(guild_id))
+    if guild is None:
+        raise RuntimeError("Guild is not currently available to this bot.")
+    normalized: list[str] = []
+    for name in names:
+        value = str(name).strip()
+        if value and value not in normalized:
+            normalized.append(value)
+    if not normalized:
+        return []
+    existing = {role.name.lower(): role for role in guild.roles}
+    created_ids: list[int] = []
+    for name in normalized:
+        existing_role = existing.get(name.lower())
+        if existing_role:
+            created_ids.append(existing_role.id)
+            continue
+        color_value = POPULAR_COLOR_ROLES.get(name, 0x000000)
+        try:
+            role = await guild.create_role(name=name, colour=discord.Colour(color_value), reason="Create color role")
+        except discord.Forbidden as exc:
+            raise RuntimeError("Missing permissions to create roles.") from exc
+        created_ids.append(role.id)
+    return created_ids
 
 
 async def _leave_guild(guild_id: int) -> None:
