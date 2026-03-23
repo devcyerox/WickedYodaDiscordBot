@@ -140,7 +140,7 @@ YOUTUBE_POLL_INTERVAL_SECONDS = env_int("YOUTUBE_POLL_INTERVAL_SECONDS", 300)
 YOUTUBE_REQUEST_TIMEOUT_SECONDS = env_int("YOUTUBE_REQUEST_TIMEOUT_SECONDS", 12)
 WORDPRESS_REQUEST_TIMEOUT_SECONDS = env_int("WORDPRESS_REQUEST_TIMEOUT_SECONDS", 12)
 LINKEDIN_REQUEST_TIMEOUT_SECONDS = env_int("LINKEDIN_REQUEST_TIMEOUT_SECONDS", 12)
-SPICY_PROMPTS_ENABLED = env_bool("SPICY_PROMPTS_ENABLED", False)
+SPICY_PROMPTS_ENABLED = env_bool("SPICY_PROMPTS_ENABLED", True)
 SPICY_PROMPTS_REPO_URL = os.getenv(
     "SPICY_PROMPTS_REPO_URL",
     "https://github.com/wickedyoda/SpicyGameAndBookTokQuiz",
@@ -156,6 +156,7 @@ FEED_INTERVAL_OPTIONS = {300, 600, 900, 1800, 3600, 10800, 21600}
 NOTIFICATION_LOOP_SECONDS = 60
 MEMBER_ACTIVITY_RECENT_RETENTION_DAYS = 90
 MEMBER_ACTIVITY_WEB_TOP_LIMIT = 20
+LOG_RETENTION_DAYS = env_int("LOG_RETENTION_DAYS", 90)
 MEMBER_ACTIVITY_WINDOW_SPECS = (
     ("90d", "Last 90 Days", timedelta(days=90)),
     ("30d", "Last 30 Days", timedelta(days=30)),
@@ -1821,7 +1822,7 @@ def parse_log_level(value: str, default: int = logging.INFO) -> int:
 
 def resolve_log_dir(db_path: str) -> str:
     configured = os.getenv("LOG_DIR", "").strip()
-    preferred = configured or os.path.dirname(db_path) or "."
+    preferred = configured or "/app/logs"
     fallback = os.path.dirname(db_path) or "."
     candidates: list[str] = [preferred]
     if fallback != preferred:
@@ -1843,6 +1844,27 @@ def resolve_log_dir(db_path: str) -> str:
                 os.path.dirname(db_path) or ".",
             )
     raise RuntimeError("No writable log directory available.")
+
+
+def prune_log_directory(log_dir: str, retention_days: int) -> None:
+    if retention_days <= 0:
+        return
+    cutoff = datetime.now(UTC) - timedelta(days=retention_days)
+    try:
+        for entry in os.scandir(log_dir):
+            if not entry.is_file():
+                continue
+            try:
+                mtime = datetime.fromtimestamp(entry.stat().st_mtime, tz=UTC)
+            except OSError:
+                continue
+            if mtime < cutoff:
+                try:
+                    os.remove(entry.path)
+                except OSError:
+                    logger.warning("Failed to remove old log file %s", entry.path)
+    except OSError as exc:
+        logger.warning("Failed to prune logs in %s: %s", log_dir, exc)
 
 
 def add_file_handler(target_logger: logging.Logger, path: str, level: int) -> None:
@@ -1873,10 +1895,15 @@ def configure_runtime_logging(log_dir: str) -> tuple[str, str, str]:
     bot_log_file = os.path.join(log_dir, "bot.log")
     channel_log_file = os.path.join(log_dir, "bot_log.log")
     error_log_file = os.path.join(log_dir, "container_errors.log")
+    web_log_file = os.path.join(log_dir, "web_admin.log")
+    web_audit_log_file = os.path.join(log_dir, "web_audit.log")
 
     add_file_handler(logger, bot_log_file, log_level)
     add_file_handler(bot_channel_logger, channel_log_file, logging.INFO)
     add_file_handler(root_logger, error_log_file, container_log_level)
+    add_file_handler(logging.getLogger("web_admin"), web_log_file, log_level)
+    add_file_handler(logging.getLogger("wickedyoda-helper.web-audit"), web_audit_log_file, log_level)
+    prune_log_directory(log_dir, LOG_RETENTION_DAYS)
     return bot_log_file, channel_log_file, error_log_file
 
 
@@ -4127,6 +4154,7 @@ class ModerationBot(commands.Bot):
     async def youtube_monitor_loop(self) -> None:
         await self.wait_until_ready()
         logger.info("Notification loop started. Tick interval: %ss", NOTIFICATION_LOOP_SECONDS)
+        last_log_prune_at: datetime | None = None
         while not self.is_closed():
             try:
                 if YOUTUBE_NOTIFY_ENABLED:
