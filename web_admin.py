@@ -1777,7 +1777,48 @@ PAGE_TEMPLATE = """
             <p class="mb-0 fw-semibold">Status</p>
           </a>
         </div>
+            <div class="card card-soft p-3 mb-3">
+        <div class="d-flex align-items-center justify-content-between mb-2">
+          <h2 class="h6 mb-0">Command Status</h2>
+          <a class="small" href="{{ url_for('command_permissions') }}">Manage</a>
+        </div>
+        {% if command_statuses %}
+        <div class="table-wrap">
+          <table class="table table-sm align-middle">
+            <thead>
+              <tr>
+                <th>Command</th>
+                <th>Access</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for command in command_statuses %}
+              <tr>
+                <td>
+                  <div class="fw-semibold">{{ command.label }}</div>
+                  {% if command.description %}
+                  <div class="text-secondary small">{{ command.description }}</div>
+                  {% endif %}
+                </td>
+                <td class="small">{{ command.access }}</td>
+                <td>
+                  {% if command.enabled %}
+                  <span class="badge text-bg-success">Enabled</span>
+                  {% else %}
+                  <span class="badge text-bg-secondary">Disabled</span>
+                  {% endif %}
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <p class="text-secondary small mb-0">Command status is unavailable.</p>
+        {% endif %}
       </div>
+</div>
       <div class="row g-3">
         <div class="col-6 col-lg-3">
           <a class="card card-soft p-3 h-100 text-decoration-none" href="{{ url_for('observability') }}">
@@ -1982,7 +2023,48 @@ PAGE_TEMPLATE = """
         {% else %}
         <p class="small text-secondary mt-3 mb-0">Current filter: <strong>{{ member_activity.selected_role_label }}</strong>. Moderator-style accounts are excluded from rankings.</p>
         {% endif %}
+            <div class="card card-soft p-3 mb-3">
+        <div class="d-flex align-items-center justify-content-between mb-2">
+          <h2 class="h6 mb-0">Command Status</h2>
+          <a class="small" href="{{ url_for('command_permissions') }}">Manage</a>
+        </div>
+        {% if command_statuses %}
+        <div class="table-wrap">
+          <table class="table table-sm align-middle">
+            <thead>
+              <tr>
+                <th>Command</th>
+                <th>Access</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for command in command_statuses %}
+              <tr>
+                <td>
+                  <div class="fw-semibold">{{ command.label }}</div>
+                  {% if command.description %}
+                  <div class="text-secondary small">{{ command.description }}</div>
+                  {% endif %}
+                </td>
+                <td class="small">{{ command.access }}</td>
+                <td>
+                  {% if command.enabled %}
+                  <span class="badge text-bg-success">Enabled</span>
+                  {% else %}
+                  <span class="badge text-bg-secondary">Disabled</span>
+                  {% endif %}
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <p class="text-secondary small mb-0">Command status is unavailable.</p>
+        {% endif %}
       </div>
+</div>
       <div class="row g-3">
         {% for window in member_activity.windows %}
         <div class="col-12 col-xl-6">
@@ -2481,7 +2563,48 @@ PAGE_TEMPLATE = """
       <div class="card card-soft p-3 mb-3">
         <h1 class="h5 mb-2">Discord Servers</h1>
         <p class="text-secondary mb-0">Choose which server the web GUI is currently managing. Guild-scoped pages use the selected server context.</p>
+            <div class="card card-soft p-3 mb-3">
+        <div class="d-flex align-items-center justify-content-between mb-2">
+          <h2 class="h6 mb-0">Command Status</h2>
+          <a class="small" href="{{ url_for('command_permissions') }}">Manage</a>
+        </div>
+        {% if command_statuses %}
+        <div class="table-wrap">
+          <table class="table table-sm align-middle">
+            <thead>
+              <tr>
+                <th>Command</th>
+                <th>Access</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for command in command_statuses %}
+              <tr>
+                <td>
+                  <div class="fw-semibold">{{ command.label }}</div>
+                  {% if command.description %}
+                  <div class="text-secondary small">{{ command.description }}</div>
+                  {% endif %}
+                </td>
+                <td class="small">{{ command.access }}</td>
+                <td>
+                  {% if command.enabled %}
+                  <span class="badge text-bg-success">Enabled</span>
+                  {% else %}
+                  <span class="badge text-bg-secondary">Disabled</span>
+                  {% endif %}
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <p class="text-secondary small mb-0">Command status is unavailable.</p>
+        {% endif %}
       </div>
+</div>
       <div class="row g-3">
         {% for guild in guild_cards %}
         <div class="col-12 col-lg-6">
@@ -2532,7 +2655,48 @@ PAGE_TEMPLATE = """
           <a class="btn btn-outline-primary btn-sm" href="{{ github_wiki_url }}" target="_blank" rel="noreferrer">Open GitHub Wiki</a>
           {% endif %}
         </div>
+            <div class="card card-soft p-3 mb-3">
+        <div class="d-flex align-items-center justify-content-between mb-2">
+          <h2 class="h6 mb-0">Command Status</h2>
+          <a class="small" href="{{ url_for('command_permissions') }}">Manage</a>
+        </div>
+        {% if command_statuses %}
+        <div class="table-wrap">
+          <table class="table table-sm align-middle">
+            <thead>
+              <tr>
+                <th>Command</th>
+                <th>Access</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for command in command_statuses %}
+              <tr>
+                <td>
+                  <div class="fw-semibold">{{ command.label }}</div>
+                  {% if command.description %}
+                  <div class="text-secondary small">{{ command.description }}</div>
+                  {% endif %}
+                </td>
+                <td class="small">{{ command.access }}</td>
+                <td>
+                  {% if command.enabled %}
+                  <span class="badge text-bg-success">Enabled</span>
+                  {% else %}
+                  <span class="badge text-bg-secondary">Disabled</span>
+                  {% endif %}
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <p class="text-secondary small mb-0">Command status is unavailable.</p>
+        {% endif %}
       </div>
+</div>
       <div class="row g-3">
         <div class="col-12 col-lg-4">
           <div class="card card-soft p-3 h-100">
@@ -2826,7 +2990,48 @@ PAGE_TEMPLATE = """
         {% else %}
         <p class="text-danger mb-0">{{ bot_profile.error or "Bot profile is unavailable." }}</p>
         {% endif %}
+            <div class="card card-soft p-3 mb-3">
+        <div class="d-flex align-items-center justify-content-between mb-2">
+          <h2 class="h6 mb-0">Command Status</h2>
+          <a class="small" href="{{ url_for('command_permissions') }}">Manage</a>
+        </div>
+        {% if command_statuses %}
+        <div class="table-wrap">
+          <table class="table table-sm align-middle">
+            <thead>
+              <tr>
+                <th>Command</th>
+                <th>Access</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for command in command_statuses %}
+              <tr>
+                <td>
+                  <div class="fw-semibold">{{ command.label }}</div>
+                  {% if command.description %}
+                  <div class="text-secondary small">{{ command.description }}</div>
+                  {% endif %}
+                </td>
+                <td class="small">{{ command.access }}</td>
+                <td>
+                  {% if command.enabled %}
+                  <span class="badge text-bg-success">Enabled</span>
+                  {% else %}
+                  <span class="badge text-bg-secondary">Disabled</span>
+                  {% endif %}
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <p class="text-secondary small mb-0">Command status is unavailable.</p>
+        {% endif %}
       </div>
+</div>
       <div class="row g-3">
         <div class="col-12 col-lg-6">
           <div class="card card-soft p-3 h-100">
@@ -3857,6 +4062,32 @@ def create_app(
         actions = _fetch_actions(db_path, limit=25, guild_id=selected_guild_id)
         snapshot = get_bot_snapshot()
         spicy_status = _call_get_spicy_prompt_status(selected_guild_id)
+        command_payload = _call_get_command_permissions(selected_guild_id)
+        command_statuses = []
+        if isinstance(command_payload, dict) and command_payload.get("ok"):
+            for item in command_payload.get("commands", []) or []:
+                mode = str(item.get("mode") or "default")
+                default_label = str(item.get("default_policy_label") or "")
+                if mode == "disabled":
+                    access_label = "Disabled"
+                    enabled = False
+                elif mode == "public":
+                    access_label = "Public"
+                    enabled = True
+                elif mode == "custom_roles":
+                    access_label = "Custom roles"
+                    enabled = True
+                else:
+                    access_label = default_label or "Default"
+                    enabled = True
+                command_statuses.append(
+                    {
+                        "label": str(item.get("label") or item.get("key") or ""),
+                        "description": str(item.get("description") or ""),
+                        "access": access_label,
+                        "enabled": enabled,
+                    }
+                )
         return _render_page(
             "status_public",
             "Bot Status",
@@ -3864,6 +4095,7 @@ def create_app(
             actions=actions,
             snapshot=snapshot,
             spicy_status=spicy_status,
+            command_statuses=command_statuses,
             status_refresh_seconds=status_refresh_seconds,
             refresh_options=refresh_options,
         )
@@ -3876,6 +4108,32 @@ def create_app(
         actions = _fetch_actions(db_path, limit=15, guild_id=selected_guild_id)
         snapshot = get_bot_snapshot()
         spicy_status = _call_get_spicy_prompt_status(selected_guild_id)
+        command_payload = _call_get_command_permissions(selected_guild_id)
+        command_statuses = []
+        if isinstance(command_payload, dict) and command_payload.get("ok"):
+            for item in command_payload.get("commands", []) or []:
+                mode = str(item.get("mode") or "default")
+                default_label = str(item.get("default_policy_label") or "")
+                if mode == "disabled":
+                    access_label = "Disabled"
+                    enabled = False
+                elif mode == "public":
+                    access_label = "Public"
+                    enabled = True
+                elif mode == "custom_roles":
+                    access_label = "Custom roles"
+                    enabled = True
+                else:
+                    access_label = default_label or "Default"
+                    enabled = True
+                command_statuses.append(
+                    {
+                        "label": str(item.get("label") or item.get("key") or ""),
+                        "description": str(item.get("description") or ""),
+                        "access": access_label,
+                        "enabled": enabled,
+                    }
+                )
         return _render_page(
             "home",
             "Web Admin Home",
@@ -3883,6 +4141,7 @@ def create_app(
             actions=actions,
             snapshot=snapshot,
             spicy_status=spicy_status,
+            command_statuses=command_statuses,
         )
 
     @app.get("/admin/guilds")
@@ -4127,6 +4386,32 @@ def create_app(
         actions = _fetch_actions(db_path, limit=15, guild_id=selected_guild_id)
         snapshot = get_bot_snapshot()
         spicy_status = _call_get_spicy_prompt_status(selected_guild_id)
+        command_payload = _call_get_command_permissions(selected_guild_id)
+        command_statuses = []
+        if isinstance(command_payload, dict) and command_payload.get("ok"):
+            for item in command_payload.get("commands", []) or []:
+                mode = str(item.get("mode") or "default")
+                default_label = str(item.get("default_policy_label") or "")
+                if mode == "disabled":
+                    access_label = "Disabled"
+                    enabled = False
+                elif mode == "public":
+                    access_label = "Public"
+                    enabled = True
+                elif mode == "custom_roles":
+                    access_label = "Custom roles"
+                    enabled = True
+                else:
+                    access_label = default_label or "Default"
+                    enabled = True
+                command_statuses.append(
+                    {
+                        "label": str(item.get("label") or item.get("key") or ""),
+                        "description": str(item.get("description") or ""),
+                        "access": access_label,
+                        "enabled": enabled,
+                    }
+                )
         return _render_page(
             "dashboard",
             "Web Admin Dashboard",
@@ -4134,6 +4419,7 @@ def create_app(
             actions=actions,
             snapshot=snapshot,
             spicy_status=spicy_status,
+            command_statuses=command_statuses,
         )
 
     @app.get("/admin/actions")
