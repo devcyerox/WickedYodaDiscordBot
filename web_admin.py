@@ -1607,6 +1607,7 @@ PAGE_TEMPLATE = """
               <li><a class="dropdown-item" href="{{ url_for('logout') }}">Log out</a></li>
             </ul>
           </div>
+          <a class="btn btn-outline-danger btn-sm" href="{{ url_for('logout') }}">Log out</a>
           {% if guild_options %}
           <form method="post" action="{{ url_for('select_guild') }}" class="guild-switch-form d-flex">
             <input type="hidden" name="next_endpoint" value="{{ 'documentation' if request.endpoint == 'documentation_page' else (request.endpoint or 'home') }}">

@@ -126,6 +126,7 @@ WEB_TLS_PORT = env_int("WEB_TLS_PORT", WEB_PORT + 1)
 WEB_TLS_CERT_FILE = os.getenv("WEB_TLS_CERT_FILE", "").strip()
 WEB_TLS_KEY_FILE = os.getenv("WEB_TLS_KEY_FILE", "").strip()
 ENABLE_MEMBERS_INTENT = env_bool("ENABLE_MEMBERS_INTENT", False)
+ENABLE_MESSAGE_CONTENT_INTENT = env_bool("ENABLE_MESSAGE_CONTENT_INTENT", False)
 COMMAND_RESPONSES_EPHEMERAL = env_bool("COMMAND_RESPONSES_EPHEMERAL", False)
 SHORTENER_ENABLED = env_bool("SHORTENER_ENABLED", False)
 SHORTENER_TIMEOUT_SECONDS = env_int("SHORTENER_TIMEOUT_SECONDS", 8)
@@ -693,7 +694,7 @@ intents = discord.Intents.default()
 intents.guilds = True
 intents.members = ENABLE_MEMBERS_INTENT
 intents.messages = True
-intents.message_content = False
+intents.message_content = ENABLE_MESSAGE_CONTENT_INTENT
 
 
 def normalize_target_url(raw_url: str) -> str:
@@ -3268,7 +3269,7 @@ class ActionStore:
                 conn.execute(
                     """
                     INSERT INTO guess_games (guild_id, target_number, attempt_count, created_by_user_id, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?)
                     ON CONFLICT(guild_id) DO UPDATE SET
                         target_number = excluded.target_number,
                         attempt_count = excluded.attempt_count,
@@ -4215,6 +4216,8 @@ class ModerationBot(commands.Bot):
         self.web_role_options = self.build_web_role_options(guild_id=default_guild_id)
         if not ENABLE_MEMBERS_INTENT:
             logger.info("ENABLE_MEMBERS_INTENT is disabled; no privileged members intent requested.")
+        if not ENABLE_MESSAGE_CONTENT_INTENT:
+            logger.warning("ENABLE_MESSAGE_CONTENT_INTENT is disabled; member activity tracking needs Message Content intent.")
         if managed:
             for guild in managed:
                 await log_action(
