@@ -140,7 +140,7 @@ YOUTUBE_POLL_INTERVAL_SECONDS = env_int("YOUTUBE_POLL_INTERVAL_SECONDS", 300)
 YOUTUBE_REQUEST_TIMEOUT_SECONDS = env_int("YOUTUBE_REQUEST_TIMEOUT_SECONDS", 12)
 WORDPRESS_REQUEST_TIMEOUT_SECONDS = env_int("WORDPRESS_REQUEST_TIMEOUT_SECONDS", 12)
 LINKEDIN_REQUEST_TIMEOUT_SECONDS = env_int("LINKEDIN_REQUEST_TIMEOUT_SECONDS", 12)
-SPICY_PROMPTS_ENABLED = env_bool("SPICY_PROMPTS_ENABLED", False)
+SPICY_PROMPTS_ENABLED = env_bool("SPICY_PROMPTS_ENABLED", True)
 SPICY_PROMPTS_REPO_URL = os.getenv(
     "SPICY_PROMPTS_REPO_URL",
     "https://github.com/wickedyoda/SpicyGameAndBookTokQuiz",
@@ -1821,7 +1821,7 @@ def parse_log_level(value: str, default: int = logging.INFO) -> int:
 
 def resolve_log_dir(db_path: str) -> str:
     configured = os.getenv("LOG_DIR", "").strip()
-    preferred = configured or os.path.dirname(db_path) or "."
+    preferred = configured or "/logs"
     fallback = os.path.dirname(db_path) or "."
     candidates: list[str] = [preferred]
     if fallback != preferred:
