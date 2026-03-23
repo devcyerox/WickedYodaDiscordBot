@@ -286,6 +286,7 @@ COMMAND_PERMISSION_METADATA: dict[str, dict[str, str]] = {
         "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
     },
     "spicy": {"label": "/spicy", "description": "Random spicy prompt", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
+    "color": {"label": "/color", "description": "Pick a name color role", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
     "countdown": {"label": "/countdown", "description": "Countdown to a date", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
     "leaderboard": {
         "label": "/leaderboard",
@@ -2132,6 +2133,7 @@ class ActionStore:
                     bot_log_channel_id INTEGER,
                     spicy_prompts_enabled INTEGER NOT NULL DEFAULT 0,
                     spicy_prompts_channel_id INTEGER,
+                    color_role_ids_json TEXT NOT NULL DEFAULT "[]",
                     updated_at TEXT NOT NULL
                 )
                 """
@@ -2140,6 +2142,7 @@ class ActionStore:
             guild_settings_migrations = {
                 "spicy_prompts_enabled": "ALTER TABLE guild_settings ADD COLUMN spicy_prompts_enabled INTEGER NOT NULL DEFAULT 0",
                 "spicy_prompts_channel_id": "ALTER TABLE guild_settings ADD COLUMN spicy_prompts_channel_id INTEGER",
+                "color_role_ids_json": "ALTER TABLE guild_settings ADD COLUMN color_role_ids_json TEXT NOT NULL DEFAULT '[]'",
             }
             for column, statement in guild_settings_migrations.items():
                 if column not in guild_settings_columns:
@@ -2249,7 +2252,7 @@ class ActionStore:
                         conn.execute(
                             """
                             INSERT INTO guild_settings (
-                                guild_id, bot_log_channel_id, spicy_prompts_enabled, spicy_prompts_channel_id, updated_at
+                                guild_id, bot_log_channel_id, spicy_prompts_enabled, spicy_prompts_channel_id, color_role_ids_json, updated_at
                             )
                             VALUES (?, ?, 0, NULL, ?)
                             """,
@@ -2532,7 +2535,7 @@ class ActionStore:
                     conn.execute(
                         """
                         INSERT INTO spicy_prompt_packs (pack_id, pack_name, source_path, prompt_count, updated_at)
-                        VALUES (?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?)
                         """,
                         (
                             str(pack.get("pack_id", "")).strip(),
@@ -2812,7 +2815,7 @@ class ActionStore:
                 conn.row_factory = sqlite3.Row
                 row = conn.execute(
                     """
-                    SELECT guild_id, bot_log_channel_id, spicy_prompts_enabled, spicy_prompts_channel_id
+                    SELECT guild_id, bot_log_channel_id, spicy_prompts_enabled, spicy_prompts_channel_id, color_role_ids_json
                     FROM guild_settings
                     WHERE guild_id = ?
                     """,
@@ -2824,12 +2827,14 @@ class ActionStore:
                 "bot_log_channel_id": None,
                 "spicy_prompts_enabled": 0,
                 "spicy_prompts_channel_id": None,
+                "color_role_ids": [],
             }
         return {
             "guild_id": int(row["guild_id"]),
             "bot_log_channel_id": int(row["bot_log_channel_id"]) if row["bot_log_channel_id"] else None,
             "spicy_prompts_enabled": int(row["spicy_prompts_enabled"] or 0),
             "spicy_prompts_channel_id": int(row["spicy_prompts_channel_id"]) if row["spicy_prompts_channel_id"] else None,
+            "color_role_ids": json.loads(str(row["color_role_ids_json"] or "[]")) if row.get("color_role_ids_json") is not None else [],
         }
 
     def save_guild_settings(
@@ -2839,6 +2844,7 @@ class ActionStore:
         bot_log_channel_id: int | None,
         spicy_prompts_enabled: bool | None = None,
         spicy_prompts_channel_id: int | None = None,
+        color_role_ids: list[int] | None = None,
     ) -> dict[str, int | None]:
         now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
         current = self.get_guild_settings(guild_id)
@@ -2846,18 +2852,21 @@ class ActionStore:
             spicy_prompts_enabled = bool(int(current.get("spicy_prompts_enabled", 0) or 0))
         if spicy_prompts_channel_id is None and current.get("spicy_prompts_channel_id") is not None:
             spicy_prompts_channel_id = int(current.get("spicy_prompts_channel_id", 0) or 0)
+        if color_role_ids is None:
+            color_role_ids = [int(value) for value in (current.get("color_role_ids") or []) if int(value) > 0]
         with self._lock:
             with self._connect() as conn:
                 conn.execute(
                     """
                     INSERT INTO guild_settings (
-                        guild_id, bot_log_channel_id, spicy_prompts_enabled, spicy_prompts_channel_id, updated_at
+                        guild_id, bot_log_channel_id, spicy_prompts_enabled, spicy_prompts_channel_id, color_role_ids_json, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?)
                     ON CONFLICT(guild_id) DO UPDATE SET
                         bot_log_channel_id = excluded.bot_log_channel_id,
                         spicy_prompts_enabled = excluded.spicy_prompts_enabled,
                         spicy_prompts_channel_id = excluded.spicy_prompts_channel_id,
+                        color_role_ids_json = excluded.color_role_ids_json,
                         updated_at = excluded.updated_at
                     """,
                     (
@@ -2865,6 +2874,7 @@ class ActionStore:
                         bot_log_channel_id,
                         1 if spicy_prompts_enabled else 0,
                         spicy_prompts_channel_id,
+                        json.dumps(sorted({int(value) for value in (color_role_ids or []) if int(value) > 0})),
                         now,
                     ),
                 )
@@ -3221,7 +3231,7 @@ class ActionStore:
                 conn.execute(
                     """
                     INSERT INTO guess_games (guild_id, target_number, attempt_count, created_by_user_id, updated_at)
-                    VALUES (?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?)
                     ON CONFLICT(guild_id) DO UPDATE SET
                         target_number = excluded.target_number,
                         attempt_count = excluded.attempt_count,
@@ -3577,6 +3587,12 @@ def build_activity_leaderboard(window_key: str, guild_id: int, *, limit: int = 1
         raise ValueError(f"Unsupported leaderboard window: {window_key}")
     _, label, _ = window_spec
     return label, list_member_activity_top_window(guild_id, window_key, limit=limit)
+
+
+def get_color_role_ids(guild_id: int) -> list[int]:
+    settings = ACTION_STORE.get_guild_settings(guild_id)
+    raw = settings.get("color_role_ids") if isinstance(settings, dict) else []
+    return [int(value) for value in (raw or []) if int(value) > 0]
 
 
 def get_spicy_prompt_channel_lock(guild_id: int) -> dict:
@@ -5140,6 +5156,64 @@ async def spicy(interaction: discord.Interaction) -> None:
         reason=truncate_log_text(f"{prompt.get('pack_id', '')}:{prompt.get('prompt_id', '')}"),
         success=True,
     )
+
+
+@bot.tree.command(name="color", description="Choose your name color from the configured list.")
+@app_commands.describe(choice="Color role to apply, or clear to remove")
+async def color(interaction: discord.Interaction, choice: str | None = None) -> None:
+    if not await ensure_interaction_command_access(interaction, "color"):
+        return
+    if interaction.guild is None:
+        await reply_ephemeral(interaction, "This command can only be used in a server.")
+        return
+    if not isinstance(interaction.user, discord.Member):
+        await reply_ephemeral(interaction, "Member context unavailable.")
+        return
+    guild = interaction.guild
+    member = interaction.user
+    color_role_ids = get_color_role_ids(guild.id)
+    if not color_role_ids:
+        await reply_ephemeral(interaction, "No color roles are configured yet.")
+        return
+    available_roles = [role for role in guild.roles if role.id in color_role_ids]
+    if not available_roles:
+        await reply_ephemeral(interaction, "No color roles are available in this server.")
+        return
+    # resolve desired role
+    target_role = None
+    if choice:
+        choice_value = str(choice).strip()
+        for role in available_roles:
+            if choice_value == str(role.id) or choice_value.lower() == role.name.lower():
+                target_role = role
+                break
+        if target_role is None:
+            await reply_ephemeral(interaction, "That color role is not available.")
+            return
+    # remove existing color roles first
+    roles_to_remove = [role for role in member.roles if role.id in color_role_ids]
+    if roles_to_remove:
+        try:
+            await member.remove_roles(*roles_to_remove, reason="Color role change")
+        except discord.Forbidden:
+            await reply_ephemeral(interaction, "I don't have permission to manage those roles.")
+            return
+    if target_role is None:
+        await interaction.response.send_message("Color cleared.", ephemeral=COMMAND_RESPONSES_EPHEMERAL)
+        return
+    # ensure bot can manage role
+    if guild.me is None or guild.me.top_role <= target_role:
+        await reply_ephemeral(interaction, "I can only apply roles below my highest role.")
+        return
+    if target_role.managed:
+        await reply_ephemeral(interaction, "That role is managed and cannot be assigned.")
+        return
+    try:
+        await member.add_roles(target_role, reason="Color role change")
+    except discord.Forbidden:
+        await reply_ephemeral(interaction, "I don't have permission to assign that role.")
+        return
+    await interaction.response.send_message(f"Color updated to {target_role.name}.", ephemeral=COMMAND_RESPONSES_EPHEMERAL)
 
 
 @bot.tree.command(name="countdown", description="Count down to a future date.")
