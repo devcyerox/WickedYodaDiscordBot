@@ -9,6 +9,7 @@ services:
       # Keep the bot's internal writable path fixed inside the container.
       DATA_DIR: /app/data
       LOG_DIR: /app/logs
+      TZ: ${TZ:-UTC}
     ports:
       - "8080:8080"
       - "8081:8081"
@@ -18,6 +19,8 @@ services:
       - ${DATA_DIR:-/root/docker/wickedyodabot}:/app/data
       # LOG_DIR here is the host-side bind path; the container target remains /app/logs.
       - ${LOG_DIR:-/root/docker/wickedyodabot/logs}:/app/logs
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
     security_opt:
       - no-new-privileges:true
     cap_drop:

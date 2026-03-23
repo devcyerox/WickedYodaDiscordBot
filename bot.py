@@ -141,6 +141,9 @@ YOUTUBE_POLL_INTERVAL_SECONDS = env_int("YOUTUBE_POLL_INTERVAL_SECONDS", 300)
 YOUTUBE_REQUEST_TIMEOUT_SECONDS = env_int("YOUTUBE_REQUEST_TIMEOUT_SECONDS", 12)
 WORDPRESS_REQUEST_TIMEOUT_SECONDS = env_int("WORDPRESS_REQUEST_TIMEOUT_SECONDS", 12)
 LINKEDIN_REQUEST_TIMEOUT_SECONDS = env_int("LINKEDIN_REQUEST_TIMEOUT_SECONDS", 12)
+TRANSLATE_API_URL = os.getenv("TRANSLATE_API_URL", "https://libretranslate.de/translate").strip()
+TRANSLATE_API_KEY = os.getenv("TRANSLATE_API_KEY", "").strip()
+TRANSLATE_TIMEOUT_SECONDS = env_int("TRANSLATE_TIMEOUT_SECONDS", 12)
 SPICY_PROMPTS_ENABLED = env_bool("SPICY_PROMPTS_ENABLED", True)
 SPICY_PROMPTS_REPO_URL = os.getenv(
     "SPICY_PROMPTS_REPO_URL",
@@ -302,6 +305,7 @@ COMMAND_PERMISSION_METADATA: dict[str, dict[str, str]] = {
         "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
     },
     "spicy": {"label": "/spicy", "description": "Random spicy prompt", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
+    "translate": {"label": "/translate", "description": "Translate text", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
     "color": {"label": "/color", "description": "Pick a name color role", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
     "countdown": {"label": "/countdown", "description": "Countdown to a date", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
     "leaderboard": {
@@ -390,6 +394,29 @@ FUN_GIF_LIBRARY: dict[str, list[dict[str, str]]] = {
         {"title": "Adorable", "url": "https://media.tenor.com/2t8hS8mVQxMAAAAC/aww-cute.gif"},
     ],
 }
+
+TRANSLATE_LANGUAGE_CHOICES = [
+    ("ar", "Arabic"),
+    ("de", "German"),
+    ("en", "English"),
+    ("es", "Spanish"),
+    ("fr", "French"),
+    ("hi", "Hindi"),
+    ("id", "Indonesian"),
+    ("it", "Italian"),
+    ("ja", "Japanese"),
+    ("ko", "Korean"),
+    ("nl", "Dutch"),
+    ("pl", "Polish"),
+    ("pt", "Portuguese"),
+    ("ru", "Russian"),
+    ("tr", "Turkish"),
+    ("uk", "Ukrainian"),
+    ("vi", "Vietnamese"),
+    ("zh", "Chinese (Simplified)"),
+]
+TRANSLATE_LANGUAGE_BY_CODE = {code: label for code, label in TRANSLATE_LANGUAGE_CHOICES}
+TRANSLATE_LANGUAGE_OPTIONS = [app_commands.Choice(name=label, value=code) for code, label in TRANSLATE_LANGUAGE_CHOICES]
 EIGHTBALL_RESPONSES = (
     "Yes.",
     "No.",
@@ -687,6 +714,8 @@ if WORDPRESS_REQUEST_TIMEOUT_SECONDS <= 0:
     raise RuntimeError("WORDPRESS_REQUEST_TIMEOUT_SECONDS must be a positive integer.")
 if LINKEDIN_REQUEST_TIMEOUT_SECONDS <= 0:
     raise RuntimeError("LINKEDIN_REQUEST_TIMEOUT_SECONDS must be a positive integer.")
+if TRANSLATE_TIMEOUT_SECONDS <= 0:
+    raise RuntimeError("TRANSLATE_TIMEOUT_SECONDS must be a positive integer.")
 if UPTIME_STATUS_TIMEOUT_SECONDS <= 0:
     raise RuntimeError("UPTIME_STATUS_TIMEOUT_SECONDS must be a positive integer.")
 
@@ -786,6 +815,43 @@ def fetch_json_url(url: str, timeout_seconds: int, *, accept: str = "application
     if not isinstance(payload, dict | list):
         raise RuntimeError("API returned an unexpected response.")
     return payload
+
+
+def post_json_url(url: str, timeout_seconds: int, payload: dict, *, accept: str = "application/json") -> dict | list:
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise RuntimeError("Request URL is invalid.")
+    path = parsed.path or "/"
+    if parsed.query:
+        path = f"{path}?{parsed.query}"
+
+    body = json.dumps(payload).encode("utf-8")
+    headers = {
+        "User-Agent": "WickedYodaLittleHelper/1.0",
+        "Accept": accept,
+        "Content-Type": "application/json",
+    }
+    connection_cls = http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
+    conn = connection_cls(parsed.netloc, timeout=timeout_seconds)
+    try:
+        conn.request("POST", path, body=body, headers=headers)
+        response = conn.getresponse()
+        response_headers = {name.lower(): value for name, value in response.getheaders()}
+        body_text = response.read().decode("utf-8", errors="ignore")
+    except OSError as exc:
+        raise RuntimeError(f"Request failed: {exc}") from exc
+    finally:
+        conn.close()
+
+    if response.status >= 400:
+        raise RuntimeError(f"API returned HTTP {response.status}.")
+    try:
+        parsed_body = json.loads(body_text)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("API returned invalid JSON.") from exc
+    if not isinstance(parsed_body, dict | list):
+        raise RuntimeError("API returned an unexpected response.")
+    return parsed_body
 
 
 def build_github_raw_url(repo_url: str, branch: str, relative_path: str) -> str:
@@ -954,6 +1020,25 @@ def fetch_dad_joke() -> str:
     if not joke:
         raise RuntimeError("Dad joke API did not return a joke.")
     return joke
+
+
+def translate_text(text: str, target_language: str) -> str:
+    if not TRANSLATE_API_URL:
+        raise RuntimeError("Translate API URL is not configured.")
+    payload = {
+        "q": text,
+        "source": "auto",
+        "target": target_language,
+        "format": "text",
+    }
+    if TRANSLATE_API_KEY:
+        payload["api_key"] = TRANSLATE_API_KEY
+    response = post_json_url(TRANSLATE_API_URL, TRANSLATE_TIMEOUT_SECONDS, payload)
+    if isinstance(response, dict):
+        translated = str(response.get("translatedText", "")).strip()
+        if translated:
+            return translated
+    raise RuntimeError("Translation API did not return translated text.")
 
 
 def split_option_values(raw_value: str, *, max_options: int = 10) -> list[str]:
@@ -5310,6 +5395,43 @@ async def spicy(interaction: discord.Interaction) -> None:
     )
 
 
+@bot.tree.command(name="translate", description="Translate text to a selected language.")
+@app_commands.describe(text="Text to translate", language="Target language")
+@app_commands.choices(language=TRANSLATE_LANGUAGE_OPTIONS)
+async def translate(interaction: discord.Interaction, text: str, language: app_commands.Choice[str]) -> None:
+    if not await ensure_interaction_command_access(interaction, "translate"):
+        await log_interaction(interaction, action="translate", reason="permission denied", success=False)
+        return
+    if not text.strip():
+        await reply_ephemeral(interaction, "Please provide text to translate.")
+        await log_interaction(interaction, action="translate", reason="missing text", success=False)
+        return
+    if not language or not language.value:
+        await reply_ephemeral(interaction, "Please choose a target language.")
+        await log_interaction(interaction, action="translate", reason="missing language", success=False)
+        return
+    if not TRANSLATE_API_URL:
+        await reply_ephemeral(interaction, "Translation service is not configured.")
+        await log_interaction(interaction, action="translate", reason="missing api url", success=False)
+        return
+
+    try:
+        translated = await asyncio.to_thread(translate_text, text, language.value)
+    except Exception as exc:
+        await reply_ephemeral(interaction, f"Translation failed: {exc}")
+        await log_interaction(interaction, action="translate", reason=str(exc), success=False)
+        return
+
+    label = TRANSLATE_LANGUAGE_BY_CODE.get(language.value, language.value)
+    if len(translated) > 1900:
+        translated = translated[:1897] + "..."
+    await interaction.response.send_message(
+        f"**Translated to {label}:**\n{translated}",
+        ephemeral=COMMAND_RESPONSES_EPHEMERAL,
+    )
+    await log_interaction(interaction, action="translate", reason=f"target={language.value}", success=True)
+
+
 @bot.tree.command(name="color", description="Choose your name color from the configured list.")
 @app_commands.describe(choice="Color role to apply, or clear to remove")
 async def color(interaction: discord.Interaction, choice: str | None = None) -> None:
@@ -5804,7 +5926,7 @@ async def help_command(interaction: discord.Interaction) -> None:
     message = (
         "**Wicked Yoda's Little Helper**\n"
         "General: `/ping`, `/sayhi`, `/happy`, `/cat`, `/meme`, `/dadjoke`, `/help`\n"
-        "Fun: `/eightball`, `/coinflip`, `/roll`, `/choose`, `/roastme`, `/compliment`, `/wisdom`, `/gif`, `/poll`, `/questionoftheday`, `/spicy`, `/countdown`, `/trivia`, `/wouldyourather`, `/rps`, `/guess`\n"
+        "Fun: `/eightball`, `/coinflip`, `/roll`, `/choose`, `/roastme`, `/compliment`, `/wisdom`, `/gif`, `/poll`, `/questionoftheday`, `/spicy`, `/translate`, `/countdown`, `/trivia`, `/wouldyourather`, `/rps`, `/guess`\n"
         "Community: `/birthday set`, `/birthday view`, `/birthday upcoming`, `/birthday remove`, `/leaderboard`\n"
         "Utilities: `/shorten`, `/expand`, `/uptime`, `/logs`, `/stats`\n"
         "Tags: `/tags`, `/tag <name>`, message tags like `!rules`\n"

@@ -21,6 +21,7 @@ SENSITIVE_ENV_KEYS = {
     "WEB_ADMIN_DEFAULT_PASSWORD",
     "WEB_ADMIN_DEFAULT_PASSWORD_HASH",
     "WEB_ADMIN_SESSION_SECRET",
+    "TRANSLATE_API_KEY",
 }
 SESSION_SAMESITE_OPTIONS = ("Lax", "Strict", "None")
 BOOL_SELECT_OPTIONS = ("false", "true")
@@ -62,11 +63,17 @@ SETTINGS_FIELD_ORDER = [
     "YOUTUBE_NOTIFY_ENABLED",
     "YOUTUBE_POLL_INTERVAL_SECONDS",
     "YOUTUBE_REQUEST_TIMEOUT_SECONDS",
+    "TRANSLATE_API_URL",
+    "TRANSLATE_API_KEY",
+    "TRANSLATE_TIMEOUT_SECONDS",
     "SPICY_PROMPTS_ENABLED",
     "SPICY_PROMPTS_REPO_URL",
     "SPICY_PROMPTS_REPO_BRANCH",
     "SPICY_PROMPTS_MANIFEST_PATH",
     "SPICY_PROMPTS_REQUEST_TIMEOUT_SECONDS",
+    "TRANSLATE_API_URL",
+    "TRANSLATE_API_KEY",
+    "TRANSLATE_TIMEOUT_SECONDS",
     "SPICY_PROMPTS_REFRESH_ON_BOOT",
     "SPICY_PROMPTS_REFRESH_INTERVAL_HOURS",
     "UPTIME_STATUS_ENABLED",
@@ -112,6 +119,7 @@ SETTINGS_DROPDOWN_OPTIONS: dict[str, tuple[str, ...]] = {
     "YOUTUBE_POLL_INTERVAL_SECONDS": ("60", "120", "300", "600", "900"),
     "YOUTUBE_REQUEST_TIMEOUT_SECONDS": ("8", "10", "12", "15", "30"),
     "SPICY_PROMPTS_REQUEST_TIMEOUT_SECONDS": ("8", "10", "12", "15", "30"),
+    "TRANSLATE_TIMEOUT_SECONDS": ("5", "8", "10", "12", "15", "30"),
     "SPICY_PROMPTS_REFRESH_INTERVAL_HOURS": ("0", "6", "12", "24", "48", "72"),
     "UPTIME_STATUS_TIMEOUT_SECONDS": ("5", "8", "10", "15", "30"),
 }
@@ -994,6 +1002,8 @@ def _build_settings_fields(channel_options: list[dict] | None = None) -> list[di
                 "value": value,
                 "masked_value": "********" if is_sensitive and value else value,
                 "is_sensitive": is_sensitive,
+                "runtime_value": raw or "",
+                "pending_restart": str(value or "") != str(raw or ""),
                 "options": options,
             }
         )
@@ -3183,6 +3193,9 @@ PAGE_TEMPLATE = """
             {% for item in settings %}
             <div class="col-12 col-lg-6">
               <label class="form-label" for="field_{{ item.key }}"><code>{{ item.key }}</code></label>
+              {% if item.pending_restart %}
+              <div class="badge bg-warning text-dark ms-2">Pending restart</div>
+              {% endif %}
               {% if item.options %}
               <select class="form-select" id="field_{{ item.key }}" name="{{ item.key }}" {% if not session.get("is_admin") %}disabled{% endif %}>
                 {% for option in item.options %}
