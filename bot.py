@@ -1921,6 +1921,16 @@ def configure_runtime_logging(log_dir: str) -> tuple[str, str, str]:
     return bot_log_file, channel_log_file, error_log_file
 
 
+def write_startup_log_files(log_dir: str, files: list[str]) -> None:
+    timestamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
+    for path in files:
+        try:
+            with open(path, "a", encoding="utf-8") as handle:
+                handle.write(f"{timestamp} [INFO] startup: Logging initialized for {log_dir}\n")
+        except OSError:
+            continue
+
+
 def read_recent_log_lines(path: str, lines: int) -> str:
     if not os.path.exists(path) or not os.path.isfile(path):
         return ""
@@ -3283,6 +3293,7 @@ ACTION_DB_PATH = resolve_action_db_path()
 ACTIONS_DIR = os.path.dirname(ACTION_DB_PATH) or "."
 LOG_DIR = resolve_log_dir(ACTION_DB_PATH)
 BOT_LOG_FILE, BOT_CHANNEL_LOG_FILE, CONTAINER_ERROR_LOG_FILE = configure_runtime_logging(LOG_DIR)
+write_startup_log_files(LOG_DIR, [BOT_LOG_FILE, BOT_CHANNEL_LOG_FILE, CONTAINER_ERROR_LOG_FILE])
 ACTION_STORE = ActionStore(ACTION_DB_PATH)
 
 
