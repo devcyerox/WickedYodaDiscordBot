@@ -2897,7 +2897,20 @@ class ActionStore:
                 ).fetchall()
         return {str(row["prompt_id"]) for row in rows if row["prompt_id"]}
 
-    def get_random_spicy_prompt(self, *, prompt_type: str | None = None, exclude_ids: set[str] | None = None) -> dict | None:
+    def list_spicy_prompt_categories(self) -> list[str]:
+        with self._lock:
+            with self._connect() as conn:
+                rows = conn.execute("SELECT DISTINCT category FROM spicy_prompt_entries").fetchall()
+        categories = []
+        for row in rows:
+            value = str(row[0] or "").strip().lower()
+            if value and value not in categories:
+                categories.append(value)
+        return categories
+
+    def get_random_spicy_prompt(
+        self, *, prompt_type: str | None = None, category: str | None = None, exclude_ids: set[str] | None = None
+    ) -> dict | None:
         exclude_ids = exclude_ids or set()
         query = """
             SELECT pack_id, prompt_id, prompt_type, category, rating, text, tags_json
@@ -2907,6 +2920,10 @@ class ActionStore:
         if prompt_type:
             query += " WHERE prompt_type = ?"
             params.append(str(prompt_type).strip().lower())
+        if category:
+            clause = " AND " if " WHERE " in query else " WHERE "
+            query += f"{clause}category = ?"
+            params.append(str(category).strip().lower())
         if exclude_ids:
             placeholders = ",".join("?" for _ in exclude_ids)
             clause = "" if " WHERE " in query else " WHERE "
@@ -5102,7 +5119,11 @@ async def spicy(interaction: discord.Interaction) -> None:
 
     recent_cutoff = datetime.now(UTC) - timedelta(hours=4)
     recent_ids = ACTION_STORE.get_spicy_prompt_recent_ids(interaction.guild.id, since_dt=recent_cutoff)
-    prompt = ACTION_STORE.get_random_spicy_prompt(exclude_ids=recent_ids)
+    categories = ACTION_STORE.list_spicy_prompt_categories()
+    selected_category = secure_choice(categories) if categories else None
+    prompt = ACTION_STORE.get_random_spicy_prompt(category=selected_category, exclude_ids=recent_ids)
+    if prompt is None and selected_category is not None:
+        prompt = ACTION_STORE.get_random_spicy_prompt(exclude_ids=recent_ids)
     if prompt is None:
         await reply_ephemeral(interaction, "No Spicy Prompts are cached yet. Refresh the repo in the web GUI first.")
         await log_interaction(interaction, action="spicy", reason="no cached prompts", success=False)
