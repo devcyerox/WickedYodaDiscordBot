@@ -1,6 +1,6 @@
 # Web Admin Interface
 
-Last Updated: 2026-03-19
+Last Updated: 2026-03-22
 
 The web admin is served by `web_admin.py` and is mobile-friendly.
 
@@ -123,3 +123,14 @@ Related env vars:
 
 - `/admin/restart` is only useful when `WEB_RESTART_ENABLED=true`.
 - Intended for containerized environments where process exit triggers container restart.
+
+
+## Dashboard
+
+- Spicy Prompts status (enabled/disabled + channel) is shown for the selected guild.
+- Command Status table lists commands with Public/Moderator/Custom Roles/Disabled and enabled state.
+
+
+## Navigation
+
+- Header navigation is simplified to Servers + Dashboard, with remaining pages and Logout in a dropdown menu.

@@ -1,6 +1,6 @@
 # Command Reference
 
-Last Updated: 2026-03-19
+Last Updated: 2026-03-22
 
 Guild-scoped slash commands currently registered in `bot.py`.
 
@@ -530,3 +530,12 @@ When you add a new `@bot.tree.command` in `bot.py`:
 1. Add a new section here with description, parameters, and required permissions.
 2. Document success/failure responses and logging behavior.
 3. Update the "Last Updated" date at the top of this file.
+
+
+## `/spicy`
+
+- Description: Post a random spicy prompt (guild-configured 18+ channel only).
+- Behavior:
+  - Random category selection.
+  - The same prompt will not repeat within 4 hours for the same guild.
+  - Requires the configured channel to be age-restricted.

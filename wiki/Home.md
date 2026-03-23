@@ -1,6 +1,6 @@
 # Wicked Yoda's Little Helper Wiki
 
-Last Updated: 2026-03-19
+Last Updated: 2026-03-22
 
 This folder contains internal project wiki docs for bot operations, command behavior, feed automation, and web admin usage.
 
@@ -78,3 +78,6 @@ Whenever activity reporting or analytics views change:
 
 - Runtime behavior: `bot.py`
 - Human documentation: this wiki folder
+
+
+Recent updates include log retention controls, dashboard status cards for Spicy Prompts, command status visibility on the dashboard, and Spicy Prompts random category rotation with 4-hour repeat protection.
