@@ -1821,7 +1821,7 @@ def parse_log_level(value: str, default: int = logging.INFO) -> int:
 
 def resolve_log_dir(db_path: str) -> str:
     configured = os.getenv("LOG_DIR", "").strip()
-    preferred = configured or "/logs"
+    preferred = configured or "/app/logs"
     fallback = os.path.dirname(db_path) or "."
     candidates: list[str] = [preferred]
     if fallback != preferred:
