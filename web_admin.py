@@ -2578,14 +2578,14 @@ PAGE_TEMPLATE = """
     {% elif page == "command_permissions" %}
       <div class="card card-soft p-3">
         <h1 class="h5 mb-3">Command Permissions</h1>
-        <p class="small text-secondary">Set command access mode. Use custom role IDs for granular control.</p>
+        <p class="small text-secondary">Set command access mode, disable commands, and optionally restrict access to selected roles.</p>
         <form method="post" action="{{ url_for('command_permissions') }}">
           <div class="table-wrap">
             <table class="table table-sm align-middle">
               <thead><tr><th>Command</th><th>Default</th><th>Mode</th><th>Custom Role IDs</th></tr></thead>
               <tbody>
                 {% for item in command_permissions.commands %}
-                <tr>
+                <tr data-command-row="{{ item.key }}">
                   <td class="small">
                     <div class="fw-semibold">{{ item.label }}</div>
                     <div class="text-secondary">{{ item.description }}</div>
@@ -2593,27 +2593,56 @@ PAGE_TEMPLATE = """
                   </td>
                   <td class="small">{{ item.default_policy_label }}</td>
                   <td>
-                    <select class="form-select" name="mode__{{ item.key }}" {% if not session.get("is_admin") %}disabled{% endif %}>
+                    <select class="form-select" name="mode__{{ item.key }}" data-mode-select="{{ item.key }}" {% if not session.get("is_admin") %}disabled{% endif %}>
                       <option value="default" {% if item.mode == "default" %}selected{% endif %}>Default</option>
+                      <option value="disabled" {% if item.mode == "disabled" %}selected{% endif %}>Disabled</option>
                       <option value="public" {% if item.mode == "public" %}selected{% endif %}>Public</option>
                       <option value="custom_roles" {% if item.mode == "custom_roles" %}selected{% endif %}>Custom roles</option>
                     </select>
                   </td>
                   <td>
-                    {% if role_options %}
-                    <select class="form-select mb-2" name="role_ids__{{ item.key }}" multiple size="5" {% if not session.get("is_admin") %}disabled{% endif %}>
-                      {% for role in role_options %}
-                      <option value="{{ role.id }}" {% if role.id|string in item.role_id_strings %}selected{% endif %}>{{ role.name }} ({{ role.id }})</option>
-                      {% endfor %}
-                    </select>
-                    {% endif %}
-                    <input class="form-control" name="role_ids_text__{{ item.key }}" value="{{ item.role_ids_csv }}" placeholder="Comma-separated role IDs" {% if not session.get("is_admin") %}disabled{% endif %}>
+                    <div class="command-roles" data-role-container="{{ item.key }}">
+                      {% if role_options %}
+                      <select class="form-select mb-2" name="role_ids__{{ item.key }}" multiple size="5" {% if not session.get("is_admin") %}disabled{% endif %}>
+                        {% for role in role_options %}
+                        <option value="{{ role.id }}" {% if role.id|string in item.role_id_strings %}selected{% endif %}>{{ role.name }} ({{ role.id }})</option>
+                        {% endfor %}
+                      </select>
+                      {% endif %}
+                      <input class="form-control" name="role_ids_text__{{ item.key }}" value="{{ item.role_ids_csv }}" placeholder="Comma-separated role IDs" {% if not session.get("is_admin") %}disabled{% endif %}>
+                    </div>
                   </td>
                 </tr>
                 {% endfor %}
               </tbody>
             </table>
           </div>
+                    <script>
+            function toggleRoleInputs() {
+              document.querySelectorAll('[data-mode-select]').forEach((select) => {
+                const key = select.getAttribute('data-mode-select');
+                const container = document.querySelector(`[data-role-container="${key}"]`);
+                if (!container) {
+                  return;
+                }
+                const isCustom = select.value === 'custom_roles';
+                container.style.display = isCustom ? '' : 'none';
+                container.querySelectorAll('select, input').forEach((el) => {
+                  if (select.disabled) {
+                    el.disabled = true;
+                  } else {
+                    el.disabled = !isCustom;
+                  }
+                });
+              });
+            }
+            document.addEventListener('DOMContentLoaded', toggleRoleInputs);
+            document.addEventListener('change', (event) => {
+              if (event.target && event.target.matches('[data-mode-select]')) {
+                toggleRoleInputs();
+              }
+            });
+          </script>
           <button class="btn btn-primary" type="submit" {% if not session.get("is_admin") %}disabled{% endif %}>Save Command Permissions</button>
         </form>
       </div>
