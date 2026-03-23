@@ -994,6 +994,8 @@ def _build_settings_fields(channel_options: list[dict] | None = None) -> list[di
                 "value": value,
                 "masked_value": "********" if is_sensitive and value else value,
                 "is_sensitive": is_sensitive,
+                "runtime_value": raw or "",
+                "pending_restart": str(value or "") != str(raw or ""),
                 "options": options,
             }
         )
@@ -3183,6 +3185,9 @@ PAGE_TEMPLATE = """
             {% for item in settings %}
             <div class="col-12 col-lg-6">
               <label class="form-label" for="field_{{ item.key }}"><code>{{ item.key }}</code></label>
+              {% if item.pending_restart %}
+              <div class="badge bg-warning text-dark ms-2">Pending restart</div>
+              {% endif %}
               {% if item.options %}
               <select class="form-select" id="field_{{ item.key }}" name="{{ item.key }}" {% if not session.get("is_admin") %}disabled{% endif %}>
                 {% for option in item.options %}
