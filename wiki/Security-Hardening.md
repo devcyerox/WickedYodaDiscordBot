@@ -1,6 +1,6 @@
 # Security Hardening
 
-Last Updated: 2026-03-17
+Last Updated: 2026-03-22
 
 This document tracks the active security controls implemented in the bot and web admin.
 
@@ -17,10 +17,9 @@ This document tracks the active security controls implemented in the bot and web
   - email
   - password
 - Password policy:
-  - minimum 12 characters
-  - at least one lowercase letter
-  - at least one uppercase letter
-  - at least one number
+  - minimum 6 characters
+  - at least 2 numbers
+  - at least 1 symbol
 - Forced password rotation every 90 days
 - Login attempt throttling per client IP
 - CSRF validation for state-changing requests

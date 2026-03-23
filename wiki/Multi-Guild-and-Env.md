@@ -1,6 +1,6 @@
 # Multi-Guild and Env Setup
 
-Last Updated: 2026-03-19
+Last Updated: 2026-03-22
 
 ## Required vs Optional Vars
 
@@ -94,3 +94,9 @@ WEB_TLS_PORT=8081
 DATA_DIR=/root/docker/wickedyodabot
 LOG_DIR=/root/docker/wickedyodabot/log
 ```
+
+
+## Log Retention
+
+- `LOG_RETENTION_DAYS` controls how long log files are kept (default 90).
+- Logs are written inside the container to `/app/logs` and should be bind-mounted to the host (e.g. `./logs:/app/logs`).
