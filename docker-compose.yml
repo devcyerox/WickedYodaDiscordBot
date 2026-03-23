@@ -16,8 +16,8 @@ services:
       # Run with `docker compose --env-file env.env ...` so DATA_DIR comes from env.env.
       # DATA_DIR here is the host-side bind path; the container target remains /app/data.
       - ${DATA_DIR:-/root/docker/wickedyodabot}:/app/data
-      # LOG_DIR here is the host-side bind path; the container target remains /app/log.
-      - ./logs:/app/logs
+      # LOG_DIR here is the host-side bind path; the container target remains /app/logs.
+      - ${LOG_DIR:-/root/docker/wickedyodabot/logs}:/app/logs
     security_opt:
       - no-new-privileges:true
     cap_drop:
