@@ -2558,7 +2558,7 @@ class ActionStore:
                     conn.execute(
                         """
                         INSERT INTO spicy_prompt_packs (pack_id, pack_name, source_path, prompt_count, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?)
                         """,
                         (
                             str(pack.get("pack_id", "")).strip(),
@@ -2852,12 +2852,15 @@ class ActionStore:
                 "spicy_prompts_channel_id": None,
                 "color_role_ids": [],
             }
+        color_role_ids_raw = "[]"
+        if "color_role_ids_json" in row.keys():
+            color_role_ids_raw = row["color_role_ids_json"] or "[]"
         return {
             "guild_id": int(row["guild_id"]),
             "bot_log_channel_id": int(row["bot_log_channel_id"]) if row["bot_log_channel_id"] else None,
             "spicy_prompts_enabled": int(row["spicy_prompts_enabled"] or 0),
             "spicy_prompts_channel_id": int(row["spicy_prompts_channel_id"]) if row["spicy_prompts_channel_id"] else None,
-            "color_role_ids": json.loads(str(row["color_role_ids_json"] or "[]")) if row.get("color_role_ids_json") is not None else [],
+            "color_role_ids": json.loads(str(color_role_ids_raw)),
         }
 
     def save_guild_settings(
