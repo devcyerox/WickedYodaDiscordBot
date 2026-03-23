@@ -2075,6 +2075,23 @@ class ActionStore:
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS spicy_prompt_usage (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guild_id INTEGER NOT NULL,
+                    prompt_id TEXT NOT NULL,
+                    pack_id TEXT NOT NULL,
+                    used_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_spicy_prompt_usage_recent
+                ON spicy_prompt_usage (guild_id, used_at)
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS spicy_prompt_sync_state (
                     state_id INTEGER PRIMARY KEY CHECK (state_id = 1),
                     repo_url TEXT NOT NULL,
@@ -2854,7 +2871,47 @@ class ActionStore:
                 conn.commit()
         return self.get_guild_settings(guild_id)
 
-    def get_random_spicy_prompt(self, *, prompt_type: str | None = None) -> dict | None:
+    def record_spicy_prompt_usage(self, guild_id: int, pack_id: str, prompt_id: str) -> None:
+        now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO spicy_prompt_usage (guild_id, pack_id, prompt_id, used_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (int(guild_id), str(pack_id), str(prompt_id), now),
+                )
+                conn.commit()
+
+    def get_spicy_prompt_recent_ids(self, guild_id: int, *, since_dt: datetime) -> set[str]:
+        with self._lock:
+            with self._connect() as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    """
+                    SELECT prompt_id FROM spicy_prompt_usage
+                    WHERE guild_id = ? AND used_at >= ?
+                    """,
+                    (int(guild_id), since_dt.strftime("%Y-%m-%d %H:%M:%S")),
+                ).fetchall()
+        return {str(row["prompt_id"]) for row in rows if row["prompt_id"]}
+
+    def list_spicy_prompt_categories(self) -> list[str]:
+        with self._lock:
+            with self._connect() as conn:
+                rows = conn.execute("SELECT DISTINCT category FROM spicy_prompt_entries").fetchall()
+        categories = []
+        for row in rows:
+            value = str(row[0] or "").strip().lower()
+            if value and value not in categories:
+                categories.append(value)
+        return categories
+
+    def get_random_spicy_prompt(
+        self, *, prompt_type: str | None = None, category: str | None = None, exclude_ids: set[str] | None = None
+    ) -> dict | None:
+        exclude_ids = exclude_ids or set()
         query = """
             SELECT pack_id, prompt_id, prompt_type, category, rating, text, tags_json
             FROM spicy_prompt_entries
@@ -2863,6 +2920,15 @@ class ActionStore:
         if prompt_type:
             query += " WHERE prompt_type = ?"
             params.append(str(prompt_type).strip().lower())
+        if category:
+            clause = " AND " if " WHERE " in query else " WHERE "
+            query += f"{clause}category = ?"
+            params.append(str(category).strip().lower())
+        if exclude_ids:
+            placeholders = ",".join("?" for _ in exclude_ids)
+            clause = "" if " WHERE " in query else " WHERE "
+            query += f"{clause}prompt_id NOT IN ({placeholders})"
+            params.extend(sorted(exclude_ids))
         query += " ORDER BY RANDOM() LIMIT 1"
         with self._lock:
             with self._connect() as conn:
@@ -3694,6 +3760,20 @@ def run_web_save_tag_responses(mapping: dict, _actor_email: str, guild_id: int) 
     return {"ok": True, "mapping": saved, "message": "Tag responses updated."}
 
 
+def run_web_get_spicy_prompt_status(guild_id: int) -> dict:
+    try:
+        safe_guild_id = require_managed_guild_id(guild_id, context="spicy prompt status")
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    lock = get_spicy_prompt_channel_lock(safe_guild_id)
+    return {
+        "ok": True,
+        "guild_id": safe_guild_id,
+        "enabled": bool(lock.get("enabled")),
+        "channel_id": int(lock.get("channel_id", 0) or 0),
+    }
+
+
 def run_web_get_guild_settings(guild_id: int) -> dict:
     try:
         payload = ACTION_STORE.get_guild_settings(guild_id=guild_id)
@@ -3962,6 +4042,7 @@ class ModerationBot(commands.Bot):
                 update_bot_profile=run_web_update_bot_profile,
                 update_bot_avatar=run_web_update_bot_avatar,
                 get_member_activity=run_web_get_member_activity,
+                get_spicy_prompt_status=run_web_get_spicy_prompt_status,
                 export_member_activity=run_web_export_member_activity,
                 get_spicy_prompts_status=run_web_get_spicy_prompts_status,
                 refresh_spicy_prompts=run_web_refresh_spicy_prompts,
@@ -4003,6 +4084,7 @@ class ModerationBot(commands.Bot):
                         update_bot_profile=run_web_update_bot_profile,
                         update_bot_avatar=run_web_update_bot_avatar,
                         get_member_activity=run_web_get_member_activity,
+                        get_spicy_prompt_status=run_web_get_spicy_prompt_status,
                         export_member_activity=run_web_export_member_activity,
                         get_spicy_prompts_status=run_web_get_spicy_prompts_status,
                         refresh_spicy_prompts=run_web_refresh_spicy_prompts,
@@ -5035,7 +5117,13 @@ async def spicy(interaction: discord.Interaction) -> None:
         await log_interaction(interaction, action="spicy", reason="configured channel not age-restricted", success=False)
         return
 
-    prompt = ACTION_STORE.get_random_spicy_prompt()
+    recent_cutoff = datetime.now(UTC) - timedelta(hours=4)
+    recent_ids = ACTION_STORE.get_spicy_prompt_recent_ids(interaction.guild.id, since_dt=recent_cutoff)
+    categories = ACTION_STORE.list_spicy_prompt_categories()
+    selected_category = secure_choice(categories) if categories else None
+    prompt = ACTION_STORE.get_random_spicy_prompt(category=selected_category, exclude_ids=recent_ids)
+    if prompt is None and selected_category is not None:
+        prompt = ACTION_STORE.get_random_spicy_prompt(exclude_ids=recent_ids)
     if prompt is None:
         await reply_ephemeral(interaction, "No Spicy Prompts are cached yet. Refresh the repo in the web GUI first.")
         await log_interaction(interaction, action="spicy", reason="no cached prompts", success=False)
@@ -5045,6 +5133,7 @@ async def spicy(interaction: discord.Interaction) -> None:
     category = str(prompt.get("category", "general")).replace("_", " ").title()
     text = str(prompt.get("text", "")).strip()
     await interaction.response.send_message(f"**Spicy Prompt**\nType: {prompt_type}\nCategory: {category}\n\n{text}")
+    ACTION_STORE.record_spicy_prompt_usage(interaction.guild.id, str(prompt.get("pack_id", "")), str(prompt.get("prompt_id", "")))
     await log_interaction(
         interaction,
         action="spicy",

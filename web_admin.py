@@ -1820,6 +1820,19 @@ PAGE_TEMPLATE = """
         </div>
         <div class="col-12 col-md-4">
           <div class="card card-soft p-3 h-100">
+            <p class="text-secondary small mb-1">Spicy Prompts</p>
+            {% if spicy_status and spicy_status.ok %}
+            <p class="mb-0 fw-semibold">{% if spicy_status.enabled %}Enabled{% else %}Disabled{% endif %}</p>
+            {% if spicy_status.channel_id %}
+            <p class="small text-secondary mb-0">Channel ID: {{ spicy_status.channel_id }}</p>
+            {% endif %}
+            {% else %}
+            <p class="mb-0 fw-semibold">Unknown</p>
+            {% endif %}
+          </div>
+        </div>
+        <div class="col-12 col-md-4">
+          <div class="card card-soft p-3 h-100">
             <p class="text-secondary small mb-1">Guild</p>
             <p class="mb-0 fw-semibold">{{ selected_guild_name or snapshot.guild_id }}</p>
           </div>
@@ -3359,6 +3372,16 @@ def create_app(
         except TypeError:
             return {"ok": False, "error": "Bot avatar update callback could not be called."}
 
+    def _call_get_spicy_prompt_status(guild_id: int | None) -> dict:
+        if not callable(get_spicy_prompt_status):
+            return {"ok": False}
+        try:
+            if guild_id is not None:
+                return get_spicy_prompt_status(guild_id)  # type: ignore[misc]
+            return get_spicy_prompt_status()  # type: ignore[misc]
+        except TypeError:
+            return get_spicy_prompt_status()  # type: ignore[misc]
+
     def _call_get_member_activity(guild_id: int | None, role_id: int | None = None) -> dict:
         if guild_id is None or not callable(get_member_activity):
             return {"ok": False, "error": "Member activity callback is not configured."}
@@ -3833,12 +3856,14 @@ def create_app(
         counts = _fetch_counts(db_path, guild_id=selected_guild_id)
         actions = _fetch_actions(db_path, limit=25, guild_id=selected_guild_id)
         snapshot = get_bot_snapshot()
+        spicy_status = _call_get_spicy_prompt_status(selected_guild_id)
         return _render_page(
             "status_public",
             "Bot Status",
             counts=counts,
             actions=actions,
             snapshot=snapshot,
+            spicy_status=spicy_status,
             status_refresh_seconds=status_refresh_seconds,
             refresh_options=refresh_options,
         )
@@ -3850,12 +3875,14 @@ def create_app(
         counts = _fetch_counts(db_path, guild_id=selected_guild_id)
         actions = _fetch_actions(db_path, limit=15, guild_id=selected_guild_id)
         snapshot = get_bot_snapshot()
+        spicy_status = _call_get_spicy_prompt_status(selected_guild_id)
         return _render_page(
             "home",
             "Web Admin Home",
             counts=counts,
             actions=actions,
             snapshot=snapshot,
+            spicy_status=spicy_status,
         )
 
     @app.get("/admin/guilds")
@@ -4099,12 +4126,14 @@ def create_app(
         counts = _fetch_counts(db_path, guild_id=selected_guild_id)
         actions = _fetch_actions(db_path, limit=15, guild_id=selected_guild_id)
         snapshot = get_bot_snapshot()
+        spicy_status = _call_get_spicy_prompt_status(selected_guild_id)
         return _render_page(
             "dashboard",
             "Web Admin Dashboard",
             counts=counts,
             actions=actions,
             snapshot=snapshot,
+            spicy_status=spicy_status,
         )
 
     @app.get("/admin/actions")

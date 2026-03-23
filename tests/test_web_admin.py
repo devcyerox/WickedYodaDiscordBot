@@ -1526,7 +1526,7 @@ def test_users_add_rejects_weak_password(tmp_path: Path, monkeypatch) -> None:
         client,
         csrf_token,
         email="weak@example.com",
-        password="weakpass",
+        password="weak",
         is_admin=False,
         display_name="Weak",
     )
