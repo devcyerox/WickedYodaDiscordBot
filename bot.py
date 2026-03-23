@@ -4154,7 +4154,6 @@ class ModerationBot(commands.Bot):
     async def youtube_monitor_loop(self) -> None:
         await self.wait_until_ready()
         logger.info("Notification loop started. Tick interval: %ss", NOTIFICATION_LOOP_SECONDS)
-        last_log_prune_at: datetime | None = None
         while not self.is_closed():
             try:
                 if YOUTUBE_NOTIFY_ENABLED:
@@ -4162,6 +4161,8 @@ class ModerationBot(commands.Bot):
                 await self.poll_reddit_feeds()
                 await self.poll_wordpress_feeds()
                 await self.poll_linkedin_feeds()
+                if LOG_RETENTION_DAYS > 0:
+                    prune_log_directory(LOG_DIR, LOG_RETENTION_DAYS)
             except Exception as exc:
                 logger.exception("Notification poll failed: %s", exc)
             await asyncio.sleep(NOTIFICATION_LOOP_SECONDS)
