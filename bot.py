@@ -3269,7 +3269,7 @@ class ActionStore:
                 conn.execute(
                     """
                     INSERT INTO guess_games (guild_id, target_number, attempt_count, created_by_user_id, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?)
                     ON CONFLICT(guild_id) DO UPDATE SET
                         target_number = excluded.target_number,
                         attempt_count = excluded.attempt_count,
