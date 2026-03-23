@@ -1532,4 +1532,4 @@ def test_users_add_rejects_weak_password(tmp_path: Path, monkeypatch) -> None:
     )
 
     assert response.status_code == 200
-    assert b"Password must be at least 12 characters." in response.data
+    assert b"Password must be at least 6 characters." in response.data
