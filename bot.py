@@ -15,6 +15,7 @@ import threading
 import urllib.parse
 import zipfile
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import discord
 from defusedxml import ElementTree as DefusedET
@@ -29,6 +30,31 @@ logging.basicConfig(
 )
 logger = logging.getLogger("wickedyoda-helper")
 bot_channel_logger = logging.getLogger("wickedyoda-helper.channel-log")
+
+
+def _load_env_file(path: Path, *, override: bool) -> None:
+    if not path.exists() or not path.is_file():
+        return
+    try:
+        content = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return
+    for raw_line in content:
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if not key:
+            continue
+        if override or key not in os.environ:
+            os.environ[key] = value
+
+
+# Load defaults first, then override with web GUI edits.
+_load_env_file(Path.cwd() / "env.env", override=False)
+_load_env_file(Path("/app/env.env"), override=True)
 
 
 def required_env(name: str) -> str:
