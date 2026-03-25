@@ -15,6 +15,7 @@ import threading
 import urllib.parse
 import zipfile
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import discord
 from defusedxml import ElementTree as DefusedET
@@ -29,6 +30,31 @@ logging.basicConfig(
 )
 logger = logging.getLogger("wickedyoda-helper")
 bot_channel_logger = logging.getLogger("wickedyoda-helper.channel-log")
+
+
+def _load_env_file(path: Path, *, override: bool) -> None:
+    if not path.exists() or not path.is_file():
+        return
+    try:
+        content = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return
+    for raw_line in content:
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if not key:
+            continue
+        if override or key not in os.environ:
+            os.environ[key] = value
+
+
+# Load defaults first, then override with web GUI edits.
+_load_env_file(Path.cwd() / "env.env", override=False)
+_load_env_file(Path("/app/env.env"), override=True)
 
 
 def required_env(name: str) -> str:
@@ -144,6 +170,9 @@ LINKEDIN_REQUEST_TIMEOUT_SECONDS = env_int("LINKEDIN_REQUEST_TIMEOUT_SECONDS", 1
 TRANSLATE_API_URL = os.getenv("TRANSLATE_API_URL", "https://libretranslate.de/translate").strip()
 TRANSLATE_API_KEY = os.getenv("TRANSLATE_API_KEY", "").strip()
 TRANSLATE_TIMEOUT_SECONDS = env_int("TRANSLATE_TIMEOUT_SECONDS", 12)
+WIKI_SEARCH_ENABLED = env_bool("WIKI_SEARCH_ENABLED", True)
+WIKI_SEARCH_URL = os.getenv("WIKI_SEARCH_URL", "").strip()
+WIKI_SEARCH_TIMEOUT_SECONDS = env_int("WIKI_SEARCH_TIMEOUT_SECONDS", 12)
 SPICY_PROMPTS_ENABLED = env_bool("SPICY_PROMPTS_ENABLED", True)
 SPICY_PROMPTS_REPO_URL = os.getenv(
     "SPICY_PROMPTS_REPO_URL",
@@ -306,6 +335,7 @@ COMMAND_PERMISSION_METADATA: dict[str, dict[str, str]] = {
     },
     "spicy": {"label": "/spicy", "description": "Random spicy prompt", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
     "translate": {"label": "/translate", "description": "Translate text", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
+    "wikihelp": {"label": "/wikihelp", "description": "Search the game help wiki", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
     "color": {"label": "/color", "description": "Pick a name color role", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
     "countdown": {"label": "/countdown", "description": "Countdown to a date", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
     "leaderboard": {
@@ -716,6 +746,8 @@ if LINKEDIN_REQUEST_TIMEOUT_SECONDS <= 0:
     raise RuntimeError("LINKEDIN_REQUEST_TIMEOUT_SECONDS must be a positive integer.")
 if TRANSLATE_TIMEOUT_SECONDS <= 0:
     raise RuntimeError("TRANSLATE_TIMEOUT_SECONDS must be a positive integer.")
+if WIKI_SEARCH_TIMEOUT_SECONDS <= 0:
+    raise RuntimeError("WIKI_SEARCH_TIMEOUT_SECONDS must be a positive integer.")
 if UPTIME_STATUS_TIMEOUT_SECONDS <= 0:
     raise RuntimeError("UPTIME_STATUS_TIMEOUT_SECONDS must be a positive integer.")
 
@@ -1039,6 +1071,42 @@ def translate_text(text: str, target_language: str) -> str:
         if translated:
             return translated
     raise RuntimeError("Translation API did not return translated text.")
+
+
+def search_wiki_help(query: str) -> list[str]:
+    if not WIKI_SEARCH_URL:
+        raise RuntimeError("WIKI_SEARCH_URL is not configured.")
+    status, headers, body_text = fetch_text_url(WIKI_SEARCH_URL, timeout_seconds=WIKI_SEARCH_TIMEOUT_SECONDS, accept="text/html")
+    if status >= 400:
+        raise RuntimeError(f"Wiki returned HTTP {status}.")
+    content_type = str(headers.get("content-type", "")).lower()
+    text = body_text
+    if "html" in content_type:
+        text = re.sub(r"<script[^>]*>.*?</script>", " ", text, flags=re.DOTALL | re.IGNORECASE)
+        text = re.sub(r"<style[^>]*>.*?</style>", " ", text, flags=re.DOTALL | re.IGNORECASE)
+        text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text:
+        return []
+
+    query_norm = query.strip().lower()
+    matches: list[str] = []
+    for line in body_text.splitlines():
+        if query_norm in line.lower():
+            snippet = re.sub(r"\s+", " ", line).strip()
+            if snippet:
+                matches.append(snippet)
+        if len(matches) >= 5:
+            break
+    if matches:
+        return matches
+
+    index = text.lower().find(query_norm)
+    if index == -1:
+        return []
+    start = max(0, index - 120)
+    end = min(len(text), index + 200)
+    return [text[start:end].strip()]
 
 
 def split_option_values(raw_value: str, *, max_options: int = 10) -> list[str]:
@@ -5432,6 +5500,38 @@ async def translate(interaction: discord.Interaction, text: str, language: app_c
     await log_interaction(interaction, action="translate", reason=f"target={language.value}", success=True)
 
 
+@bot.tree.command(name="wikihelp", description="Search the game help wiki.")
+@app_commands.describe(query="Search term for the help wiki")
+async def wikihelp(interaction: discord.Interaction, query: str) -> None:
+    if not await ensure_interaction_command_access(interaction, "wikihelp"):
+        await log_interaction(interaction, action="wikihelp", reason="permission denied", success=False)
+        return
+    if not WIKI_SEARCH_ENABLED:
+        await reply_ephemeral(interaction, "Wiki search is disabled.")
+        await log_interaction(interaction, action="wikihelp", reason="disabled", success=False)
+        return
+    if not query.strip():
+        await reply_ephemeral(interaction, "Please provide a search term.")
+        await log_interaction(interaction, action="wikihelp", reason="missing query", success=False)
+        return
+    try:
+        matches = await asyncio.to_thread(search_wiki_help, query)
+    except Exception as exc:
+        await reply_ephemeral(interaction, f"Wiki search failed: {exc}")
+        await log_interaction(interaction, action="wikihelp", reason=str(exc), success=False)
+        return
+    if not matches:
+        await reply_ephemeral(interaction, "No matches found in the wiki.")
+        await log_interaction(interaction, action="wikihelp", reason="no matches", success=True)
+        return
+    lines = "\n".join(f"- {truncate_log_text(match, max_length=200)}" for match in matches)
+    await interaction.response.send_message(
+        f"**Wiki matches for** `{query}`:\n{lines}",
+        ephemeral=COMMAND_RESPONSES_EPHEMERAL,
+    )
+    await log_interaction(interaction, action="wikihelp", reason=truncate_log_text(query), success=True)
+
+
 @bot.tree.command(name="color", description="Choose your name color from the configured list.")
 @app_commands.describe(choice="Color role to apply, or clear to remove")
 async def color(interaction: discord.Interaction, choice: str | None = None) -> None:
@@ -5926,7 +6026,7 @@ async def help_command(interaction: discord.Interaction) -> None:
     message = (
         "**Wicked Yoda's Little Helper**\n"
         "General: `/ping`, `/sayhi`, `/happy`, `/cat`, `/meme`, `/dadjoke`, `/help`\n"
-        "Fun: `/eightball`, `/coinflip`, `/roll`, `/choose`, `/roastme`, `/compliment`, `/wisdom`, `/gif`, `/poll`, `/questionoftheday`, `/spicy`, `/translate`, `/countdown`, `/trivia`, `/wouldyourather`, `/rps`, `/guess`\n"
+        "Fun: `/eightball`, `/coinflip`, `/roll`, `/choose`, `/roastme`, `/compliment`, `/wisdom`, `/gif`, `/poll`, `/questionoftheday`, `/spicy`, `/translate`, `/wikihelp`, `/countdown`, `/trivia`, `/wouldyourather`, `/rps`, `/guess`\n"
         "Community: `/birthday set`, `/birthday view`, `/birthday upcoming`, `/birthday remove`, `/leaderboard`\n"
         "Utilities: `/shorten`, `/expand`, `/uptime`, `/logs`, `/stats`\n"
         "Tags: `/tags`, `/tag <name>`, message tags like `!rules`\n"
