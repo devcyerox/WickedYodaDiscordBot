@@ -868,7 +868,6 @@ def post_json_url(url: str, timeout_seconds: int, payload: dict, *, accept: str 
     try:
         conn.request("POST", path, body=body, headers=headers)
         response = conn.getresponse()
-        response_headers = {name.lower(): value for name, value in response.getheaders()}
         body_text = response.read().decode("utf-8", errors="ignore")
     except OSError as exc:
         raise RuntimeError(f"Request failed: {exc}") from exc
