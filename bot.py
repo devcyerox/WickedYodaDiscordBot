@@ -3285,7 +3285,7 @@ class ActionStore:
             params.append(str(category).strip().lower())
         if exclude_ids:
             placeholders = ",".join("?" for _ in exclude_ids)
-            clause = "" if " WHERE " in query else " WHERE "
+            clause = " AND " if " WHERE " in query else " WHERE "
             query += f"{clause}prompt_id NOT IN ({placeholders})"
             params.extend(sorted(exclude_ids))
         query += " ORDER BY RANDOM() LIMIT 1"
