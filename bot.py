@@ -4895,6 +4895,7 @@ class ModerationBot(commands.Bot):
                 export_member_activity=run_web_export_member_activity,
                 get_spicy_prompts_status=run_web_get_spicy_prompts_status,
                 refresh_spicy_prompts=run_web_refresh_spicy_prompts,
+                pick_random_user=run_web_pick_random_user,
                 leave_guild=run_web_leave_guild,
                 request_restart=run_web_request_restart,
                 resolve_youtube_subscription=lambda source_url: resolve_youtube_subscription_seed(source_url),
@@ -4937,6 +4938,7 @@ class ModerationBot(commands.Bot):
                         export_member_activity=run_web_export_member_activity,
                         get_spicy_prompts_status=run_web_get_spicy_prompts_status,
                         refresh_spicy_prompts=run_web_refresh_spicy_prompts,
+                        pick_random_user=run_web_pick_random_user,
                         leave_guild=run_web_leave_guild,
                         request_restart=run_web_request_restart,
                         resolve_youtube_subscription=lambda source_url: resolve_youtube_subscription_seed(source_url),
@@ -6061,6 +6063,37 @@ async def spicy(interaction: discord.Interaction) -> None:
     )
 
 
+@bot.tree.command(name="randomuser", description="Pick a random user (no repeats within 30 days).")
+@app_commands.describe(role="Optional role to pick from")
+async def randomuser(interaction: discord.Interaction, role: discord.Role | None = None) -> None:
+    if not await ensure_interaction_command_access(interaction, "randomuser"):
+        await log_interaction(interaction, action="randomuser", reason="permission denied", success=False)
+        return
+    if interaction.guild is None:
+        await reply_ephemeral(interaction, "This command can only be used in a server.")
+        await log_interaction(interaction, action="randomuser", reason="no guild", success=False)
+        return
+    try:
+        result = await pick_random_user_for_guild(interaction.guild, role)
+    except Exception as exc:
+        await reply_ephemeral(interaction, f"Failed to pick a random user: {exc}")
+        await log_interaction(interaction, action="randomuser", reason=str(exc), success=False)
+        return
+    if not result.get("ok"):
+        await reply_ephemeral(interaction, str(result.get("error") or "No eligible members found."))
+        await log_interaction(interaction, action="randomuser", reason="no eligible members", success=False)
+        return
+    selection_text = f"Random pick: {result.get('mention')}."
+    meta = f"Eligible: {result.get('eligible_count')} | Excluded last {RANDOM_USER_COOLDOWN_DAYS}d: {result.get('recent_count')}"
+    await reply_ephemeral(interaction, f"{selection_text}\n{meta}")
+    await log_interaction(
+        interaction,
+        action="randomuser",
+        reason=truncate_log_text(str(result.get("display_name") or result.get("user_id"))),
+        success=True,
+    )
+
+
 @bot.tree.command(name="translate", description="Translate text to a selected language.")
 @app_commands.describe(text="Text to translate", language="Target language")
 @app_commands.choices(language=TRANSLATE_LANGUAGE_OPTIONS)
@@ -6624,7 +6657,7 @@ async def help_command(interaction: discord.Interaction) -> None:
     message = (
         "**Wicked Yoda's Little Helper**\n"
         "General: `/ping`, `/sayhi`, `/happy`, `/cat`, `/meme`, `/dadjoke`, `/help`\n"
-        "Fun: `/eightball`, `/coinflip`, `/roll`, `/choose`, `/roastme`, `/compliment`, `/wisdom`, `/gif`, `/poll`, `/questionoftheday`, `/spicy`, `/translate`, `/wikihelp`, `/countdown`, `/trivia`, `/wouldyourather`, `/rps`, `/guess`\n"
+        "Fun: `/eightball`, `/coinflip`, `/roll`, `/choose`, `/roastme`, `/compliment`, `/wisdom`, `/gif`, `/poll`, `/questionoftheday`, `/spicy`, `/randomuser`, `/translate`, `/wikihelp`, `/countdown`, `/trivia`, `/wouldyourather`, `/rps`, `/guess`\n"
         "Community: `/birthday set`, `/birthday view`, `/birthday upcoming`, `/birthday remove`, `/leaderboard`\n"
         "Utilities: `/shorten`, `/expand`, `/uptime`, `/logs`, `/stats`\n"
         "Tags: `/tags`, `/tag <name>`, message tags like `!rules`\n"

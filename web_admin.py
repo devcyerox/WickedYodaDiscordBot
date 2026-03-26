@@ -6,6 +6,7 @@ import secrets
 import sqlite3
 import threading
 import time
+import zipfile
 from collections import deque
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
@@ -1764,6 +1765,7 @@ PAGE_TEMPLATE = """
             <ul class="dropdown-menu dropdown-menu-end">
               <li><a class="dropdown-item" href="{{ url_for('home') }}">Home</a></li>
               <li><a class="dropdown-item" href="{{ url_for('actions') }}">Actions</a></li>
+              <li><a class="dropdown-item" href="{{ url_for('random_user_page') }}">Random User</a></li>
               <li><a class="dropdown-item" href="{{ url_for('member_activity_page') }}">Member Activity</a></li>
               <li><a class="dropdown-item" href="{{ url_for('reddit_feeds') }}">Reddit</a></li>
               <li><a class="dropdown-item" href="{{ url_for('wordpress_feeds') }}">WordPress</a></li>
@@ -2463,6 +2465,39 @@ PAGE_TEMPLATE = """
           </div>
         </div>
         {% endfor %}
+      </div>
+    {% elif page == "random_user" %}
+      <div class="card card-soft p-3">
+        <div class="d-flex flex-column flex-lg-row justify-content-between align-items-start gap-3 mb-3">
+          <div>
+            <h1 class="h5 mb-2">Random User Picker</h1>
+            <p class="text-secondary mb-0">Select a random member. Users picked in the last 30 days are excluded.</p>
+          </div>
+        </div>
+        <form method="post" action="{{ url_for('random_user_page') }}" class="d-flex flex-column flex-lg-row gap-2 align-items-end mb-3">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <div class="flex-grow-1">
+            <label class="form-label" for="random_role_id">Filter by role</label>
+            <select class="form-select" id="random_role_id" name="role_id">
+              {% for option in random_user_role_options %}
+              <option value="{{ option.value }}" {% if option.value == random_user_selected_role_id %}selected{% endif %}>{{ option.label }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div>
+            <button class="btn btn-primary" type="submit" {% if not session.get("is_admin") %}disabled{% endif %}>Pick Random User</button>
+          </div>
+        </form>
+        {% if random_user_result %}
+          {% if random_user_result.ok %}
+            <div class="alert alert-success">
+              Selected: <strong>{{ random_user_result.display_name }}</strong>
+            </div>
+            <p class="text-secondary mb-0">Eligible: {{ random_user_result.eligible_count }} | Excluded last 30 days: {{ random_user_result.recent_count }}</p>
+          {% else %}
+            <div class="alert alert-danger">{{ random_user_result.error }}</div>
+          {% endif %}
+        {% endif %}
       </div>
     {% elif page == "youtube" %}
       <div class="card card-soft p-3 mb-3">
@@ -3627,6 +3662,7 @@ def create_app(
     get_member_activity: Callable[[int, int | None], dict] | Callable[[int], dict] | None = None,
     get_spicy_prompt_status: Callable[[int], dict] | Callable[[int | None], dict] | None = None,
     export_member_activity: Callable[[int, int | None], dict] | Callable[[int], dict] | None = None,
+    pick_random_user: Callable[[int, int | None], dict] | Callable[[int], dict] | None = None,
     get_spicy_prompts_status: Callable[[], dict] | None = None,
     refresh_spicy_prompts: Callable[[str], dict] | None = None,
     leave_guild: Callable[[str, int], dict] | None = None,
@@ -3989,6 +4025,17 @@ def create_app(
                 return export_member_activity(guild_id)  # type: ignore[misc]
             except TypeError:
                 return {"ok": False, "error": "Member activity export callback could not be called."}
+
+    def _call_pick_random_user(guild_id: int | None, role_id: int | None = None) -> dict:
+        if guild_id is None or not callable(pick_random_user):
+            return {"ok": False, "error": "Random user picker is not configured."}
+        try:
+            return pick_random_user(guild_id, role_id)  # type: ignore[misc]
+        except TypeError:
+            try:
+                return pick_random_user(guild_id)  # type: ignore[misc]
+            except TypeError:
+                return {"ok": False, "error": "Random user picker callback could not be called."}
 
     def _call_get_spicy_prompts_status() -> dict:
         if callable(get_spicy_prompts_status):
@@ -4811,6 +4858,44 @@ def create_app(
             "actions",
             "Moderation Action History",
             actions=_fetch_actions(db_path, limit=300, guild_id=selected_guild_id),
+        )
+
+    @app.route("/admin/random-user", methods=["GET", "POST"])
+    @login_required
+    def random_user_page():
+        selected_guild_id, _, _ = _selected_guild_context()
+        catalog_payload = _call_get_discord_catalog(selected_guild_id)
+        role_options = [{"value": "", "label": "All members"}]
+        if isinstance(catalog_payload, dict) and catalog_payload.get("ok"):
+            for role in catalog_payload.get("roles", []) or []:
+                role_id_value = str(role.get("id") or "").strip()
+                role_name = str(role.get("name") or "").strip()
+                if not role_id_value or not role_name:
+                    continue
+                role_options.append({"value": role_id_value, "label": role_name})
+
+        selected_role_id = ""
+        result: dict | None = None
+        if request.method == "POST":
+            if not session.get("is_admin"):
+                return _reject_read_only_write("random_user_page")
+            raw_role_id = str(request.form.get("role_id", "")).strip()
+            selected_role_id = raw_role_id if raw_role_id.isdigit() else ""
+            role_id_value = int(selected_role_id) if selected_role_id else None
+            result = _call_pick_random_user(selected_guild_id, role_id_value)
+            if not isinstance(result, dict) or not result.get("ok"):
+                flash(
+                    str(result.get("error") or "Failed to pick a random user.")
+                    if isinstance(result, dict)
+                    else "Failed to pick a random user.",
+                    "danger",
+                )
+        return _render_page(
+            "random_user",
+            "Random User Picker",
+            random_user_role_options=role_options,
+            random_user_selected_role_id=selected_role_id,
+            random_user_result=result,
         )
 
     @app.get("/admin/member-activity")
@@ -5903,6 +5988,7 @@ def start_web_admin(
     get_member_activity: Callable[[int, int | None], dict] | Callable[[int], dict] | None = None,
     get_spicy_prompt_status: Callable[[int], dict] | Callable[[int | None], dict] | None = None,
     export_member_activity: Callable[[int, int | None], dict] | Callable[[int], dict] | None = None,
+    pick_random_user: Callable[[int, int | None], dict] | Callable[[int], dict] | None = None,
     get_spicy_prompts_status: Callable[[], dict] | None = None,
     refresh_spicy_prompts: Callable[[str], dict] | None = None,
     leave_guild: Callable[[str, int], dict] | None = None,
@@ -5933,6 +6019,7 @@ def start_web_admin(
         get_member_activity=get_member_activity,
         get_spicy_prompt_status=get_spicy_prompt_status,
         export_member_activity=export_member_activity,
+        pick_random_user=pick_random_user,
         get_spicy_prompts_status=get_spicy_prompts_status,
         refresh_spicy_prompts=refresh_spicy_prompts,
         leave_guild=leave_guild,
