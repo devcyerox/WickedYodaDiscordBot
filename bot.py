@@ -345,7 +345,11 @@ COMMAND_PERMISSION_METADATA: dict[str, dict[str, str]] = {
         "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
     },
     "translate": {"label": "/translate", "description": "Translate text", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
-    "wikihelp": {"label": "/wikihelp", "description": "Search the game help wiki", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
+    "wikihelp": {
+        "label": "/wikihelp",
+        "description": "Search the game help wiki",
+        "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
+    },
     "color": {"label": "/color", "description": "Pick a name color role", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
     "countdown": {"label": "/countdown", "description": "Countdown to a date", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
     "leaderboard": {
@@ -3877,9 +3881,7 @@ async def member_activity_backfill_job() -> None:
         return
     since_dt = parse_member_activity_backfill_since(MEMBER_ACTIVITY_BACKFILL_SINCE_RAW)
     if since_dt is None:
-        logger.warning(
-            "Member activity backfill is enabled but MEMBER_ACTIVITY_BACKFILL_SINCE is empty or invalid; skipping."
-        )
+        logger.warning("Member activity backfill is enabled but MEMBER_ACTIVITY_BACKFILL_SINCE is empty or invalid; skipping.")
         return
     try:
         guild_id = get_member_activity_backfill_target_guild_id()
@@ -3900,13 +3902,8 @@ async def member_activity_backfill_job() -> None:
     previous_covered_by_existing_ranges = bool(state.get("covered_by_existing_ranges"))
     previous_channels_scanned = int(state.get("channels_scanned") or 0)
     previous_messages_processed = int(state.get("messages_processed") or 0)
-    if (
-        previous_status == "completed"
-        and (
-            previous_covered_by_existing_ranges
-            or previous_channels_scanned > 0
-            or previous_messages_processed > 0
-        )
+    if previous_status == "completed" and (
+        previous_covered_by_existing_ranges or previous_channels_scanned > 0 or previous_messages_processed > 0
     ):
         logger.info(
             "Member activity backfill already completed for guild %s since %s; skipping.",
@@ -4064,9 +4061,7 @@ async def member_activity_backfill_job() -> None:
         logger.exception("Member activity backfill failed for guild %s (%s).", guild.name, guild.id)
 
 
-async def _collect_random_user_candidates(
-    guild: discord.Guild, role: discord.Role | None
-) -> list[discord.Member]:
+async def _collect_random_user_candidates(guild: discord.Guild, role: discord.Role | None) -> list[discord.Member]:
     if role is not None:
         candidates = [member for member in role.members if isinstance(member, discord.Member)]
     else:
@@ -4981,9 +4976,7 @@ class ModerationBot(commands.Bot):
                 color=discord.Color.green(),
                 guild_id=GUILD_ID,
             )
-        if MEMBER_ACTIVITY_BACKFILL_ENABLED and (
-            self.member_activity_backfill_task is None or self.member_activity_backfill_task.done()
-        ):
+        if MEMBER_ACTIVITY_BACKFILL_ENABLED and (self.member_activity_backfill_task is None or self.member_activity_backfill_task.done()):
             self.member_activity_backfill_task = asyncio.create_task(
                 member_activity_backfill_job(),
                 name="member-activity-backfill",

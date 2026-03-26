@@ -1042,15 +1042,19 @@ def _validate_settings_payload(
             if raw_value and raw_value not in allowed:
                 errors.append(f"{key} has an invalid option.")
                 continue
-        if key in {
-            "GUILD_ID",
-            "Bot_Log_Channel",
-            "WEB_PORT",
-            "WEB_TLS_PORT",
-            "WEB_AVATAR_MAX_UPLOAD_BYTES",
-            "MEMBER_ACTIVITY_BACKFILL_GUILD_ID",
-            "MEMBER_ACTIVITY_BACKFILL_PROGRESS_LOG_INTERVAL",
-        } and raw_value:
+        if (
+            key
+            in {
+                "GUILD_ID",
+                "Bot_Log_Channel",
+                "WEB_PORT",
+                "WEB_TLS_PORT",
+                "WEB_AVATAR_MAX_UPLOAD_BYTES",
+                "MEMBER_ACTIVITY_BACKFILL_GUILD_ID",
+                "MEMBER_ACTIVITY_BACKFILL_PROGRESS_LOG_INTERVAL",
+            }
+            and raw_value
+        ):
             if not raw_value.isdigit():
                 errors.append(f"{key} must be numeric.")
                 continue
