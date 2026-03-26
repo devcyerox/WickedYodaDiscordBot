@@ -1,6 +1,6 @@
 # Command Reference
 
-Last Updated: 2026-03-22
+Last Updated: 2026-03-25
 
 Guild-scoped slash commands currently registered in `bot.py`.
 
@@ -187,15 +187,36 @@ Response visibility for most slash commands is controlled by `COMMAND_RESPONSES_
 ## `/spicy`
 
 - Description: Post a random spicy prompt from the cached repo-backed prompt library.
-- Parameters: none
+- Parameters:
+  - `tag` (`str`, optional) - category tag, or `help` to list categories
 - Required user permissions: none
 - Bot action:
   - Only works when `SPICY_PROMPTS_ENABLED=true`.
   - Only works in the guild-specific channel configured from `/admin/spicy-prompts`.
   - Rejects use outside the configured channel.
   - Rejects use if the configured channel is not age-restricted.
+  - If `tag=help`, lists available categories and usage.
+  - If `tag=<category>`, pulls a prompt from that category; otherwise chooses a random category.
   - Rejects use when the prompt cache is empty and instructs admins to refresh from the web GUI.
   - Posts the prompt publicly in the configured channel.
+  - Logs success/failure to configured guild log channel (or global `Bot_Log_Channel` fallback) and SQLite action history.
+
+Example usage:
+- `/spicy`
+- `/spicy tag:help`
+- `/spicy tag:dirty_truth`
+
+## `/randomuser`
+
+- Description: Pick a random guild member, excluding users picked in the last 30 days.
+- Parameters:
+  - `role` (`discord.Role`, optional) - restrict the selection to a specific role
+- Required user permissions: none
+- Bot action:
+  - Excludes bots and recent picks for the same guild.
+  - If a role is provided, only members with that role are eligible.
+  - Replies with the selected member mention and eligible counts.
+  - Reply visibility follows `COMMAND_RESPONSES_EPHEMERAL`.
   - Logs success/failure to configured guild log channel (or global `Bot_Log_Channel` fallback) and SQLite action history.
 
 ## `/countdown`
@@ -530,12 +551,3 @@ When you add a new `@bot.tree.command` in `bot.py`:
 1. Add a new section here with description, parameters, and required permissions.
 2. Document success/failure responses and logging behavior.
 3. Update the "Last Updated" date at the top of this file.
-
-
-## `/spicy`
-
-- Description: Post a random spicy prompt (guild-configured 18+ channel only).
-- Behavior:
-  - Random category selection.
-  - The same prompt will not repeat within 4 hours for the same guild.
-  - Requires the configured channel to be age-restricted.

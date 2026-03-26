@@ -6005,7 +6005,8 @@ async def questionoftheday(interaction: discord.Interaction) -> None:
 
 
 @bot.tree.command(name="spicy", description="Post a random spicy prompt in the configured 18+ channel.")
-async def spicy(interaction: discord.Interaction) -> None:
+@app_commands.describe(tag="Optional category tag, or 'help' to list categories")
+async def spicy(interaction: discord.Interaction, tag: str | None = None) -> None:
     if not await ensure_interaction_command_access(interaction, "spicy"):
         return
     if interaction.guild is None or interaction.channel is None:
@@ -6035,10 +6036,39 @@ async def spicy(interaction: discord.Interaction) -> None:
         await log_interaction(interaction, action="spicy", reason="configured channel not age-restricted", success=False)
         return
 
+    def _normalize_category(value: str) -> str:
+        return str(value or "").strip().lower().replace(" ", "_")
+
     recent_cutoff = datetime.now(UTC) - timedelta(hours=4)
     recent_ids = ACTION_STORE.get_spicy_prompt_recent_ids(interaction.guild.id, since_dt=recent_cutoff)
     categories = ACTION_STORE.list_spicy_prompt_categories()
-    selected_category = secure_choice(categories) if categories else None
+    normalized_categories = {_normalize_category(item): item for item in categories}
+    if tag:
+        tag_value = _normalize_category(tag)
+        if tag_value == "help":
+            if not categories:
+                await reply_ephemeral(interaction, "No categories are available yet. Refresh the repo in the web GUI first.")
+            else:
+                sample = sorted(normalized_categories.keys())
+                shown = ", ".join(sample[:30])
+                suffix = f" (+{len(sample) - 30} more)" if len(sample) > 30 else ""
+                await reply_ephemeral(
+                    interaction,
+                    f"Use `/spicy` for a random prompt, or `/spicy tag:<category>`.\nAvailable categories: {shown}{suffix}",
+                )
+            await log_interaction(interaction, action="spicy", reason="help", success=True)
+            return
+        selected_category = normalized_categories.get(tag_value)
+        if not selected_category:
+            await reply_ephemeral(
+                interaction,
+                "Unknown category tag. Use `/spicy tag:help` to list available categories.",
+            )
+            await log_interaction(interaction, action="spicy", reason="unknown category", success=False)
+            return
+    else:
+        selected_category = secure_choice(categories) if categories else None
+
     prompt = ACTION_STORE.get_random_spicy_prompt(category=selected_category, exclude_ids=recent_ids)
     if prompt is None and selected_category is not None:
         prompt = ACTION_STORE.get_random_spicy_prompt(exclude_ids=recent_ids)
@@ -6654,7 +6684,7 @@ async def help_command(interaction: discord.Interaction) -> None:
     message = (
         "**Wicked Yoda's Little Helper**\n"
         "General: `/ping`, `/sayhi`, `/happy`, `/cat`, `/meme`, `/dadjoke`, `/help`\n"
-        "Fun: `/eightball`, `/coinflip`, `/roll`, `/choose`, `/roastme`, `/compliment`, `/wisdom`, `/gif`, `/poll`, `/questionoftheday`, `/spicy`, `/randomuser`, `/translate`, `/wikihelp`, `/countdown`, `/trivia`, `/wouldyourather`, `/rps`, `/guess`\n"
+        "Fun: `/eightball`, `/coinflip`, `/roll`, `/choose`, `/roastme`, `/compliment`, `/wisdom`, `/gif`, `/poll`, `/questionoftheday`, `/spicy` (supports `tag`), `/randomuser`, `/translate`, `/wikihelp`, `/countdown`, `/trivia`, `/wouldyourather`, `/rps`, `/guess`\n"
         "Community: `/birthday set`, `/birthday view`, `/birthday upcoming`, `/birthday remove`, `/leaderboard`\n"
         "Utilities: `/shorten`, `/expand`, `/uptime`, `/logs`, `/stats`\n"
         "Tags: `/tags`, `/tag <name>`, message tags like `!rules`\n"
