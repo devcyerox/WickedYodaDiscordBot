@@ -54,6 +54,7 @@ SETTINGS_FIELD_ORDER = [
     "WEB_TLS_CERT_FILE",
     "WEB_TLS_KEY_FILE",
     "ENABLE_MEMBERS_INTENT",
+    "ENABLE_MESSAGE_CONTENT_INTENT",
     "COMMAND_RESPONSES_EPHEMERAL",
     "PUPPY_IMAGE_API_URL",
     "PUPPY_IMAGE_TIMEOUT_SECONDS",
@@ -79,6 +80,10 @@ SETTINGS_FIELD_ORDER = [
     "TRANSLATE_TIMEOUT_SECONDS",
     "SPICY_PROMPTS_REFRESH_ON_BOOT",
     "SPICY_PROMPTS_REFRESH_INTERVAL_HOURS",
+    "MEMBER_ACTIVITY_BACKFILL_ENABLED",
+    "MEMBER_ACTIVITY_BACKFILL_SINCE",
+    "MEMBER_ACTIVITY_BACKFILL_GUILD_ID",
+    "MEMBER_ACTIVITY_BACKFILL_PROGRESS_LOG_INTERVAL",
     "UPTIME_STATUS_ENABLED",
     "UPTIME_STATUS_PAGE_URL",
     "UPTIME_STATUS_TIMEOUT_SECONDS",
@@ -102,11 +107,13 @@ SETTINGS_DROPDOWN_OPTIONS: dict[str, tuple[str, ...]] = {
     "WEB_ENABLED": BOOL_SELECT_OPTIONS,
     "WEB_TLS_ENABLED": BOOL_SELECT_OPTIONS,
     "ENABLE_MEMBERS_INTENT": BOOL_SELECT_OPTIONS,
+    "ENABLE_MESSAGE_CONTENT_INTENT": BOOL_SELECT_OPTIONS,
     "COMMAND_RESPONSES_EPHEMERAL": BOOL_SELECT_OPTIONS,
     "SHORTENER_ENABLED": BOOL_SELECT_OPTIONS,
     "YOUTUBE_NOTIFY_ENABLED": BOOL_SELECT_OPTIONS,
     "SPICY_PROMPTS_ENABLED": BOOL_SELECT_OPTIONS,
     "SPICY_PROMPTS_REFRESH_ON_BOOT": BOOL_SELECT_OPTIONS,
+    "MEMBER_ACTIVITY_BACKFILL_ENABLED": BOOL_SELECT_OPTIONS,
     "UPTIME_STATUS_ENABLED": BOOL_SELECT_OPTIONS,
     "WEB_SESSION_COOKIE_SECURE": BOOL_SELECT_OPTIONS,
     "WEB_ENFORCE_CSRF": BOOL_SELECT_OPTIONS,
@@ -126,6 +133,7 @@ SETTINGS_DROPDOWN_OPTIONS: dict[str, tuple[str, ...]] = {
     "WIKI_SEARCH_ENABLED": BOOL_SELECT_OPTIONS,
     "WIKI_SEARCH_TIMEOUT_SECONDS": ("5", "8", "10", "12", "15", "30"),
     "SPICY_PROMPTS_REFRESH_INTERVAL_HOURS": ("0", "6", "12", "24", "48", "72"),
+    "MEMBER_ACTIVITY_BACKFILL_PROGRESS_LOG_INTERVAL": ("100", "250", "500", "1000", "2500"),
     "UPTIME_STATUS_TIMEOUT_SECONDS": ("5", "8", "10", "15", "30"),
 }
 
@@ -1033,7 +1041,15 @@ def _validate_settings_payload(
             if raw_value and raw_value not in allowed:
                 errors.append(f"{key} has an invalid option.")
                 continue
-        if key in {"GUILD_ID", "Bot_Log_Channel", "WEB_PORT", "WEB_TLS_PORT", "WEB_AVATAR_MAX_UPLOAD_BYTES"} and raw_value:
+        if key in {
+            "GUILD_ID",
+            "Bot_Log_Channel",
+            "WEB_PORT",
+            "WEB_TLS_PORT",
+            "WEB_AVATAR_MAX_UPLOAD_BYTES",
+            "MEMBER_ACTIVITY_BACKFILL_GUILD_ID",
+            "MEMBER_ACTIVITY_BACKFILL_PROGRESS_LOG_INTERVAL",
+        } and raw_value:
             if not raw_value.isdigit():
                 errors.append(f"{key} must be numeric.")
                 continue
@@ -1463,6 +1479,54 @@ PAGE_TEMPLATE = """
       --input-bg: #0f141d;
       --input-fg: #e7edf7;
     }
+    body[data-theme="ocean"] {
+      --bg: #e6f2ff;
+      --bg-grad-a: #e1f0ff;
+      --bg-grad-b: #f2f9ff;
+      --fg: #0f2a4a;
+      --muted: #3d5a7a;
+      --card: #ffffff;
+      --border: #c7d7eb;
+      --header: #ffffff;
+      --link: #0b5ed7;
+      --btn-bg: #0d6efd;
+      --btn-secondary: #496789;
+      --btn-danger: #dc3545;
+      --input-bg: #ffffff;
+      --input-fg: #0f2a4a;
+    }
+    body[data-theme="ember"] {
+      --bg: #fff3e6;
+      --bg-grad-a: #fff1df;
+      --bg-grad-b: #fff8f0;
+      --fg: #3b1f0f;
+      --muted: #7a4a33;
+      --card: #ffffff;
+      --border: #ecd2c0;
+      --header: #ffffff;
+      --link: #c2410c;
+      --btn-bg: #ea580c;
+      --btn-secondary: #8c4f2d;
+      --btn-danger: #b91c1c;
+      --input-bg: #ffffff;
+      --input-fg: #3b1f0f;
+    }
+    body[data-theme="forest"] {
+      --bg: #e9f5ee;
+      --bg-grad-a: #e6f3ea;
+      --bg-grad-b: #f4fbf7;
+      --fg: #0f2f1f;
+      --muted: #3f6b52;
+      --card: #ffffff;
+      --border: #cfe3d7;
+      --header: #ffffff;
+      --link: #0f7a4a;
+      --btn-bg: #0f9d58;
+      --btn-secondary: #4b7a5f;
+      --btn-danger: #b42318;
+      --input-bg: #ffffff;
+      --input-fg: #0f2f1f;
+    }
     body {
       background:
         radial-gradient(1100px 450px at 20% -20%, var(--bg-grad-b), transparent 55%),
@@ -1682,6 +1746,9 @@ PAGE_TEMPLATE = """
         <div class="theme-switch me-2 mb-2 mb-lg-0" aria-label="Theme selector">
           <button type="button" class="theme-btn" data-theme-choice="light">Light</button>
           <button type="button" class="theme-btn" data-theme-choice="black">Black</button>
+          <button type="button" class="theme-btn" data-theme-choice="ocean">Ocean</button>
+          <button type="button" class="theme-btn" data-theme-choice="ember">Ember</button>
+          <button type="button" class="theme-btn" data-theme-choice="forest">Forest</button>
         </div>
         {% if session.get("user") %}
         <ul class="navbar-nav me-auto mb-2 mb-lg-0">
@@ -3495,7 +3562,7 @@ PAGE_TEMPLATE = """
     (function () {
       const storageKey = "web_theme_choice";
       const fallbackTheme = "light";
-      const allowed = { light: true, black: true };
+      const allowed = { light: true, black: true, ocean: true, ember: true, forest: true };
 
       function setTheme(theme) {
         const selected = allowed[theme] ? theme : fallbackTheme;
