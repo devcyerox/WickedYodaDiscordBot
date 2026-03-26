@@ -6,6 +6,7 @@ import secrets
 import sqlite3
 import threading
 import time
+import zipfile
 from collections import deque
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
@@ -54,6 +55,7 @@ SETTINGS_FIELD_ORDER = [
     "WEB_TLS_CERT_FILE",
     "WEB_TLS_KEY_FILE",
     "ENABLE_MEMBERS_INTENT",
+    "ENABLE_MESSAGE_CONTENT_INTENT",
     "COMMAND_RESPONSES_EPHEMERAL",
     "PUPPY_IMAGE_API_URL",
     "PUPPY_IMAGE_TIMEOUT_SECONDS",
@@ -79,6 +81,10 @@ SETTINGS_FIELD_ORDER = [
     "TRANSLATE_TIMEOUT_SECONDS",
     "SPICY_PROMPTS_REFRESH_ON_BOOT",
     "SPICY_PROMPTS_REFRESH_INTERVAL_HOURS",
+    "MEMBER_ACTIVITY_BACKFILL_ENABLED",
+    "MEMBER_ACTIVITY_BACKFILL_SINCE",
+    "MEMBER_ACTIVITY_BACKFILL_GUILD_ID",
+    "MEMBER_ACTIVITY_BACKFILL_PROGRESS_LOG_INTERVAL",
     "UPTIME_STATUS_ENABLED",
     "UPTIME_STATUS_PAGE_URL",
     "UPTIME_STATUS_TIMEOUT_SECONDS",
@@ -102,11 +108,13 @@ SETTINGS_DROPDOWN_OPTIONS: dict[str, tuple[str, ...]] = {
     "WEB_ENABLED": BOOL_SELECT_OPTIONS,
     "WEB_TLS_ENABLED": BOOL_SELECT_OPTIONS,
     "ENABLE_MEMBERS_INTENT": BOOL_SELECT_OPTIONS,
+    "ENABLE_MESSAGE_CONTENT_INTENT": BOOL_SELECT_OPTIONS,
     "COMMAND_RESPONSES_EPHEMERAL": BOOL_SELECT_OPTIONS,
     "SHORTENER_ENABLED": BOOL_SELECT_OPTIONS,
     "YOUTUBE_NOTIFY_ENABLED": BOOL_SELECT_OPTIONS,
     "SPICY_PROMPTS_ENABLED": BOOL_SELECT_OPTIONS,
     "SPICY_PROMPTS_REFRESH_ON_BOOT": BOOL_SELECT_OPTIONS,
+    "MEMBER_ACTIVITY_BACKFILL_ENABLED": BOOL_SELECT_OPTIONS,
     "UPTIME_STATUS_ENABLED": BOOL_SELECT_OPTIONS,
     "WEB_SESSION_COOKIE_SECURE": BOOL_SELECT_OPTIONS,
     "WEB_ENFORCE_CSRF": BOOL_SELECT_OPTIONS,
@@ -126,6 +134,7 @@ SETTINGS_DROPDOWN_OPTIONS: dict[str, tuple[str, ...]] = {
     "WIKI_SEARCH_ENABLED": BOOL_SELECT_OPTIONS,
     "WIKI_SEARCH_TIMEOUT_SECONDS": ("5", "8", "10", "12", "15", "30"),
     "SPICY_PROMPTS_REFRESH_INTERVAL_HOURS": ("0", "6", "12", "24", "48", "72"),
+    "MEMBER_ACTIVITY_BACKFILL_PROGRESS_LOG_INTERVAL": ("100", "250", "500", "1000", "2500"),
     "UPTIME_STATUS_TIMEOUT_SECONDS": ("5", "8", "10", "15", "30"),
 }
 
@@ -1033,7 +1042,19 @@ def _validate_settings_payload(
             if raw_value and raw_value not in allowed:
                 errors.append(f"{key} has an invalid option.")
                 continue
-        if key in {"GUILD_ID", "Bot_Log_Channel", "WEB_PORT", "WEB_TLS_PORT", "WEB_AVATAR_MAX_UPLOAD_BYTES"} and raw_value:
+        if (
+            key
+            in {
+                "GUILD_ID",
+                "Bot_Log_Channel",
+                "WEB_PORT",
+                "WEB_TLS_PORT",
+                "WEB_AVATAR_MAX_UPLOAD_BYTES",
+                "MEMBER_ACTIVITY_BACKFILL_GUILD_ID",
+                "MEMBER_ACTIVITY_BACKFILL_PROGRESS_LOG_INTERVAL",
+            }
+            and raw_value
+        ):
             if not raw_value.isdigit():
                 errors.append(f"{key} must be numeric.")
                 continue
@@ -1463,6 +1484,54 @@ PAGE_TEMPLATE = """
       --input-bg: #0f141d;
       --input-fg: #e7edf7;
     }
+    body[data-theme="ocean"] {
+      --bg: #e6f2ff;
+      --bg-grad-a: #e1f0ff;
+      --bg-grad-b: #f2f9ff;
+      --fg: #0f2a4a;
+      --muted: #3d5a7a;
+      --card: #ffffff;
+      --border: #c7d7eb;
+      --header: #ffffff;
+      --link: #0b5ed7;
+      --btn-bg: #0d6efd;
+      --btn-secondary: #496789;
+      --btn-danger: #dc3545;
+      --input-bg: #ffffff;
+      --input-fg: #0f2a4a;
+    }
+    body[data-theme="ember"] {
+      --bg: #fff3e6;
+      --bg-grad-a: #fff1df;
+      --bg-grad-b: #fff8f0;
+      --fg: #3b1f0f;
+      --muted: #7a4a33;
+      --card: #ffffff;
+      --border: #ecd2c0;
+      --header: #ffffff;
+      --link: #c2410c;
+      --btn-bg: #ea580c;
+      --btn-secondary: #8c4f2d;
+      --btn-danger: #b91c1c;
+      --input-bg: #ffffff;
+      --input-fg: #3b1f0f;
+    }
+    body[data-theme="forest"] {
+      --bg: #e9f5ee;
+      --bg-grad-a: #e6f3ea;
+      --bg-grad-b: #f4fbf7;
+      --fg: #0f2f1f;
+      --muted: #3f6b52;
+      --card: #ffffff;
+      --border: #cfe3d7;
+      --header: #ffffff;
+      --link: #0f7a4a;
+      --btn-bg: #0f9d58;
+      --btn-secondary: #4b7a5f;
+      --btn-danger: #b42318;
+      --input-bg: #ffffff;
+      --input-fg: #0f2f1f;
+    }
     body {
       background:
         radial-gradient(1100px 450px at 20% -20%, var(--bg-grad-b), transparent 55%),
@@ -1557,6 +1626,80 @@ PAGE_TEMPLATE = """
     .documentation-link.active .small {
       color: rgba(255, 255, 255, 0.78) !important;
     }
+    .dashboard-shell { display: grid; gap: 18px; }
+    .dashboard-hero {
+      display: grid;
+      grid-template-columns: 2fr 1fr;
+      gap: 18px;
+    }
+    .dashboard-hero-main,
+    .dashboard-hero-side,
+    .dashboard-section,
+    .dash-card {
+      position: relative;
+      overflow: hidden;
+    }
+    .dashboard-hero-main::before,
+    .dashboard-hero-side::before,
+    .dash-card::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(120deg, rgba(37, 99, 235, 0.12), transparent);
+      opacity: 0.7;
+      pointer-events: none;
+    }
+    .dashboard-hero-main h2,
+    .dashboard-hero-side h3,
+    .dashboard-section-head h3,
+    .dash-card h3 {
+      margin: 0;
+      font-size: 1.05rem;
+      font-weight: 700;
+    }
+    .dashboard-hero-main p,
+    .dashboard-hero-side p,
+    .dash-card p {
+      margin: 0;
+    }
+    .dashboard-hero-main {
+      padding: 22px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    .dashboard-hero-lead { font-size: 0.95rem; color: var(--muted); }
+    .dashboard-pill-row { display: flex; flex-wrap: wrap; gap: 12px; }
+    .dashboard-pill {
+      background: rgba(15, 23, 42, 0.08);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 10px 12px;
+      min-width: 140px;
+      flex: 1 1 160px;
+    }
+    .dashboard-pill strong { display: block; font-size: 0.78rem; color: var(--muted); font-weight: 600; }
+    .dashboard-pill span { display: block; font-weight: 700; }
+    .dashboard-hero-side { padding: 22px; display: flex; flex-direction: column; gap: 16px; }
+    .dashboard-list { display: grid; gap: 12px; }
+    .dashboard-list-item { padding: 12px; border-radius: 12px; border: 1px solid var(--border); background: rgba(15, 23, 42, 0.06); }
+    .dashboard-list-item strong { display: block; margin-bottom: 4px; }
+    .dashboard-section { padding: 18px; }
+    .dashboard-section-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 12px; }
+    .dashboard-section-head p { color: var(--muted); font-size: 0.9rem; }
+    .dashboard-section-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; }
+    .dash-card {
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: var(--card);
+    }
+    .dash-card.primary { border-color: var(--btn-bg); box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.2); }
+    .dash-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: auto; }
+    .dashboard-note { font-size: 0.85rem; color: var(--muted); }
     @media (max-width: 900px) {
       .navbar-brand {
         max-width: calc(100% - 60px);
@@ -1581,12 +1724,19 @@ PAGE_TEMPLATE = """
       .mobile-pre { max-height: 48vh; font-size: .875rem; }
       .documentation-sidebar { max-height: none; }
       .list-group-item { padding: .9rem .95rem; }
+      .dashboard-hero { grid-template-columns: 1fr; }
+      .dashboard-section-head { align-items: start; flex-direction: column; }
+      .dashboard-section-grid { grid-template-columns: 1fr 1fr; }
+      .dashboard-pill { min-width: 0; flex: 1 1 180px; }
     }
     @media (max-width: 576px) {
       .container-fluid, .container { padding-left: .9rem !important; padding-right: .9rem !important; }
       main.container { padding-top: 1rem !important; padding-bottom: 1.25rem !important; }
       .card-soft { border-radius: 12px; }
       .table-wrap table { min-width: 520px; }
+      .dashboard-section-grid { grid-template-columns: 1fr; }
+      .dashboard-pill-row { display: grid; grid-template-columns: 1fr 1fr; }
+      .dashboard-pill { min-width: 0; }
     }
   </style>
 </head>
@@ -1601,6 +1751,9 @@ PAGE_TEMPLATE = """
         <div class="theme-switch me-2 mb-2 mb-lg-0" aria-label="Theme selector">
           <button type="button" class="theme-btn" data-theme-choice="light">Light</button>
           <button type="button" class="theme-btn" data-theme-choice="black">Black</button>
+          <button type="button" class="theme-btn" data-theme-choice="ocean">Ocean</button>
+          <button type="button" class="theme-btn" data-theme-choice="ember">Ember</button>
+          <button type="button" class="theme-btn" data-theme-choice="forest">Forest</button>
         </div>
         {% if session.get("user") %}
         <ul class="navbar-nav me-auto mb-2 mb-lg-0">
@@ -1616,6 +1769,7 @@ PAGE_TEMPLATE = """
             <ul class="dropdown-menu dropdown-menu-end">
               <li><a class="dropdown-item" href="{{ url_for('home') }}">Home</a></li>
               <li><a class="dropdown-item" href="{{ url_for('actions') }}">Actions</a></li>
+              <li><a class="dropdown-item" href="{{ url_for('random_user_page') }}">Random User</a></li>
               <li><a class="dropdown-item" href="{{ url_for('member_activity_page') }}">Member Activity</a></li>
               <li><a class="dropdown-item" href="{{ url_for('reddit_feeds') }}">Reddit</a></li>
               <li><a class="dropdown-item" href="{{ url_for('wordpress_feeds') }}">WordPress</a></li>
@@ -1896,82 +2050,257 @@ PAGE_TEMPLATE = """
         </div>
       </div>
     {% elif page == "dashboard" %}
-      <div class="row g-3 mb-3">
-        <div class="col-12 col-md-4">
-          <div class="card card-soft p-3 h-100">
-            <p class="text-secondary small mb-1">Bot</p>
-            <p class="mb-0 fw-semibold">{{ snapshot.bot_name }}</p>
+      <div class="dashboard-shell">
+        <section class="dashboard-hero">
+          <div class="card card-soft dashboard-hero-main">
+            <div>
+              <h2>Dashboard</h2>
+              <p class="dashboard-hero-lead">Operational control for <strong>{{ selected_guild_name or snapshot.guild_id }}</strong>. Use the sections below to manage core configuration, community tools, and notification feeds.</p>
+            </div>
+            <div class="dashboard-pill-row">
+              <div class="dashboard-pill">
+                <strong>Server</strong>
+                <span>{{ selected_guild_name or snapshot.guild_id }}</span>
+              </div>
+              <div class="dashboard-pill">
+                <strong>Access</strong>
+                <span>{{ "Admin" if session.get("is_admin") else "Read-only" }}</span>
+              </div>
+              <div class="dashboard-pill">
+                <strong>Commands Enabled</strong>
+                <span>{{ command_statuses | selectattr("enabled") | list | length }}/{{ command_statuses | length }}</span>
+              </div>
+              <div class="dashboard-pill">
+                <strong>Spicy Prompts</strong>
+                <span>
+                  {% if spicy_status and spicy_status.ok %}
+                  {{ "Enabled" if spicy_status.enabled else "Disabled" }}
+                  {% else %}
+                  Unknown
+                  {% endif %}
+                </span>
+              </div>
+            </div>
+            <p class="dashboard-note">Latency: {{ snapshot.latency_ms }} ms | Actions: {{ counts.total }} total ({{ counts.success }} success, {{ counts.failed }} failed)</p>
           </div>
-        </div>
-        <div class="col-12 col-md-4">
-          <div class="card card-soft p-3 h-100">
-            <p class="text-secondary small mb-1">Spicy Prompts</p>
-            {% if spicy_status and spicy_status.ok %}
-            <p class="mb-0 fw-semibold">{% if spicy_status.enabled %}Enabled{% else %}Disabled{% endif %}</p>
-            {% if spicy_status.channel_id %}
-            <p class="small text-secondary mb-0">Channel ID: {{ spicy_status.channel_id }}</p>
-            {% endif %}
-            {% else %}
-            <p class="mb-0 fw-semibold">Unknown</p>
-            {% endif %}
+          <div class="card card-soft dashboard-hero-side">
+            <div>
+              <h3>Quick Notes</h3>
+              <p class="text-secondary">Key status details for the selected guild.</p>
+            </div>
+            <div class="dashboard-list">
+              <div class="dashboard-list-item">
+                <strong>Bot</strong>
+                <div class="text-secondary">{{ snapshot.bot_name }}</div>
+              </div>
+              <div class="dashboard-list-item">
+                <strong>Spicy Channel</strong>
+                <div class="text-secondary">
+                  {% if spicy_status and spicy_status.ok and spicy_status.channel_id %}
+                  Channel ID: {{ spicy_status.channel_id }}
+                  {% else %}
+                  Not configured
+                  {% endif %}
+                </div>
+              </div>
+              <div class="dashboard-list-item">
+                <strong>Log Channel</strong>
+                <div class="text-secondary">Set per guild in Guild Settings.</div>
+              </div>
+            </div>
           </div>
-        </div>
-        <div class="col-12 col-md-4">
-          <div class="card card-soft p-3 h-100">
-            <p class="text-secondary small mb-1">Guild</p>
-            <p class="mb-0 fw-semibold">{{ selected_guild_name or snapshot.guild_id }}</p>
+        </section>
+
+        <section class="card card-soft dashboard-section">
+          <div class="dashboard-section-head">
+            <div>
+              <h3>Core Controls</h3>
+              <p>Primary configuration pages for this guild.</p>
+            </div>
           </div>
-        </div>
-        <div class="col-12 col-md-4">
-          <div class="card card-soft p-3 h-100">
-            <p class="text-secondary small mb-1">Latency</p>
-            <p class="mb-0 fw-semibold">{{ snapshot.latency_ms }} ms</p>
+          <div class="dashboard-section-grid">
+            <div class="card dash-card primary">
+              <h3>Guild Settings</h3>
+              <p class="text-secondary">Configure bot log channels and guild-specific settings.</p>
+              <div class="dash-actions">
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('guild_settings') }}">Open Guild Settings</a>
+              </div>
+            </div>
+            <div class="card dash-card">
+              <h3>Command Permissions</h3>
+              <p class="text-secondary">Enable, disable, and restrict commands by role.</p>
+              <div class="dash-actions">
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('command_permissions') }}">Open Permissions</a>
+              </div>
+            </div>
+            <div class="card dash-card">
+              <h3>Bot Profile</h3>
+              <p class="text-secondary">Update bot display name and avatar.</p>
+              <div class="dash-actions">
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('bot_profile') }}">Open Bot Profile</a>
+              </div>
+            </div>
+            <div class="card dash-card">
+              <h3>Settings</h3>
+              <p class="text-secondary">Runtime env values and system configuration.</p>
+              <div class="dash-actions">
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('settings') }}">Open Settings</a>
+              </div>
+            </div>
           </div>
-        </div>
-      </div>
-      <div class="row g-3 mb-3">
-        <div class="col-6 col-md-4">
-          <div class="card card-soft p-3 h-100">
-            <p class="text-secondary small mb-1">Total Actions</p>
-            <p class="mb-0 fs-5 fw-bold">{{ counts.total }}</p>
+        </section>
+
+        <section class="card card-soft dashboard-section">
+          <div class="dashboard-section-head">
+            <div>
+              <h3>Community Tools</h3>
+              <p>Member activity, moderation history, and tag responses.</p>
+            </div>
           </div>
-        </div>
-        <div class="col-6 col-md-4">
-          <div class="card card-soft p-3 h-100">
-            <p class="text-secondary small mb-1">Success</p>
-            <p class="mb-0 fs-5 fw-bold text-success">{{ counts.success }}</p>
+          <div class="dashboard-section-grid">
+            <div class="card dash-card">
+              <h3>Member Activity</h3>
+              <p class="text-secondary">Top 20 members across rolling time windows.</p>
+              <div class="dash-actions">
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('member_activity_page') }}">Open Activity</a>
+              </div>
+            </div>
+            <div class="card dash-card">
+              <h3>Moderation Actions</h3>
+              <p class="text-secondary">Recent moderation events and audits.</p>
+              <div class="dash-actions">
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('actions') }}">View Actions</a>
+              </div>
+            </div>
+            <div class="card dash-card">
+              <h3>Tag Responses</h3>
+              <p class="text-secondary">Maintain command shortcut responses.</p>
+              <div class="dash-actions">
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('tag_responses') }}">Manage Tags</a>
+              </div>
+            </div>
+            <div class="card dash-card">
+              <h3>Users</h3>
+              <p class="text-secondary">Manage web GUI users and roles.</p>
+              <div class="dash-actions">
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('users') }}">Manage Users</a>
+              </div>
+            </div>
           </div>
-        </div>
-        <div class="col-6 col-md-4">
-          <div class="card card-soft p-3 h-100">
-            <p class="text-secondary small mb-1">Failed</p>
-            <p class="mb-0 fs-5 fw-bold text-danger">{{ counts.failed }}</p>
+        </section>
+
+        <section class="card card-soft dashboard-section">
+          <div class="dashboard-section-head">
+            <div>
+              <h3>Notification Feeds</h3>
+              <p>External monitors and feed routing.</p>
+            </div>
           </div>
-        </div>
-      </div>
-      <div class="card card-soft p-3">
-        <div class="d-flex justify-content-between align-items-center mb-2">
-          <h2 class="h6 mb-0">Latest Actions</h2>
-          <a href="{{ url_for('actions') }}" class="btn btn-sm btn-outline-primary">View all</a>
-        </div>
-        <div class="table-wrap">
-          <table class="table table-sm align-middle">
-            <thead><tr><th>Time (UTC)</th><th>Action</th><th>Status</th><th>Moderator</th><th>Target</th></tr></thead>
-            <tbody>
-              {% for row in actions %}
-              <tr>
-                <td class="small">{{ row.created_at }}</td>
-                <td>{{ row.action }}</td>
-                <td><span class="badge text-bg-{{ 'success' if row.status == 'success' else 'danger' }} status-pill">{{ row.status }}</span></td>
-                <td class="small">{{ row.moderator or '-' }}</td>
-                <td class="small">{{ row.target or '-' }}</td>
-              </tr>
-              {% else %}
-              <tr><td colspan="5" class="text-secondary">No actions logged yet.</td></tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        </div>
+          <div class="dashboard-section-grid">
+            <div class="card dash-card">
+              <h3>YouTube</h3>
+              <p class="text-secondary">Video and community post alerts.</p>
+              <div class="dash-actions">
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('youtube_subscriptions') }}">Open YouTube</a>
+              </div>
+            </div>
+            <div class="card dash-card">
+              <h3>Reddit</h3>
+              <p class="text-secondary">Scheduled subreddit updates.</p>
+              <div class="dash-actions">
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('reddit_feeds') }}">Open Reddit</a>
+              </div>
+            </div>
+            <div class="card dash-card">
+              <h3>WordPress</h3>
+              <p class="text-secondary">New blog post alerts.</p>
+              <div class="dash-actions">
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('wordpress_feeds') }}">Open WordPress</a>
+              </div>
+            </div>
+            <div class="card dash-card">
+              <h3>LinkedIn</h3>
+              <p class="text-secondary">Profile post notifications.</p>
+              <div class="dash-actions">
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('linkedin_feeds') }}">Open LinkedIn</a>
+              </div>
+            </div>
+            <div class="card dash-card">
+              <h3>Spicy Prompts</h3>
+              <p class="text-secondary">Repo refresh and status.</p>
+              <div class="dash-actions">
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('spicy_prompts') }}">Open Spicy Prompts</a>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="card card-soft dashboard-section">
+          <div class="dashboard-section-head">
+            <div>
+              <h3>Runtime and Admin</h3>
+              <p>Logs, observability, and docs.</p>
+            </div>
+          </div>
+          <div class="dashboard-section-grid">
+            <div class="card dash-card">
+              <h3>Logs</h3>
+              <p class="text-secondary">Container and bot logs.</p>
+              <div class="dash-actions">
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('logs') }}">Open Logs</a>
+              </div>
+            </div>
+            <div class="card dash-card">
+              <h3>Observability</h3>
+              <p class="text-secondary">Status summaries and metrics.</p>
+              <div class="dash-actions">
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('observability') }}">Open Observability</a>
+              </div>
+            </div>
+            <div class="card dash-card">
+              <h3>Status</h3>
+              <p class="text-secondary">Internal status view.</p>
+              <div class="dash-actions">
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('status_page') }}">Open Status</a>
+              </div>
+            </div>
+            <div class="card dash-card">
+              <h3>Documentation</h3>
+              <p class="text-secondary">Bot help and wiki pages.</p>
+              <div class="dash-actions">
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('documentation') }}">Open Docs</a>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="card card-soft dashboard-section">
+          <div class="dashboard-section-head">
+            <div>
+              <h3>Latest Actions</h3>
+              <p>Most recent moderation events.</p>
+            </div>
+            <a href="{{ url_for('actions') }}" class="btn btn-sm btn-outline-primary">View all</a>
+          </div>
+          <div class="table-wrap">
+            <table class="table table-sm align-middle">
+              <thead><tr><th>Time (UTC)</th><th>Action</th><th>Status</th><th>Moderator</th><th>Target</th></tr></thead>
+              <tbody>
+                {% for row in actions %}
+                <tr>
+                  <td class="small">{{ row.created_at }}</td>
+                  <td>{{ row.action }}</td>
+                  <td><span class="badge text-bg-{{ 'success' if row.status == 'success' else 'danger' }} status-pill">{{ row.status }}</span></td>
+                  <td class="small">{{ row.moderator or '-' }}</td>
+                  <td class="small">{{ row.target or '-' }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="5" class="text-secondary">No actions logged yet.</td></tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </section>
       </div>
     {% elif page == "status_admin" %}
       <div class="card card-soft p-3 mb-3">
@@ -2140,6 +2469,39 @@ PAGE_TEMPLATE = """
           </div>
         </div>
         {% endfor %}
+      </div>
+    {% elif page == "random_user" %}
+      <div class="card card-soft p-3">
+        <div class="d-flex flex-column flex-lg-row justify-content-between align-items-start gap-3 mb-3">
+          <div>
+            <h1 class="h5 mb-2">Random User Picker</h1>
+            <p class="text-secondary mb-0">Select a random member. Users picked in the last 30 days are excluded.</p>
+          </div>
+        </div>
+        <form method="post" action="{{ url_for('random_user_page') }}" class="d-flex flex-column flex-lg-row gap-2 align-items-end mb-3">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <div class="flex-grow-1">
+            <label class="form-label" for="random_role_id">Filter by role</label>
+            <select class="form-select" id="random_role_id" name="role_id">
+              {% for option in random_user_role_options %}
+              <option value="{{ option.value }}" {% if option.value == random_user_selected_role_id %}selected{% endif %}>{{ option.label }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div>
+            <button class="btn btn-primary" type="submit" {% if not session.get("is_admin") %}disabled{% endif %}>Pick Random User</button>
+          </div>
+        </form>
+        {% if random_user_result %}
+          {% if random_user_result.ok %}
+            <div class="alert alert-success">
+              Selected: <strong>{{ random_user_result.display_name }}</strong>
+            </div>
+            <p class="text-secondary mb-0">Eligible: {{ random_user_result.eligible_count }} | Excluded last 30 days: {{ random_user_result.recent_count }}</p>
+          {% else %}
+            <div class="alert alert-danger">{{ random_user_result.error }}</div>
+          {% endif %}
+        {% endif %}
       </div>
     {% elif page == "youtube" %}
       <div class="card card-soft p-3 mb-3">
@@ -2587,7 +2949,13 @@ PAGE_TEMPLATE = """
       </div>
     {% elif page == "logs" %}
       <div class="card card-soft p-3 mb-3">
-        <h1 class="h5 mb-3">Logs</h1>
+        <div class="d-flex flex-column flex-lg-row justify-content-between align-items-lg-end gap-2 mb-3">
+          <div>
+            <h1 class="h5 mb-1">Logs</h1>
+            <p class="text-secondary small mb-0">Download or preview the latest log files.</p>
+          </div>
+          <a class="btn btn-outline-primary btn-sm" href="{{ url_for('logs_download') }}">Download all logs (ZIP)</a>
+        </div>
         <form method="get" class="row g-2">
           <input type="hidden" name="_" value="1">
           <div class="col-12 col-lg-4">
@@ -3233,7 +3601,7 @@ PAGE_TEMPLATE = """
     (function () {
       const storageKey = "web_theme_choice";
       const fallbackTheme = "light";
-      const allowed = { light: true, black: true };
+      const allowed = { light: true, black: true, ocean: true, ember: true, forest: true };
 
       function setTheme(theme) {
         const selected = allowed[theme] ? theme : fallbackTheme;
@@ -3298,6 +3666,7 @@ def create_app(
     get_member_activity: Callable[[int, int | None], dict] | Callable[[int], dict] | None = None,
     get_spicy_prompt_status: Callable[[int], dict] | Callable[[int | None], dict] | None = None,
     export_member_activity: Callable[[int, int | None], dict] | Callable[[int], dict] | None = None,
+    pick_random_user: Callable[[int, int | None], dict] | Callable[[int], dict] | None = None,
     get_spicy_prompts_status: Callable[[], dict] | None = None,
     refresh_spicy_prompts: Callable[[str], dict] | None = None,
     leave_guild: Callable[[str, int], dict] | None = None,
@@ -3660,6 +4029,17 @@ def create_app(
                 return export_member_activity(guild_id)  # type: ignore[misc]
             except TypeError:
                 return {"ok": False, "error": "Member activity export callback could not be called."}
+
+    def _call_pick_random_user(guild_id: int | None, role_id: int | None = None) -> dict:
+        if guild_id is None or not callable(pick_random_user):
+            return {"ok": False, "error": "Random user picker is not configured."}
+        try:
+            return pick_random_user(guild_id, role_id)  # type: ignore[misc]
+        except TypeError:
+            try:
+                return pick_random_user(guild_id)  # type: ignore[misc]
+            except TypeError:
+                return {"ok": False, "error": "Random user picker callback could not be called."}
 
     def _call_get_spicy_prompts_status() -> dict:
         if callable(get_spicy_prompts_status):
@@ -4484,6 +4864,44 @@ def create_app(
             actions=_fetch_actions(db_path, limit=300, guild_id=selected_guild_id),
         )
 
+    @app.route("/admin/random-user", methods=["GET", "POST"])
+    @login_required
+    def random_user_page():
+        selected_guild_id, _, _ = _selected_guild_context()
+        catalog_payload = _call_get_discord_catalog(selected_guild_id)
+        role_options = [{"value": "", "label": "All members"}]
+        if isinstance(catalog_payload, dict) and catalog_payload.get("ok"):
+            for role in catalog_payload.get("roles", []) or []:
+                role_id_value = str(role.get("id") or "").strip()
+                role_name = str(role.get("name") or "").strip()
+                if not role_id_value or not role_name:
+                    continue
+                role_options.append({"value": role_id_value, "label": role_name})
+
+        selected_role_id = ""
+        result: dict | None = None
+        if request.method == "POST":
+            if not session.get("is_admin"):
+                return _reject_read_only_write("random_user_page")
+            raw_role_id = str(request.form.get("role_id", "")).strip()
+            selected_role_id = raw_role_id if raw_role_id.isdigit() else ""
+            role_id_value = int(selected_role_id) if selected_role_id else None
+            result = _call_pick_random_user(selected_guild_id, role_id_value)
+            if not isinstance(result, dict) or not result.get("ok"):
+                flash(
+                    str(result.get("error") or "Failed to pick a random user.")
+                    if isinstance(result, dict)
+                    else "Failed to pick a random user.",
+                    "danger",
+                )
+        return _render_page(
+            "random_user",
+            "Random User Picker",
+            random_user_role_options=role_options,
+            random_user_selected_role_id=selected_role_id,
+            random_user_result=result,
+        )
+
     @app.get("/admin/member-activity")
     @login_required
     def member_activity_page():
@@ -5033,6 +5451,32 @@ def create_app(
             log_preview=log_preview,
         )
 
+    @app.get("/admin/logs/download")
+    @login_required
+    def logs_download():
+        log_dir = _resolve_log_directory(db_path)
+        log_options = list(LOG_FILE_OPTIONS)
+        resolved_paths = {option: _resolve_log_path(log_dir, option) for option in log_options}
+        existing_paths = [path for path in resolved_paths.values() if path is not None and path.exists() and path.is_file()]
+        if not existing_paths:
+            flash("No log files found to download.", "danger")
+            return redirect(url_for("logs"))
+
+        archive = io.BytesIO()
+        with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for path in existing_paths:
+                try:
+                    zf.write(path, arcname=path.name)
+                except OSError:
+                    continue
+        archive.seek(0)
+        return send_file(
+            archive,
+            mimetype="application/zip",
+            as_attachment=True,
+            download_name="wickedyoda-logs.zip",
+        )
+
     @app.get("/admin/wiki")
     @login_required
     def wiki():
@@ -5548,6 +5992,7 @@ def start_web_admin(
     get_member_activity: Callable[[int, int | None], dict] | Callable[[int], dict] | None = None,
     get_spicy_prompt_status: Callable[[int], dict] | Callable[[int | None], dict] | None = None,
     export_member_activity: Callable[[int, int | None], dict] | Callable[[int], dict] | None = None,
+    pick_random_user: Callable[[int, int | None], dict] | Callable[[int], dict] | None = None,
     get_spicy_prompts_status: Callable[[], dict] | None = None,
     refresh_spicy_prompts: Callable[[str], dict] | None = None,
     leave_guild: Callable[[str, int], dict] | None = None,
@@ -5578,6 +6023,7 @@ def start_web_admin(
         get_member_activity=get_member_activity,
         get_spicy_prompt_status=get_spicy_prompt_status,
         export_member_activity=export_member_activity,
+        pick_random_user=pick_random_user,
         get_spicy_prompts_status=get_spicy_prompts_status,
         refresh_spicy_prompts=refresh_spicy_prompts,
         leave_guild=leave_guild,

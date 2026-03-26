@@ -191,6 +191,11 @@ FEED_INTERVAL_OPTIONS = {300, 600, 900, 1800, 3600, 10800, 21600}
 NOTIFICATION_LOOP_SECONDS = 60
 MEMBER_ACTIVITY_RECENT_RETENTION_DAYS = 90
 MEMBER_ACTIVITY_WEB_TOP_LIMIT = 20
+MEMBER_ACTIVITY_BACKFILL_ENABLED = env_bool("MEMBER_ACTIVITY_BACKFILL_ENABLED", False)
+MEMBER_ACTIVITY_BACKFILL_SINCE_RAW = os.getenv("MEMBER_ACTIVITY_BACKFILL_SINCE", "").strip()
+MEMBER_ACTIVITY_BACKFILL_GUILD_ID = optional_positive_int_env("MEMBER_ACTIVITY_BACKFILL_GUILD_ID")
+MEMBER_ACTIVITY_BACKFILL_PROGRESS_LOG_INTERVAL = env_int("MEMBER_ACTIVITY_BACKFILL_PROGRESS_LOG_INTERVAL", 500)
+RANDOM_USER_COOLDOWN_DAYS = 30
 LOG_RETENTION_DAYS = env_int("LOG_RETENTION_DAYS", 90)
 POPULAR_COLOR_ROLES = {
     "Red": 0xE74C3C,
@@ -334,8 +339,17 @@ COMMAND_PERMISSION_METADATA: dict[str, dict[str, str]] = {
         "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
     },
     "spicy": {"label": "/spicy", "description": "Random spicy prompt", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
+    "randomuser": {
+        "label": "/randomuser",
+        "description": "Pick a random user (30-day cooldown)",
+        "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
+    },
     "translate": {"label": "/translate", "description": "Translate text", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
-    "wikihelp": {"label": "/wikihelp", "description": "Search the game help wiki", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
+    "wikihelp": {
+        "label": "/wikihelp",
+        "description": "Search the game help wiki",
+        "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
+    },
     "color": {"label": "/color", "description": "Pick a name color role", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
     "countdown": {"label": "/countdown", "description": "Countdown to a date", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
     "leaderboard": {
@@ -621,6 +635,85 @@ def normalize_activity_timestamp(raw_value: datetime | None = None) -> datetime:
     return datetime.now(UTC)
 
 
+def parse_iso_datetime_utc(raw_value: str | datetime | None) -> datetime | None:
+    if isinstance(raw_value, datetime):
+        return normalize_activity_timestamp(raw_value)
+    candidate = str(raw_value or "").strip()
+    if not candidate:
+        return None
+    if candidate.endswith("Z"):
+        candidate = f"{candidate[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(candidate)
+    except ValueError:
+        return None
+    return normalize_activity_timestamp(parsed)
+
+
+def parse_member_activity_backfill_since(raw_value: str) -> datetime | None:
+    candidate = str(raw_value or "").strip()
+    if not candidate:
+        return None
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", candidate):
+        candidate = f"{candidate}T00:00:00+00:00"
+    parsed = parse_iso_datetime_utc(candidate)
+    if parsed is None:
+        return None
+    return parsed.replace(minute=0, second=0, microsecond=0)
+
+
+def merge_member_activity_backfill_ranges(ranges: list[tuple[datetime, datetime]]) -> list[tuple[datetime, datetime]]:
+    normalized: list[tuple[datetime, datetime]] = []
+    for start_dt, end_dt in ranges:
+        safe_start = normalize_activity_timestamp(start_dt)
+        safe_end = normalize_activity_timestamp(end_dt)
+        if safe_end <= safe_start:
+            continue
+        normalized.append((safe_start, safe_end))
+    if not normalized:
+        return []
+    normalized.sort(key=lambda item: item[0])
+    merged = [normalized[0]]
+    for start_dt, end_dt in normalized[1:]:
+        last_start, last_end = merged[-1]
+        if start_dt <= last_end:
+            merged[-1] = (last_start, max(last_end, end_dt))
+        else:
+            merged.append((start_dt, end_dt))
+    return merged
+
+
+def compute_member_activity_backfill_missing_ranges(
+    requested_since: datetime,
+    requested_until: datetime,
+    completed_ranges: list[tuple[datetime, datetime]],
+) -> list[tuple[datetime, datetime]]:
+    safe_since = normalize_activity_timestamp(requested_since)
+    safe_until = normalize_activity_timestamp(requested_until)
+    if safe_until <= safe_since:
+        return []
+    merged_ranges = merge_member_activity_backfill_ranges(completed_ranges)
+    missing: list[tuple[datetime, datetime]] = []
+    cursor = safe_since
+    for completed_start, completed_end in merged_ranges:
+        if completed_end <= safe_since:
+            continue
+        if completed_start >= safe_until:
+            break
+        clipped_start = max(completed_start, safe_since)
+        clipped_end = min(completed_end, safe_until)
+        if clipped_end <= clipped_start:
+            continue
+        if clipped_start > cursor:
+            missing.append((cursor, clipped_start))
+        cursor = max(cursor, clipped_end)
+        if cursor >= safe_until:
+            break
+    if cursor < safe_until:
+        missing.append((cursor, safe_until))
+    return missing
+
+
 def require_managed_guild_id(guild_id: int | None, *, context: str) -> int:
     try:
         safe_guild_id = int(guild_id or 0)
@@ -631,6 +724,18 @@ def require_managed_guild_id(guild_id: int | None, *, context: str) -> int:
     if MANAGED_GUILD_IDS is not None and safe_guild_id not in MANAGED_GUILD_IDS:
         raise ValueError(f"Guild {safe_guild_id} is not managed by this bot.")
     return safe_guild_id
+
+
+def is_managed_guild_id(guild_id: int | None) -> bool:
+    try:
+        safe_guild_id = int(guild_id or 0)
+    except (TypeError, ValueError):
+        return False
+    if safe_guild_id <= 0:
+        return False
+    if MANAGED_GUILD_IDS is None:
+        return True
+    return safe_guild_id in MANAGED_GUILD_IDS
 
 
 def build_member_activity_window_record(
@@ -868,7 +973,6 @@ def post_json_url(url: str, timeout_seconds: int, payload: dict, *, accept: str 
     try:
         conn.request("POST", path, body=body, headers=headers)
         response = conn.getresponse()
-        response_headers = {name.lower(): value for name, value in response.getheaders()}
         body_text = response.read().decode("utf-8", errors="ignore")
     except OSError as exc:
         raise RuntimeError(f"Request failed: {exc}") from exc
@@ -2372,6 +2476,33 @@ class ActionStore:
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS member_activity_backfill_state (
+                    guild_id INTEGER NOT NULL,
+                    since_at TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (guild_id, since_at)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS random_user_picks (
+                    guild_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    last_selected_at TEXT NOT NULL,
+                    PRIMARY KEY (guild_id, user_id)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_random_user_picks_guild_last
+                    ON random_user_picks(guild_id, last_selected_at)
+                """
+            )
+            conn.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_member_activity_summary_last_message
                     ON member_activity_summary(guild_id, last_message_at)
                 """
@@ -3338,6 +3469,99 @@ class ActionStore:
                 ).fetchall()
         return [dict(row) for row in summary_rows], [dict(row) for row in hourly_rows]
 
+    def save_member_activity_backfill_state(self, guild_id: int, since_dt: datetime, payload: dict) -> None:
+        safe_guild_id = require_managed_guild_id(guild_id, context="member activity backfill guild")
+        updated_at = datetime.now(UTC).isoformat()
+        payload_json = json.dumps(payload, separators=(",", ":"), ensure_ascii=True)
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO member_activity_backfill_state (guild_id, since_at, payload_json, updated_at)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(guild_id, since_at) DO UPDATE SET
+                        payload_json = excluded.payload_json,
+                        updated_at = excluded.updated_at
+                    """,
+                    (safe_guild_id, since_dt.isoformat(), payload_json, updated_at),
+                )
+                conn.commit()
+
+    def load_member_activity_backfill_state(self, guild_id: int, since_dt: datetime) -> dict:
+        safe_guild_id = require_managed_guild_id(guild_id, context="member activity backfill guild")
+        with self._lock:
+            with self._connect() as conn:
+                conn.row_factory = sqlite3.Row
+                row = conn.execute(
+                    """
+                    SELECT payload_json
+                    FROM member_activity_backfill_state
+                    WHERE guild_id = ? AND since_at = ?
+                    """,
+                    (safe_guild_id, since_dt.isoformat()),
+                ).fetchone()
+        if row is None:
+            return {}
+        try:
+            payload = json.loads(str(row["payload_json"]))
+        except (TypeError, json.JSONDecodeError):
+            payload = {}
+        return payload if isinstance(payload, dict) else {}
+
+    def list_member_activity_backfill_states(self, guild_id: int) -> list[dict]:
+        safe_guild_id = require_managed_guild_id(guild_id, context="member activity backfill guild")
+        with self._lock:
+            with self._connect() as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    """
+                    SELECT payload_json
+                    FROM member_activity_backfill_state
+                    WHERE guild_id = ?
+                    """,
+                    (safe_guild_id,),
+                ).fetchall()
+        payloads: list[dict] = []
+        for row in rows:
+            try:
+                payload = json.loads(str(row["payload_json"]))
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if isinstance(payload, dict):
+                payloads.append(payload)
+        return payloads
+
+    def list_recent_random_user_ids(self, guild_id: int, since_dt: datetime) -> set[int]:
+        safe_guild_id = require_managed_guild_id(guild_id, context="random user guild")
+        cutoff_iso = normalize_activity_timestamp(since_dt).isoformat()
+        with self._lock:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT user_id
+                    FROM random_user_picks
+                    WHERE guild_id = ? AND last_selected_at >= ?
+                    """,
+                    (safe_guild_id, cutoff_iso),
+                ).fetchall()
+        return {int(row[0]) for row in rows}
+
+    def record_random_user_pick(self, guild_id: int, user_id: int, selected_at: datetime) -> None:
+        safe_guild_id = require_managed_guild_id(guild_id, context="random user guild")
+        safe_selected_at = normalize_activity_timestamp(selected_at).isoformat()
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO random_user_picks (guild_id, user_id, last_selected_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(guild_id, user_id) DO UPDATE SET
+                        last_selected_at = excluded.last_selected_at
+                    """,
+                    (safe_guild_id, int(user_id), safe_selected_at),
+                )
+                conn.commit()
+
     def save_birthday(self, guild_id: int, user_id: int, username: str, month: int, day: int) -> None:
         safe_guild_id = require_managed_guild_id(guild_id, context="birthday guild")
         updated_at = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
@@ -3545,6 +3769,367 @@ def record_member_message_activity(message: discord.Message) -> bool:
         message_id=int(message.id),
         message_dt=normalize_activity_timestamp(getattr(message, "created_at", None)),
     )
+
+
+def get_member_activity_backfill_target_guild_id() -> int:
+    if MEMBER_ACTIVITY_BACKFILL_GUILD_ID is not None:
+        return MEMBER_ACTIVITY_BACKFILL_GUILD_ID
+    if GUILD_ID_CONFIGURED is not None and GUILD_ID_CONFIGURED > 0:
+        return GUILD_ID_CONFIGURED
+    if MANAGED_GUILD_IDS:
+        return sorted(MANAGED_GUILD_IDS)[0]
+    raise RuntimeError("MEMBER_ACTIVITY_BACKFILL_GUILD_ID is not set and no managed guild is configured.")
+
+
+def list_member_activity_backfill_completed_ranges(guild_id: int) -> list[tuple[datetime, datetime]]:
+    try:
+        rows = ACTION_STORE.list_member_activity_backfill_states(guild_id)
+    except Exception:
+        logger.exception("Failed to load member activity backfill state for guild %s", guild_id)
+        return []
+    ranges: list[tuple[datetime, datetime]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("status") or "").strip().lower() != "completed":
+            continue
+        since_dt = parse_iso_datetime_utc(row.get("since_at"))
+        until_dt = parse_iso_datetime_utc(row.get("until_at"))
+        if since_dt is None or until_dt is None or until_dt <= since_dt:
+            continue
+        ranges.append((since_dt, until_dt))
+    return ranges
+
+
+def _can_backfill_message_channel(channel, bot_member: discord.Member | None) -> bool:
+    if bot_member is None:
+        return False
+    try:
+        permissions = channel.permissions_for(bot_member)
+    except Exception:
+        return False
+    return bool(getattr(permissions, "view_channel", False) and getattr(permissions, "read_message_history", False))
+
+
+async def iter_member_activity_backfill_channels(guild: discord.Guild):
+    bot_user_id = bot.user.id if bot.user else None
+    bot_member = guild.me or (guild.get_member(bot_user_id) if bot_user_id else None)
+    if bot_member is None and bot_user_id:
+        try:
+            bot_member = await guild.fetch_member(bot_user_id)
+        except (discord.Forbidden, discord.HTTPException):
+            logger.warning(
+                "Member activity backfill could not fetch bot member record for guild %s; channel discovery may be incomplete.",
+                guild.id,
+            )
+    seen_channel_ids: set[int] = set()
+
+    for channel in guild.text_channels:
+        if channel.id in seen_channel_ids or not _can_backfill_message_channel(channel, bot_member):
+            continue
+        seen_channel_ids.add(channel.id)
+        yield channel
+
+        try:
+            async for thread in channel.archived_threads(limit=None):
+                if thread.id in seen_channel_ids or not _can_backfill_message_channel(thread, bot_member):
+                    continue
+                seen_channel_ids.add(thread.id)
+                yield thread
+        except (discord.Forbidden, discord.HTTPException):
+            logger.warning("Skipping archived public threads for channel %s during member activity backfill.", channel.id)
+
+        try:
+            async for thread in channel.archived_threads(limit=None, private=True, joined=True):
+                if thread.id in seen_channel_ids or not _can_backfill_message_channel(thread, bot_member):
+                    continue
+                seen_channel_ids.add(thread.id)
+                yield thread
+        except (TypeError, discord.Forbidden, discord.HTTPException):
+            pass
+
+    for forum in guild.forums:
+        if not _can_backfill_message_channel(forum, bot_member):
+            continue
+        try:
+            async for thread in forum.archived_threads(limit=None):
+                if thread.id in seen_channel_ids or not _can_backfill_message_channel(thread, bot_member):
+                    continue
+                seen_channel_ids.add(thread.id)
+                yield thread
+        except (TypeError, discord.Forbidden, discord.HTTPException):
+            pass
+
+        try:
+            async for thread in forum.archived_threads(limit=None, private=True, joined=True):
+                if thread.id in seen_channel_ids or not _can_backfill_message_channel(thread, bot_member):
+                    continue
+                seen_channel_ids.add(thread.id)
+                yield thread
+        except (TypeError, discord.Forbidden, discord.HTTPException):
+            pass
+
+    for thread in guild.threads:
+        if thread.id in seen_channel_ids or not _can_backfill_message_channel(thread, bot_member):
+            continue
+        seen_channel_ids.add(thread.id)
+        yield thread
+
+
+async def member_activity_backfill_job() -> None:
+    if not MEMBER_ACTIVITY_BACKFILL_ENABLED:
+        return
+    since_dt = parse_member_activity_backfill_since(MEMBER_ACTIVITY_BACKFILL_SINCE_RAW)
+    if since_dt is None:
+        logger.warning("Member activity backfill is enabled but MEMBER_ACTIVITY_BACKFILL_SINCE is empty or invalid; skipping.")
+        return
+    try:
+        guild_id = get_member_activity_backfill_target_guild_id()
+    except RuntimeError as exc:
+        logger.warning("Invalid member activity backfill configuration: %s", exc)
+        return
+
+    guild = bot.get_guild(guild_id)
+    if guild is None:
+        logger.warning("Member activity backfill skipped: guild %s is not available to the bot.", guild_id)
+        return
+    if not is_managed_guild_id(guild.id):
+        logger.warning("Member activity backfill skipped: guild %s is outside MANAGED_GUILD_IDS.", guild.id)
+        return
+
+    state = ACTION_STORE.load_member_activity_backfill_state(guild.id, since_dt)
+    previous_status = str(state.get("status") or "").strip().lower()
+    previous_covered_by_existing_ranges = bool(state.get("covered_by_existing_ranges"))
+    previous_channels_scanned = int(state.get("channels_scanned") or 0)
+    previous_messages_processed = int(state.get("messages_processed") or 0)
+    if previous_status == "completed" and (
+        previous_covered_by_existing_ranges or previous_channels_scanned > 0 or previous_messages_processed > 0
+    ):
+        logger.info(
+            "Member activity backfill already completed for guild %s since %s; skipping.",
+            guild.id,
+            since_dt.isoformat(),
+        )
+        return
+
+    until_dt = normalize_activity_timestamp(datetime.now(UTC))
+    completed_ranges = list_member_activity_backfill_completed_ranges(guild.id)
+    missing_ranges = compute_member_activity_backfill_missing_ranges(since_dt, until_dt, completed_ranges)
+    if not missing_ranges:
+        status = {
+            "status": "completed",
+            "guild_id": guild.id,
+            "guild_name": guild.name,
+            "since_at": since_dt.isoformat(),
+            "until_at": until_dt.isoformat(),
+            "started_at": datetime.now(UTC).isoformat(),
+            "completed_at": datetime.now(UTC).isoformat(),
+            "channels_scanned": 0,
+            "messages_processed": 0,
+            "last_channel_id": 0,
+            "last_error": "",
+            "covered_by_existing_ranges": True,
+        }
+        ACTION_STORE.save_member_activity_backfill_state(guild.id, since_dt, status)
+        logger.info(
+            "Member activity backfill skipped for guild %s (%s): requested range %s to %s is already indexed.",
+            guild.name,
+            guild.id,
+            since_dt.isoformat(),
+            until_dt.isoformat(),
+        )
+        return
+
+    status = {
+        "status": "running",
+        "guild_id": guild.id,
+        "guild_name": guild.name,
+        "since_at": since_dt.isoformat(),
+        "until_at": until_dt.isoformat(),
+        "started_at": datetime.now(UTC).isoformat(),
+        "completed_at": "",
+        "channels_scanned": int(state.get("channels_scanned") or 0),
+        "messages_processed": int(state.get("messages_processed") or 0),
+        "last_channel_id": int(state.get("last_channel_id") or 0),
+        "last_error": "",
+        "covered_by_existing_ranges": False,
+    }
+    ACTION_STORE.save_member_activity_backfill_state(guild.id, since_dt, status)
+    logger.info(
+        "Member activity backfill started for guild %s (%s) since %s with %s missing range(s).",
+        guild.name,
+        guild.id,
+        since_dt.isoformat(),
+        len(missing_ranges),
+    )
+
+    channels_scanned = 0
+    messages_processed = 0
+    try:
+        async for channel in iter_member_activity_backfill_channels(guild):
+            channels_scanned += 1
+            status["channels_scanned"] = channels_scanned
+            status["last_channel_id"] = int(channel.id)
+            ACTION_STORE.save_member_activity_backfill_state(guild.id, since_dt, status)
+            logger.info(
+                "Member activity backfill scanning channel %s (%s) [%s].",
+                getattr(channel, "name", channel.id),
+                channel.id,
+                channels_scanned,
+            )
+            try:
+                for range_index, (range_start, range_end) in enumerate(missing_ranges, start=1):
+                    logger.info(
+                        "Member activity backfill scanning missing range %s/%s for channel %s (%s): %s to %s",
+                        range_index,
+                        len(missing_ranges),
+                        getattr(channel, "name", channel.id),
+                        channel.id,
+                        range_start.isoformat(),
+                        range_end.isoformat(),
+                    )
+                    async for message in channel.history(limit=None, after=range_start, before=range_end, oldest_first=True):
+                        if message.author.bot or message.guild is None:
+                            continue
+                        changed = record_member_message_activity(message)
+                        if changed:
+                            messages_processed += 1
+                            if messages_processed % MEMBER_ACTIVITY_BACKFILL_PROGRESS_LOG_INTERVAL == 0:
+                                status["messages_processed"] = messages_processed
+                                ACTION_STORE.save_member_activity_backfill_state(guild.id, since_dt, status)
+                                logger.info(
+                                    "Member activity backfill progress for guild %s: %s messages processed.",
+                                    guild.id,
+                                    messages_processed,
+                                )
+            except (discord.Forbidden, discord.HTTPException):
+                logger.warning(
+                    "Member activity backfill could not read channel %s (%s); continuing.",
+                    getattr(channel, "name", channel.id),
+                    channel.id,
+                )
+                continue
+
+        if channels_scanned <= 0:
+            status.update(
+                {
+                    "status": "failed",
+                    "completed_at": datetime.now(UTC).isoformat(),
+                    "channels_scanned": channels_scanned,
+                    "messages_processed": messages_processed,
+                    "last_error": "No readable channels were discovered for backfill.",
+                }
+            )
+            ACTION_STORE.save_member_activity_backfill_state(guild.id, since_dt, status)
+            logger.warning(
+                "Member activity backfill found no readable channels for guild %s (%s); not marking run complete.",
+                guild.name,
+                guild.id,
+            )
+            return
+
+        status.update(
+            {
+                "status": "completed",
+                "completed_at": datetime.now(UTC).isoformat(),
+                "channels_scanned": channels_scanned,
+                "messages_processed": messages_processed,
+                "last_error": "",
+            }
+        )
+        ACTION_STORE.save_member_activity_backfill_state(guild.id, since_dt, status)
+        logger.info(
+            "Member activity backfill completed for guild %s (%s): channels=%s messages=%s since=%s until=%s",
+            guild.name,
+            guild.id,
+            channels_scanned,
+            messages_processed,
+            since_dt.isoformat(),
+            until_dt.isoformat(),
+        )
+    except Exception as exc:
+        status.update(
+            {
+                "status": "failed",
+                "completed_at": datetime.now(UTC).isoformat(),
+                "channels_scanned": channels_scanned,
+                "messages_processed": messages_processed,
+                "last_error": str(exc),
+            }
+        )
+        ACTION_STORE.save_member_activity_backfill_state(guild.id, since_dt, status)
+        logger.exception("Member activity backfill failed for guild %s (%s).", guild.name, guild.id)
+
+
+async def _collect_random_user_candidates(guild: discord.Guild, role: discord.Role | None) -> list[discord.Member]:
+    if role is not None:
+        candidates = [member for member in role.members if isinstance(member, discord.Member)]
+    else:
+        candidates = list(guild.members)
+    if candidates:
+        return candidates
+    try:
+        members = [member async for member in guild.fetch_members(limit=None)]
+        if role is not None:
+            role_ids = {role.id}
+            members = [member for member in members if role_ids.intersection({r.id for r in member.roles})]
+        return members
+    except (discord.Forbidden, discord.HTTPException):
+        return []
+
+
+async def pick_random_user_for_guild(guild: discord.Guild, role: discord.Role | None = None) -> dict:
+    cutoff_dt = datetime.now(UTC) - timedelta(days=RANDOM_USER_COOLDOWN_DAYS)
+    recent_ids = ACTION_STORE.list_recent_random_user_ids(guild.id, cutoff_dt)
+    candidates = await _collect_random_user_candidates(guild, role)
+    filtered = [member for member in candidates if not member.bot and member.id not in recent_ids]
+    if not filtered:
+        total_candidates = len([member for member in candidates if not member.bot])
+        return {
+            "ok": False,
+            "error": "No eligible members found for this selection window.",
+            "eligible_count": 0,
+            "candidate_count": total_candidates,
+            "recent_count": len(recent_ids),
+        }
+    selected = secrets.choice(filtered)
+    ACTION_STORE.record_random_user_pick(guild.id, selected.id, datetime.now(UTC))
+    return {
+        "ok": True,
+        "user_id": selected.id,
+        "display_name": selected.display_name,
+        "mention": selected.mention,
+        "eligible_count": len(filtered),
+        "candidate_count": len([member for member in candidates if not member.bot]),
+        "recent_count": len(recent_ids),
+    }
+
+
+def run_web_pick_random_user(guild_id: int, role_id: int | None = None) -> dict:
+    guild = bot.get_guild(int(guild_id)) if "bot" in globals() else None
+    if guild is None:
+        return {"ok": False, "error": "Guild is not currently available to this bot."}
+    role: discord.Role | None = None
+    if isinstance(role_id, int) and role_id > 0:
+        role = guild.get_role(int(role_id))
+        if role is None:
+            return {"ok": False, "error": "Selected role is not available in this guild."}
+    try:
+        future = asyncio.run_coroutine_threadsafe(pick_random_user_for_guild(guild, role), bot.loop)
+        result = future.result(timeout=60)
+    except Exception as exc:
+        logger.exception("Failed to pick random user via web admin: %s", exc)
+        return {"ok": False, "error": f"Failed to pick random user: {exc}"}
+    if result.get("ok"):
+        record_action_safe(
+            action="random_user",
+            status="success",
+            moderator="web_admin",
+            target=str(result.get("display_name") or result.get("user_id")),
+            reason=f"role_id={role_id or 'all'}",
+            guild=str(guild_id),
+        )
+    return result
 
 
 def list_member_activity_top_window(
@@ -4253,6 +4838,7 @@ class ModerationBot(commands.Bot):
         self.web_thread: threading.Thread | None = None
         self.web_tls_thread: threading.Thread | None = None
         self.youtube_monitor_task: asyncio.Task | None = None
+        self.member_activity_backfill_task: asyncio.Task | None = None
         self.web_channel_options: list[dict] = []
         self.web_role_options: list[dict] = []
 
@@ -4304,6 +4890,7 @@ class ModerationBot(commands.Bot):
                 export_member_activity=run_web_export_member_activity,
                 get_spicy_prompts_status=run_web_get_spicy_prompts_status,
                 refresh_spicy_prompts=run_web_refresh_spicy_prompts,
+                pick_random_user=run_web_pick_random_user,
                 leave_guild=run_web_leave_guild,
                 request_restart=run_web_request_restart,
                 resolve_youtube_subscription=lambda source_url: resolve_youtube_subscription_seed(source_url),
@@ -4346,6 +4933,7 @@ class ModerationBot(commands.Bot):
                         export_member_activity=run_web_export_member_activity,
                         get_spicy_prompts_status=run_web_get_spicy_prompts_status,
                         refresh_spicy_prompts=run_web_refresh_spicy_prompts,
+                        pick_random_user=run_web_pick_random_user,
                         leave_guild=run_web_leave_guild,
                         request_restart=run_web_request_restart,
                         resolve_youtube_subscription=lambda source_url: resolve_youtube_subscription_seed(source_url),
@@ -4387,6 +4975,11 @@ class ModerationBot(commands.Bot):
                 f"{self.user.mention if self.user else 'Bot'} is online and ready.",
                 color=discord.Color.green(),
                 guild_id=GUILD_ID,
+            )
+        if MEMBER_ACTIVITY_BACKFILL_ENABLED and (self.member_activity_backfill_task is None or self.member_activity_backfill_task.done()):
+            self.member_activity_backfill_task = asyncio.create_task(
+                member_activity_backfill_job(),
+                name="member-activity-backfill",
             )
         ACTION_STORE.record(
             action="bot_started",
@@ -5463,6 +6056,37 @@ async def spicy(interaction: discord.Interaction) -> None:
     )
 
 
+@bot.tree.command(name="randomuser", description="Pick a random user (no repeats within 30 days).")
+@app_commands.describe(role="Optional role to pick from")
+async def randomuser(interaction: discord.Interaction, role: discord.Role | None = None) -> None:
+    if not await ensure_interaction_command_access(interaction, "randomuser"):
+        await log_interaction(interaction, action="randomuser", reason="permission denied", success=False)
+        return
+    if interaction.guild is None:
+        await reply_ephemeral(interaction, "This command can only be used in a server.")
+        await log_interaction(interaction, action="randomuser", reason="no guild", success=False)
+        return
+    try:
+        result = await pick_random_user_for_guild(interaction.guild, role)
+    except Exception as exc:
+        await reply_ephemeral(interaction, f"Failed to pick a random user: {exc}")
+        await log_interaction(interaction, action="randomuser", reason=str(exc), success=False)
+        return
+    if not result.get("ok"):
+        await reply_ephemeral(interaction, str(result.get("error") or "No eligible members found."))
+        await log_interaction(interaction, action="randomuser", reason="no eligible members", success=False)
+        return
+    selection_text = f"Random pick: {result.get('mention')}."
+    meta = f"Eligible: {result.get('eligible_count')} | Excluded last {RANDOM_USER_COOLDOWN_DAYS}d: {result.get('recent_count')}"
+    await reply_ephemeral(interaction, f"{selection_text}\n{meta}")
+    await log_interaction(
+        interaction,
+        action="randomuser",
+        reason=truncate_log_text(str(result.get("display_name") or result.get("user_id"))),
+        success=True,
+    )
+
+
 @bot.tree.command(name="translate", description="Translate text to a selected language.")
 @app_commands.describe(text="Text to translate", language="Target language")
 @app_commands.choices(language=TRANSLATE_LANGUAGE_OPTIONS)
@@ -6026,7 +6650,7 @@ async def help_command(interaction: discord.Interaction) -> None:
     message = (
         "**Wicked Yoda's Little Helper**\n"
         "General: `/ping`, `/sayhi`, `/happy`, `/cat`, `/meme`, `/dadjoke`, `/help`\n"
-        "Fun: `/eightball`, `/coinflip`, `/roll`, `/choose`, `/roastme`, `/compliment`, `/wisdom`, `/gif`, `/poll`, `/questionoftheday`, `/spicy`, `/translate`, `/wikihelp`, `/countdown`, `/trivia`, `/wouldyourather`, `/rps`, `/guess`\n"
+        "Fun: `/eightball`, `/coinflip`, `/roll`, `/choose`, `/roastme`, `/compliment`, `/wisdom`, `/gif`, `/poll`, `/questionoftheday`, `/spicy`, `/randomuser`, `/translate`, `/wikihelp`, `/countdown`, `/trivia`, `/wouldyourather`, `/rps`, `/guess`\n"
         "Community: `/birthday set`, `/birthday view`, `/birthday upcoming`, `/birthday remove`, `/leaderboard`\n"
         "Utilities: `/shorten`, `/expand`, `/uptime`, `/logs`, `/stats`\n"
         "Tags: `/tags`, `/tag <name>`, message tags like `!rules`\n"
