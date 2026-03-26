@@ -5000,6 +5000,7 @@ class ModerationBot(commands.Bot):
             "latency_ms": latency_ms,
             "commands_synced": self.commands_synced,
             "started_at": self.started_at.isoformat(),
+            "server_time": datetime.now().astimezone().isoformat(timespec="seconds"),
         }
 
     def build_web_channel_options(self, guild_id: int) -> list[dict]:
@@ -6023,7 +6024,10 @@ async def spicy(interaction: discord.Interaction) -> None:
         await log_interaction(interaction, action="spicy", reason="guild config missing", success=False)
         return
     if interaction.channel.id != locked_channel_id:
-        await reply_ephemeral(interaction, f"This command can only be used in <#{locked_channel_id}>.")
+        await reply_ephemeral(
+            interaction,
+            f"Sorry, this prompt can't be used in this channel. Please use <#{locked_channel_id}>.",
+        )
         await log_interaction(interaction, action="spicy", reason=f"wrong channel: {interaction.channel.id}", success=False)
         return
     if not channel_supports_spicy_prompts(interaction.channel):
