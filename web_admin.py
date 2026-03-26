@@ -2843,7 +2843,13 @@ PAGE_TEMPLATE = """
       </div>
     {% elif page == "logs" %}
       <div class="card card-soft p-3 mb-3">
-        <h1 class="h5 mb-3">Logs</h1>
+        <div class="d-flex flex-column flex-lg-row justify-content-between align-items-lg-end gap-2 mb-3">
+          <div>
+            <h1 class="h5 mb-1">Logs</h1>
+            <p class="text-secondary small mb-0">Download or preview the latest log files.</p>
+          </div>
+          <a class="btn btn-outline-primary btn-sm" href="{{ url_for('logs_download') }}">Download all logs (ZIP)</a>
+        </div>
         <form method="get" class="row g-2">
           <input type="hidden" name="_" value="1">
           <div class="col-12 col-lg-4">
@@ -5287,6 +5293,32 @@ def create_app(
             selected_log=selected_log,
             log_options=log_options,
             log_preview=log_preview,
+        )
+
+    @app.get("/admin/logs/download")
+    @login_required
+    def logs_download():
+        log_dir = _resolve_log_directory(db_path)
+        log_options = list(LOG_FILE_OPTIONS)
+        resolved_paths = {option: _resolve_log_path(log_dir, option) for option in log_options}
+        existing_paths = [path for path in resolved_paths.values() if path is not None and path.exists() and path.is_file()]
+        if not existing_paths:
+            flash("No log files found to download.", "danger")
+            return redirect(url_for("logs"))
+
+        archive = io.BytesIO()
+        with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for path in existing_paths:
+                try:
+                    zf.write(path, arcname=path.name)
+                except OSError:
+                    continue
+        archive.seek(0)
+        return send_file(
+            archive,
+            mimetype="application/zip",
+            as_attachment=True,
+            download_name="wickedyoda-logs.zip",
         )
 
     @app.get("/admin/wiki")
