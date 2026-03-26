@@ -1557,6 +1557,80 @@ PAGE_TEMPLATE = """
     .documentation-link.active .small {
       color: rgba(255, 255, 255, 0.78) !important;
     }
+    .dashboard-shell { display: grid; gap: 18px; }
+    .dashboard-hero {
+      display: grid;
+      grid-template-columns: 2fr 1fr;
+      gap: 18px;
+    }
+    .dashboard-hero-main,
+    .dashboard-hero-side,
+    .dashboard-section,
+    .dash-card {
+      position: relative;
+      overflow: hidden;
+    }
+    .dashboard-hero-main::before,
+    .dashboard-hero-side::before,
+    .dash-card::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(120deg, rgba(37, 99, 235, 0.12), transparent);
+      opacity: 0.7;
+      pointer-events: none;
+    }
+    .dashboard-hero-main h2,
+    .dashboard-hero-side h3,
+    .dashboard-section-head h3,
+    .dash-card h3 {
+      margin: 0;
+      font-size: 1.05rem;
+      font-weight: 700;
+    }
+    .dashboard-hero-main p,
+    .dashboard-hero-side p,
+    .dash-card p {
+      margin: 0;
+    }
+    .dashboard-hero-main {
+      padding: 22px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    .dashboard-hero-lead { font-size: 0.95rem; color: var(--muted); }
+    .dashboard-pill-row { display: flex; flex-wrap: wrap; gap: 12px; }
+    .dashboard-pill {
+      background: rgba(15, 23, 42, 0.08);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 10px 12px;
+      min-width: 140px;
+      flex: 1 1 160px;
+    }
+    .dashboard-pill strong { display: block; font-size: 0.78rem; color: var(--muted); font-weight: 600; }
+    .dashboard-pill span { display: block; font-weight: 700; }
+    .dashboard-hero-side { padding: 22px; display: flex; flex-direction: column; gap: 16px; }
+    .dashboard-list { display: grid; gap: 12px; }
+    .dashboard-list-item { padding: 12px; border-radius: 12px; border: 1px solid var(--border); background: rgba(15, 23, 42, 0.06); }
+    .dashboard-list-item strong { display: block; margin-bottom: 4px; }
+    .dashboard-section { padding: 18px; }
+    .dashboard-section-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 12px; }
+    .dashboard-section-head p { color: var(--muted); font-size: 0.9rem; }
+    .dashboard-section-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; }
+    .dash-card {
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: var(--card);
+    }
+    .dash-card.primary { border-color: var(--btn-bg); box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.2); }
+    .dash-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: auto; }
+    .dashboard-note { font-size: 0.85rem; color: var(--muted); }
     @media (max-width: 900px) {
       .navbar-brand {
         max-width: calc(100% - 60px);
@@ -1581,12 +1655,19 @@ PAGE_TEMPLATE = """
       .mobile-pre { max-height: 48vh; font-size: .875rem; }
       .documentation-sidebar { max-height: none; }
       .list-group-item { padding: .9rem .95rem; }
+      .dashboard-hero { grid-template-columns: 1fr; }
+      .dashboard-section-head { align-items: start; flex-direction: column; }
+      .dashboard-section-grid { grid-template-columns: 1fr 1fr; }
+      .dashboard-pill { min-width: 0; flex: 1 1 180px; }
     }
     @media (max-width: 576px) {
       .container-fluid, .container { padding-left: .9rem !important; padding-right: .9rem !important; }
       main.container { padding-top: 1rem !important; padding-bottom: 1.25rem !important; }
       .card-soft { border-radius: 12px; }
       .table-wrap table { min-width: 520px; }
+      .dashboard-section-grid { grid-template-columns: 1fr; }
+      .dashboard-pill-row { display: grid; grid-template-columns: 1fr 1fr; }
+      .dashboard-pill { min-width: 0; }
     }
   </style>
 </head>
@@ -1896,82 +1977,257 @@ PAGE_TEMPLATE = """
         </div>
       </div>
     {% elif page == "dashboard" %}
-      <div class="row g-3 mb-3">
-        <div class="col-12 col-md-4">
-          <div class="card card-soft p-3 h-100">
-            <p class="text-secondary small mb-1">Bot</p>
-            <p class="mb-0 fw-semibold">{{ snapshot.bot_name }}</p>
+      <div class="dashboard-shell">
+        <section class="dashboard-hero">
+          <div class="card card-soft dashboard-hero-main">
+            <div>
+              <h2>Dashboard</h2>
+              <p class="dashboard-hero-lead">Operational control for <strong>{{ selected_guild_name or snapshot.guild_id }}</strong>. Use the sections below to manage core configuration, community tools, and notification feeds.</p>
+            </div>
+            <div class="dashboard-pill-row">
+              <div class="dashboard-pill">
+                <strong>Server</strong>
+                <span>{{ selected_guild_name or snapshot.guild_id }}</span>
+              </div>
+              <div class="dashboard-pill">
+                <strong>Access</strong>
+                <span>{{ "Admin" if session.get("is_admin") else "Read-only" }}</span>
+              </div>
+              <div class="dashboard-pill">
+                <strong>Commands Enabled</strong>
+                <span>{{ command_statuses | selectattr("enabled") | list | length }}/{{ command_statuses | length }}</span>
+              </div>
+              <div class="dashboard-pill">
+                <strong>Spicy Prompts</strong>
+                <span>
+                  {% if spicy_status and spicy_status.ok %}
+                  {{ "Enabled" if spicy_status.enabled else "Disabled" }}
+                  {% else %}
+                  Unknown
+                  {% endif %}
+                </span>
+              </div>
+            </div>
+            <p class="dashboard-note">Latency: {{ snapshot.latency_ms }} ms | Actions: {{ counts.total }} total ({{ counts.success }} success, {{ counts.failed }} failed)</p>
           </div>
-        </div>
-        <div class="col-12 col-md-4">
-          <div class="card card-soft p-3 h-100">
-            <p class="text-secondary small mb-1">Spicy Prompts</p>
-            {% if spicy_status and spicy_status.ok %}
-            <p class="mb-0 fw-semibold">{% if spicy_status.enabled %}Enabled{% else %}Disabled{% endif %}</p>
-            {% if spicy_status.channel_id %}
-            <p class="small text-secondary mb-0">Channel ID: {{ spicy_status.channel_id }}</p>
-            {% endif %}
-            {% else %}
-            <p class="mb-0 fw-semibold">Unknown</p>
-            {% endif %}
+          <div class="card card-soft dashboard-hero-side">
+            <div>
+              <h3>Quick Notes</h3>
+              <p class="text-secondary">Key status details for the selected guild.</p>
+            </div>
+            <div class="dashboard-list">
+              <div class="dashboard-list-item">
+                <strong>Bot</strong>
+                <div class="text-secondary">{{ snapshot.bot_name }}</div>
+              </div>
+              <div class="dashboard-list-item">
+                <strong>Spicy Channel</strong>
+                <div class="text-secondary">
+                  {% if spicy_status and spicy_status.ok and spicy_status.channel_id %}
+                  Channel ID: {{ spicy_status.channel_id }}
+                  {% else %}
+                  Not configured
+                  {% endif %}
+                </div>
+              </div>
+              <div class="dashboard-list-item">
+                <strong>Log Channel</strong>
+                <div class="text-secondary">Set per guild in Guild Settings.</div>
+              </div>
+            </div>
           </div>
-        </div>
-        <div class="col-12 col-md-4">
-          <div class="card card-soft p-3 h-100">
-            <p class="text-secondary small mb-1">Guild</p>
-            <p class="mb-0 fw-semibold">{{ selected_guild_name or snapshot.guild_id }}</p>
+        </section>
+
+        <section class="card card-soft dashboard-section">
+          <div class="dashboard-section-head">
+            <div>
+              <h3>Core Controls</h3>
+              <p>Primary configuration pages for this guild.</p>
+            </div>
           </div>
-        </div>
-        <div class="col-12 col-md-4">
-          <div class="card card-soft p-3 h-100">
-            <p class="text-secondary small mb-1">Latency</p>
-            <p class="mb-0 fw-semibold">{{ snapshot.latency_ms }} ms</p>
+          <div class="dashboard-section-grid">
+            <div class="card dash-card primary">
+              <h3>Guild Settings</h3>
+              <p class="text-secondary">Configure bot log channels and guild-specific settings.</p>
+              <div class="dash-actions">
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('guild_settings') }}">Open Guild Settings</a>
+              </div>
+            </div>
+            <div class="card dash-card">
+              <h3>Command Permissions</h3>
+              <p class="text-secondary">Enable, disable, and restrict commands by role.</p>
+              <div class="dash-actions">
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('command_permissions') }}">Open Permissions</a>
+              </div>
+            </div>
+            <div class="card dash-card">
+              <h3>Bot Profile</h3>
+              <p class="text-secondary">Update bot display name and avatar.</p>
+              <div class="dash-actions">
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('bot_profile') }}">Open Bot Profile</a>
+              </div>
+            </div>
+            <div class="card dash-card">
+              <h3>Settings</h3>
+              <p class="text-secondary">Runtime env values and system configuration.</p>
+              <div class="dash-actions">
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('settings') }}">Open Settings</a>
+              </div>
+            </div>
           </div>
-        </div>
-      </div>
-      <div class="row g-3 mb-3">
-        <div class="col-6 col-md-4">
-          <div class="card card-soft p-3 h-100">
-            <p class="text-secondary small mb-1">Total Actions</p>
-            <p class="mb-0 fs-5 fw-bold">{{ counts.total }}</p>
+        </section>
+
+        <section class="card card-soft dashboard-section">
+          <div class="dashboard-section-head">
+            <div>
+              <h3>Community Tools</h3>
+              <p>Member activity, moderation history, and tag responses.</p>
+            </div>
           </div>
-        </div>
-        <div class="col-6 col-md-4">
-          <div class="card card-soft p-3 h-100">
-            <p class="text-secondary small mb-1">Success</p>
-            <p class="mb-0 fs-5 fw-bold text-success">{{ counts.success }}</p>
+          <div class="dashboard-section-grid">
+            <div class="card dash-card">
+              <h3>Member Activity</h3>
+              <p class="text-secondary">Top 20 members across rolling time windows.</p>
+              <div class="dash-actions">
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('member_activity_page') }}">Open Activity</a>
+              </div>
+            </div>
+            <div class="card dash-card">
+              <h3>Moderation Actions</h3>
+              <p class="text-secondary">Recent moderation events and audits.</p>
+              <div class="dash-actions">
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('actions') }}">View Actions</a>
+              </div>
+            </div>
+            <div class="card dash-card">
+              <h3>Tag Responses</h3>
+              <p class="text-secondary">Maintain command shortcut responses.</p>
+              <div class="dash-actions">
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('tag_responses') }}">Manage Tags</a>
+              </div>
+            </div>
+            <div class="card dash-card">
+              <h3>Users</h3>
+              <p class="text-secondary">Manage web GUI users and roles.</p>
+              <div class="dash-actions">
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('users') }}">Manage Users</a>
+              </div>
+            </div>
           </div>
-        </div>
-        <div class="col-6 col-md-4">
-          <div class="card card-soft p-3 h-100">
-            <p class="text-secondary small mb-1">Failed</p>
-            <p class="mb-0 fs-5 fw-bold text-danger">{{ counts.failed }}</p>
+        </section>
+
+        <section class="card card-soft dashboard-section">
+          <div class="dashboard-section-head">
+            <div>
+              <h3>Notification Feeds</h3>
+              <p>External monitors and feed routing.</p>
+            </div>
           </div>
-        </div>
-      </div>
-      <div class="card card-soft p-3">
-        <div class="d-flex justify-content-between align-items-center mb-2">
-          <h2 class="h6 mb-0">Latest Actions</h2>
-          <a href="{{ url_for('actions') }}" class="btn btn-sm btn-outline-primary">View all</a>
-        </div>
-        <div class="table-wrap">
-          <table class="table table-sm align-middle">
-            <thead><tr><th>Time (UTC)</th><th>Action</th><th>Status</th><th>Moderator</th><th>Target</th></tr></thead>
-            <tbody>
-              {% for row in actions %}
-              <tr>
-                <td class="small">{{ row.created_at }}</td>
-                <td>{{ row.action }}</td>
-                <td><span class="badge text-bg-{{ 'success' if row.status == 'success' else 'danger' }} status-pill">{{ row.status }}</span></td>
-                <td class="small">{{ row.moderator or '-' }}</td>
-                <td class="small">{{ row.target or '-' }}</td>
-              </tr>
-              {% else %}
-              <tr><td colspan="5" class="text-secondary">No actions logged yet.</td></tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        </div>
+          <div class="dashboard-section-grid">
+            <div class="card dash-card">
+              <h3>YouTube</h3>
+              <p class="text-secondary">Video and community post alerts.</p>
+              <div class="dash-actions">
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('youtube_subscriptions') }}">Open YouTube</a>
+              </div>
+            </div>
+            <div class="card dash-card">
+              <h3>Reddit</h3>
+              <p class="text-secondary">Scheduled subreddit updates.</p>
+              <div class="dash-actions">
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('reddit_feeds') }}">Open Reddit</a>
+              </div>
+            </div>
+            <div class="card dash-card">
+              <h3>WordPress</h3>
+              <p class="text-secondary">New blog post alerts.</p>
+              <div class="dash-actions">
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('wordpress_feeds') }}">Open WordPress</a>
+              </div>
+            </div>
+            <div class="card dash-card">
+              <h3>LinkedIn</h3>
+              <p class="text-secondary">Profile post notifications.</p>
+              <div class="dash-actions">
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('linkedin_feeds') }}">Open LinkedIn</a>
+              </div>
+            </div>
+            <div class="card dash-card">
+              <h3>Spicy Prompts</h3>
+              <p class="text-secondary">Repo refresh and status.</p>
+              <div class="dash-actions">
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('spicy_prompts') }}">Open Spicy Prompts</a>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="card card-soft dashboard-section">
+          <div class="dashboard-section-head">
+            <div>
+              <h3>Runtime and Admin</h3>
+              <p>Logs, observability, and docs.</p>
+            </div>
+          </div>
+          <div class="dashboard-section-grid">
+            <div class="card dash-card">
+              <h3>Logs</h3>
+              <p class="text-secondary">Container and bot logs.</p>
+              <div class="dash-actions">
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('logs') }}">Open Logs</a>
+              </div>
+            </div>
+            <div class="card dash-card">
+              <h3>Observability</h3>
+              <p class="text-secondary">Status summaries and metrics.</p>
+              <div class="dash-actions">
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('observability') }}">Open Observability</a>
+              </div>
+            </div>
+            <div class="card dash-card">
+              <h3>Status</h3>
+              <p class="text-secondary">Internal status view.</p>
+              <div class="dash-actions">
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('status_page') }}">Open Status</a>
+              </div>
+            </div>
+            <div class="card dash-card">
+              <h3>Documentation</h3>
+              <p class="text-secondary">Bot help and wiki pages.</p>
+              <div class="dash-actions">
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('documentation') }}">Open Docs</a>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="card card-soft dashboard-section">
+          <div class="dashboard-section-head">
+            <div>
+              <h3>Latest Actions</h3>
+              <p>Most recent moderation events.</p>
+            </div>
+            <a href="{{ url_for('actions') }}" class="btn btn-sm btn-outline-primary">View all</a>
+          </div>
+          <div class="table-wrap">
+            <table class="table table-sm align-middle">
+              <thead><tr><th>Time (UTC)</th><th>Action</th><th>Status</th><th>Moderator</th><th>Target</th></tr></thead>
+              <tbody>
+                {% for row in actions %}
+                <tr>
+                  <td class="small">{{ row.created_at }}</td>
+                  <td>{{ row.action }}</td>
+                  <td><span class="badge text-bg-{{ 'success' if row.status == 'success' else 'danger' }} status-pill">{{ row.status }}</span></td>
+                  <td class="small">{{ row.moderator or '-' }}</td>
+                  <td class="small">{{ row.target or '-' }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="5" class="text-secondary">No actions logged yet.</td></tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </section>
       </div>
     {% elif page == "status_admin" %}
       <div class="card card-soft p-3 mb-3">
