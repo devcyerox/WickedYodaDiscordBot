@@ -173,6 +173,10 @@ TRANSLATE_TIMEOUT_SECONDS = env_int("TRANSLATE_TIMEOUT_SECONDS", 12)
 WIKI_SEARCH_ENABLED = env_bool("WIKI_SEARCH_ENABLED", True)
 WIKI_SEARCH_URL = os.getenv("WIKI_SEARCH_URL", "").strip()
 WIKI_SEARCH_TIMEOUT_SECONDS = env_int("WIKI_SEARCH_TIMEOUT_SECONDS", 12)
+OLLAMA_ENABLED = env_bool("OLLAMA_ENABLED", False)
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "").strip().rstrip("/")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1").strip() or "llama3.1"
+OLLAMA_TIMEOUT_SECONDS = env_int("OLLAMA_TIMEOUT_SECONDS", 30)
 SPICY_PROMPTS_ENABLED = env_bool("SPICY_PROMPTS_ENABLED", True)
 SPICY_PROMPTS_REPO_URL = os.getenv(
     "SPICY_PROMPTS_REPO_URL",
@@ -339,6 +343,7 @@ COMMAND_PERMISSION_METADATA: dict[str, dict[str, str]] = {
         "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
     },
     "spicy": {"label": "/spicy", "description": "Random spicy prompt", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
+    "ollama": {"label": "/ollama", "description": "Ask the Ollama model", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
     "randomuser": {
         "label": "/randomuser",
         "description": "Pick a random user (30-day cooldown)",
@@ -1175,6 +1180,28 @@ def translate_text(text: str, target_language: str) -> str:
         if translated:
             return translated
     raise RuntimeError("Translation API did not return translated text.")
+
+
+def call_ollama(prompt: str) -> str:
+    if not OLLAMA_BASE_URL:
+        raise RuntimeError("OLLAMA_BASE_URL is not configured.")
+    url = f"{OLLAMA_BASE_URL}/api/generate"
+    payload = {"model": OLLAMA_MODEL, "prompt": prompt, "stream": False}
+    status, _, body_text = post_json_url(
+        url,
+        payload,
+        timeout_seconds=OLLAMA_TIMEOUT_SECONDS,
+    )
+    if status >= 400:
+        raise RuntimeError(f"Ollama API returned HTTP {status}.")
+    try:
+        response = json.loads(body_text)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("Ollama returned invalid JSON.") from exc
+    output = str(response.get("response", "")).strip()
+    if not output:
+        raise RuntimeError("Ollama returned an empty response.")
+    return output
 
 
 def search_wiki_help(query: str) -> list[str]:
@@ -6190,6 +6217,35 @@ async def wikihelp(interaction: discord.Interaction, query: str) -> None:
     await log_interaction(interaction, action="wikihelp", reason=truncate_log_text(query), success=True)
 
 
+@bot.tree.command(name="ollama", description="Ask the configured Ollama model.")
+@app_commands.describe(prompt="Question or prompt to send to the model")
+async def ollama(interaction: discord.Interaction, prompt: str) -> None:
+    if not await ensure_interaction_command_access(interaction, "ollama"):
+        await log_interaction(interaction, action="ollama", reason="permission denied", success=False)
+        return
+    if not OLLAMA_ENABLED:
+        await reply_ephemeral(interaction, "Ollama integration is disabled.")
+        await log_interaction(interaction, action="ollama", reason="disabled", success=False)
+        return
+    if not prompt.strip():
+        await reply_ephemeral(interaction, "Please provide a prompt.")
+        await log_interaction(interaction, action="ollama", reason="missing prompt", success=False)
+        return
+    try:
+        response_text = await asyncio.to_thread(call_ollama, prompt)
+    except Exception as exc:
+        await reply_ephemeral(interaction, f"Ollama request failed: {exc}")
+        await log_interaction(interaction, action="ollama", reason=str(exc), success=False)
+        return
+    if len(response_text) > 1900:
+        response_text = response_text[:1897] + "..."
+    await interaction.response.send_message(
+        f"**Ollama ({OLLAMA_MODEL}):**\n{response_text}",
+        ephemeral=COMMAND_RESPONSES_EPHEMERAL,
+    )
+    await log_interaction(interaction, action="ollama", reason=f"model={OLLAMA_MODEL}", success=True)
+
+
 @bot.tree.command(name="color", description="Choose your name color from the configured list.")
 @app_commands.describe(choice="Color role to apply, or clear to remove")
 async def color(interaction: discord.Interaction, choice: str | None = None) -> None:
@@ -6684,7 +6740,7 @@ async def help_command(interaction: discord.Interaction) -> None:
     message = (
         "**Wicked Yoda's Little Helper**\n"
         "General: `/ping`, `/sayhi`, `/happy`, `/cat`, `/meme`, `/dadjoke`, `/help`\n"
-        "Fun: `/eightball`, `/coinflip`, `/roll`, `/choose`, `/roastme`, `/compliment`, `/wisdom`, `/gif`, `/poll`, `/questionoftheday`, `/spicy` (supports `tag`), `/randomuser`, `/translate`, `/wikihelp`, `/countdown`, `/trivia`, `/wouldyourather`, `/rps`, `/guess`\n"
+        "Fun: `/eightball`, `/coinflip`, `/roll`, `/choose`, `/roastme`, `/compliment`, `/wisdom`, `/gif`, `/poll`, `/questionoftheday`, `/spicy` (supports `tag`), `/randomuser`, `/translate`, `/wikihelp`, `/ollama`, `/countdown`, `/trivia`, `/wouldyourather`, `/rps`, `/guess`\n"
         "Community: `/birthday set`, `/birthday view`, `/birthday upcoming`, `/birthday remove`, `/leaderboard`\n"
         "Utilities: `/shorten`, `/expand`, `/uptime`, `/logs`, `/stats`\n"
         "Tags: `/tags`, `/tag <name>`, message tags like `!rules`\n"
