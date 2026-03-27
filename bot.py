@@ -6054,7 +6054,7 @@ async def spicy(interaction: discord.Interaction, tag: str | None = None) -> Non
     if interaction.channel.id != locked_channel_id:
         await reply_ephemeral(
             interaction,
-            f"Sorry, this prompt can't be used in this channel. Please use <#{locked_channel_id}>.",
+            f"Incorrect channel for /spicy. Please use <#{locked_channel_id}>.",
         )
         await log_interaction(interaction, action="spicy", reason=f"wrong channel: {interaction.channel.id}", success=False)
         return
