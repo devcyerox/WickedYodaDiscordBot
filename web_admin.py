@@ -68,6 +68,10 @@ SETTINGS_FIELD_ORDER = [
     "TRANSLATE_API_URL",
     "TRANSLATE_API_KEY",
     "TRANSLATE_TIMEOUT_SECONDS",
+    "OLLAMA_ENABLED",
+    "OLLAMA_BASE_URL",
+    "OLLAMA_MODEL",
+    "OLLAMA_TIMEOUT_SECONDS",
     "WIKI_SEARCH_ENABLED",
     "WIKI_SEARCH_URL",
     "WIKI_SEARCH_TIMEOUT_SECONDS",
@@ -131,6 +135,8 @@ SETTINGS_DROPDOWN_OPTIONS: dict[str, tuple[str, ...]] = {
     "YOUTUBE_REQUEST_TIMEOUT_SECONDS": ("8", "10", "12", "15", "30"),
     "SPICY_PROMPTS_REQUEST_TIMEOUT_SECONDS": ("8", "10", "12", "15", "30"),
     "TRANSLATE_TIMEOUT_SECONDS": ("5", "8", "10", "12", "15", "30"),
+    "OLLAMA_ENABLED": BOOL_SELECT_OPTIONS,
+    "OLLAMA_TIMEOUT_SECONDS": ("10", "15", "30", "45", "60", "90", "120"),
     "WIKI_SEARCH_ENABLED": BOOL_SELECT_OPTIONS,
     "WIKI_SEARCH_TIMEOUT_SECONDS": ("5", "8", "10", "12", "15", "30"),
     "SPICY_PROMPTS_REFRESH_INTERVAL_HOURS": ("0", "6", "12", "24", "48", "72"),
@@ -1762,6 +1768,7 @@ PAGE_TEMPLATE = """
         </ul>
 
         <div class="nav-utility d-flex align-items-center gap-2">
+          <span class="badge text-bg-light border">{{ snapshot.server_time if snapshot and snapshot.server_time else "n/a" }}</span>
           <div class="dropdown">
             <button class="btn btn-outline-secondary btn-sm dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
               Menu
@@ -3858,6 +3865,8 @@ def create_app(
 
     def _render_page(page: str, title: str, **kwargs):
         selected_guild_id, guild_options, selected_guild_name = _selected_guild_context()
+        if "snapshot" not in kwargs:
+            kwargs["snapshot"] = get_bot_snapshot() if callable(get_bot_snapshot) else {}
         return render_template_string(
             PAGE_TEMPLATE,
             page=page,
