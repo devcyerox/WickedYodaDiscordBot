@@ -1962,29 +1962,39 @@ PAGE_TEMPLATE = """
               Menu
             </button>
             <ul class="dropdown-menu dropdown-menu-end">
+              <li><h6 class="dropdown-header">Core</h6></li>
               <li><a class="dropdown-item" href="{{ url_for('home') }}">Home</a></li>
               <li><a class="dropdown-item" href="{{ url_for('dashboard') }}">Dashboard</a></li>
               <li><a class="dropdown-item" href="{{ url_for('overview') }}">Overview</a></li>
-              <li><a class="dropdown-item" href="{{ url_for('actions') }}">Actions</a></li>
+              <li><a class="dropdown-item" href="{{ url_for('guilds_page') }}">Servers</a></li>
+              <li><a class="dropdown-item" href="{{ url_for('guild_settings') }}">Guild Settings</a></li>
+              <li><a class="dropdown-item" href="{{ url_for('command_permissions') }}">Command Permissions</a></li>
+              <li><a class="dropdown-item" href="{{ url_for('bot_profile') }}">Bot Profile</a></li>
               <li><a class="dropdown-item" href="{{ url_for('random_user_page') }}">Random User</a></li>
+              <li><hr class="dropdown-divider"></li>
+              <li><h6 class="dropdown-header">Community</h6></li>
               <li><a class="dropdown-item" href="{{ url_for('member_activity_page') }}">Member Activity</a></li>
+              <li><a class="dropdown-item" href="{{ url_for('actions') }}">Actions</a></li>
+              <li><a class="dropdown-item" href="{{ url_for('tag_responses') }}">Tag Responses</a></li>
+              <li><a class="dropdown-item" href="{{ url_for('spicy_prompts') }}">Spicy Prompts</a></li>
+              <li><hr class="dropdown-divider"></li>
+              <li><h6 class="dropdown-header">Feeds</h6></li>
+              <li><a class="dropdown-item" href="{{ url_for('youtube_subscriptions') }}">YouTube</a></li>
               <li><a class="dropdown-item" href="{{ url_for('reddit_feeds') }}">Reddit</a></li>
               <li><a class="dropdown-item" href="{{ url_for('wordpress_feeds') }}">WordPress</a></li>
               <li><a class="dropdown-item" href="{{ url_for('linkedin_feeds') }}">LinkedIn</a></li>
-              <li><a class="dropdown-item" href="{{ url_for('youtube_subscriptions') }}">YouTube</a></li>
-              <li><a class="dropdown-item" href="{{ url_for('spicy_prompts') }}">Spicy Prompts</a></li>
-              <li><a class="dropdown-item" href="{{ url_for('status_page') }}">Status</a></li>
+              <li><hr class="dropdown-divider"></li>
+              <li><h6 class="dropdown-header">Uptime</h6></li>
               <li><a class="dropdown-item" href="{{ url_for('uptime_monitors_page') }}">Uptime Monitors</a></li>
-              <li><a class="dropdown-item" href="{{ url_for('logs') }}">Logs</a></li>
-              <li><a class="dropdown-item" href="{{ url_for('documentation') }}">Documentation</a></li>
-              <li><a class="dropdown-item" href="{{ url_for('account') }}">Account</a></li>
+              <li><a class="dropdown-item" href="{{ url_for('status_page') }}">Status</a></li>
+              <li><hr class="dropdown-divider"></li>
+              <li><h6 class="dropdown-header">Admin</h6></li>
               <li><a class="dropdown-item" href="{{ url_for('users') }}">Users</a></li>
-              <li><a class="dropdown-item" href="{{ url_for('observability') }}">Observability</a></li>
-              <li><a class="dropdown-item" href="{{ url_for('bot_profile') }}">Bot Profile</a></li>
-              <li><a class="dropdown-item" href="{{ url_for('guild_settings') }}">Guild Settings</a></li>
-              <li><a class="dropdown-item" href="{{ url_for('command_permissions') }}">Command Permissions</a></li>
-              <li><a class="dropdown-item" href="{{ url_for('tag_responses') }}">Tag Responses</a></li>
-              <li><a class="dropdown-item" href="{{ url_for('settings') }}">Settings</a></li>
+              <li><a class="dropdown-item" href="{{ url_for('account') }}">Account</a></li>
+              <li><a class="dropdown-item" href="{{ url_for('settings') }}">Settings (Global)</a></li>
+              <li><a class="dropdown-item" href="{{ url_for('observability') }}">Observability (Global)</a></li>
+              <li><a class="dropdown-item" href="{{ url_for('logs') }}">Logs (Global)</a></li>
+              <li><a class="dropdown-item" href="{{ url_for('documentation') }}">Documentation (Global)</a></li>
               {% if restart_enabled %}
               <li><hr class="dropdown-divider"></li>
               <li>
@@ -3845,6 +3855,7 @@ PAGE_TEMPLATE = """
     {% elif page == "settings" %}
       <div class="card card-soft p-3">
         <h1 class="h5 mb-3">Runtime Settings</h1>
+        <p class="text-secondary small mb-3">These settings apply globally to the bot runtime, not a single guild.</p>
         <form method="post" action="{{ url_for('settings_save') }}">
           <div class="row g-3">
             {% for item in settings %}
