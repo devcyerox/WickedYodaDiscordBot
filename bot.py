@@ -9,10 +9,13 @@ import logging
 import os
 import re
 import secrets
+import socket
 import sqlite3
 import tempfile
 import threading
+import time
 import urllib.parse
+import urllib.request
 import zipfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -192,6 +195,11 @@ UPTIME_STATUS_TIMEOUT_SECONDS = env_int("UPTIME_STATUS_TIMEOUT_SECONDS", 8)
 WEB_RESTART_ENABLED = env_bool("WEB_RESTART_ENABLED", False)
 WEB_AVATAR_MAX_UPLOAD_BYTES = max(1024, env_int("WEB_AVATAR_MAX_UPLOAD_BYTES", 2 * 1024 * 1024))
 FEED_INTERVAL_OPTIONS = {300, 600, 900, 1800, 3600, 10800, 21600}
+UPTIME_MONITOR_INTERVAL_OPTIONS = {30, 60, 120, 300, 600, 900, 1800, 3600}
+UPTIME_MONITOR_DEFAULT_INTERVAL_SECONDS = env_int("UPTIME_MONITOR_DEFAULT_INTERVAL_SECONDS", 60)
+UPTIME_MONITOR_DEFAULT_TIMEOUT_SECONDS = env_int("UPTIME_MONITOR_DEFAULT_TIMEOUT_SECONDS", 8)
+UPTIME_MONITOR_TIMEOUT_MIN_SECONDS = 3
+UPTIME_MONITOR_TIMEOUT_MAX_SECONDS = 30
 NOTIFICATION_LOOP_SECONDS = 60
 MEMBER_ACTIVITY_RECENT_RETENTION_DAYS = 90
 MEMBER_ACTIVITY_WEB_TOP_LIMIT = 20
@@ -389,6 +397,7 @@ COMMAND_PERMISSION_METADATA: dict[str, dict[str, str]] = {
     "shorten": {"label": "/shorten", "description": "Create short URL", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
     "expand": {"label": "/expand", "description": "Expand short URL", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
     "uptime": {"label": "/uptime", "description": "Uptime monitor summary", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
+    "monitor": {"label": "/monitor", "description": "Service monitor status", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
     "logs": {"label": "/logs", "description": "Read recent error logs", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR},
     "stats": {
         "label": "/stats",
@@ -599,6 +608,28 @@ def normalize_feed_interval_seconds(value: str | int | None, default: int = 300)
         if parsed in FEED_INTERVAL_OPTIONS:
             return parsed
     return default
+
+
+def normalize_monitor_interval_seconds(value: str | int | None, default: int | None = None) -> int:
+    resolved_default = UPTIME_MONITOR_DEFAULT_INTERVAL_SECONDS if default is None else default
+    if isinstance(value, int):
+        return value if value in UPTIME_MONITOR_INTERVAL_OPTIONS else resolved_default
+    candidate = str(value or "").strip()
+    if candidate.isdigit():
+        parsed = int(candidate)
+        if parsed in UPTIME_MONITOR_INTERVAL_OPTIONS:
+            return parsed
+    return resolved_default
+
+
+def normalize_monitor_timeout_seconds(value: str | int | None, default: int | None = None) -> int:
+    resolved_default = UPTIME_MONITOR_DEFAULT_TIMEOUT_SECONDS if default is None else default
+    if isinstance(value, int):
+        timeout_value = value
+    else:
+        candidate = str(value or "").strip()
+        timeout_value = int(candidate) if candidate.isdigit() else resolved_default
+    return max(UPTIME_MONITOR_TIMEOUT_MIN_SECONDS, min(timeout_value, UPTIME_MONITOR_TIMEOUT_MAX_SECONDS))
 
 
 def normalize_command_permission_rule(raw_rule: dict | None) -> dict[str, str | list[int]]:
@@ -860,6 +891,10 @@ if WIKI_SEARCH_TIMEOUT_SECONDS <= 0:
     raise RuntimeError("WIKI_SEARCH_TIMEOUT_SECONDS must be a positive integer.")
 if UPTIME_STATUS_TIMEOUT_SECONDS <= 0:
     raise RuntimeError("UPTIME_STATUS_TIMEOUT_SECONDS must be a positive integer.")
+if UPTIME_MONITOR_DEFAULT_INTERVAL_SECONDS not in UPTIME_MONITOR_INTERVAL_OPTIONS:
+    raise RuntimeError("UPTIME_MONITOR_DEFAULT_INTERVAL_SECONDS must be one of the allowed interval options.")
+if not (UPTIME_MONITOR_TIMEOUT_MIN_SECONDS <= UPTIME_MONITOR_DEFAULT_TIMEOUT_SECONDS <= UPTIME_MONITOR_TIMEOUT_MAX_SECONDS):
+    raise RuntimeError("UPTIME_MONITOR_DEFAULT_TIMEOUT_SECONDS must be within the allowed timeout range.")
 
 intents = discord.Intents.default()
 intents.guilds = True
@@ -878,6 +913,44 @@ def normalize_target_url(raw_url: str) -> str:
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError("Invalid URL. Use a valid http(s) URL.")
     return urllib.parse.urlunparse(parsed)
+
+
+def parse_tcp_target(raw_value: str) -> tuple[str, int]:
+    value = raw_value.strip()
+    if value.startswith("tcp://"):
+        value = value[6:]
+    if "/" in value:
+        value = value.split("/", 1)[0]
+    if ":" not in value:
+        raise ValueError("TCP targets must be in host:port format.")
+    host, port_text = value.rsplit(":", 1)
+    host = host.strip()
+    port_text = port_text.strip()
+    if not host:
+        raise ValueError("TCP target must include a host.")
+    if not port_text.isdigit():
+        raise ValueError("TCP target port must be numeric.")
+    port = int(port_text)
+    if port <= 0 or port > 65535:
+        raise ValueError("TCP target port must be between 1 and 65535.")
+    return host, port
+
+
+def check_http_endpoint(url: str, timeout_seconds: int) -> tuple[bool, int, str]:
+    start = time.monotonic()
+    request = urllib.request.Request(url, method="GET", headers={"User-Agent": "WickedYodaBot/1.0"})
+    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+        status = int(response.status)
+    elapsed_ms = int((time.monotonic() - start) * 1000)
+    return 200 <= status < 400, elapsed_ms, f"HTTP {status}"
+
+
+def check_tcp_endpoint(host: str, port: int, timeout_seconds: int) -> tuple[bool, int, str]:
+    start = time.monotonic()
+    with socket.create_connection((host, port), timeout=timeout_seconds):
+        pass
+    elapsed_ms = int((time.monotonic() - start) * 1000)
+    return True, elapsed_ms, "Connected"
 
 
 def normalize_wordpress_site_url(raw_url: str) -> str:
@@ -2452,6 +2525,7 @@ class ActionStore:
                     bot_log_channel_id INTEGER,
                     spicy_prompts_enabled INTEGER NOT NULL DEFAULT 0,
                     spicy_prompts_channel_id INTEGER,
+                    uptime_alert_channel_id INTEGER,
                     color_role_ids_json TEXT NOT NULL DEFAULT "[]",
                     updated_at TEXT NOT NULL
                 )
@@ -2461,11 +2535,37 @@ class ActionStore:
             guild_settings_migrations = {
                 "spicy_prompts_enabled": "ALTER TABLE guild_settings ADD COLUMN spicy_prompts_enabled INTEGER NOT NULL DEFAULT 0",
                 "spicy_prompts_channel_id": "ALTER TABLE guild_settings ADD COLUMN spicy_prompts_channel_id INTEGER",
+                "uptime_alert_channel_id": "ALTER TABLE guild_settings ADD COLUMN uptime_alert_channel_id INTEGER",
                 "color_role_ids_json": "ALTER TABLE guild_settings ADD COLUMN color_role_ids_json TEXT NOT NULL DEFAULT '[]'",
             }
             for column, statement in guild_settings_migrations.items():
                 if column not in guild_settings_columns:
                     conn.execute(statement)
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS uptime_monitors (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guild_id INTEGER NOT NULL,
+                    name TEXT NOT NULL,
+                    monitor_type TEXT NOT NULL,
+                    target TEXT NOT NULL,
+                    interval_seconds INTEGER NOT NULL DEFAULT 60,
+                    timeout_seconds INTEGER NOT NULL DEFAULT 8,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    alert_channel_id INTEGER,
+                    last_status TEXT,
+                    last_checked_at TEXT,
+                    last_change_at TEXT,
+                    last_error TEXT,
+                    last_latency_ms INTEGER,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_uptime_monitors_guild ON uptime_monitors(guild_id)"
+            )
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS member_activity_summary (
@@ -2864,6 +2964,65 @@ class ActionStore:
                 )
                 conn.commit()
 
+    def list_uptime_monitors(self, guild_id: int | None = None, enabled_only: bool = False) -> list[dict]:
+        query = """
+            SELECT id, guild_id, name, monitor_type, target, interval_seconds, timeout_seconds, enabled,
+                   alert_channel_id, last_status, last_checked_at, last_change_at, last_error, last_latency_ms,
+                   created_at, updated_at
+            FROM uptime_monitors
+        """
+        params: list[object] = []
+        conditions: list[str] = []
+        if guild_id is not None:
+            conditions.append("guild_id = ?")
+            params.append(int(guild_id))
+        if enabled_only:
+            conditions.append("enabled = 1")
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+        query += " ORDER BY id ASC"
+        with self._lock:
+            with self._connect() as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(query, tuple(params)).fetchall()
+        return [dict(row) for row in rows]
+
+    def update_uptime_monitor_state(
+        self,
+        monitor_id: int,
+        *,
+        last_status: str,
+        last_checked_at: str,
+        last_change_at: str | None,
+        last_error: str | None,
+        last_latency_ms: int | None,
+    ) -> None:
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    UPDATE uptime_monitors
+                    SET
+                        last_status = ?,
+                        last_checked_at = ?,
+                        last_change_at = COALESCE(?, last_change_at),
+                        last_error = ?,
+                        last_latency_ms = ?,
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        last_status,
+                        last_checked_at,
+                        last_change_at,
+                        last_error,
+                        last_latency_ms,
+                        datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S"),
+                        monitor_id,
+                    ),
+                )
+                conn.commit()
+
     def replace_spicy_prompt_catalog(self, catalog: dict) -> dict:
         repo_url = str(catalog.get("repo_url", "")).strip()
         repo_branch = str(catalog.get("repo_branch", "")).strip()
@@ -3161,7 +3320,7 @@ class ActionStore:
                 conn.row_factory = sqlite3.Row
                 row = conn.execute(
                     """
-                    SELECT guild_id, bot_log_channel_id, spicy_prompts_enabled, spicy_prompts_channel_id, color_role_ids_json
+                    SELECT guild_id, bot_log_channel_id, spicy_prompts_enabled, spicy_prompts_channel_id, uptime_alert_channel_id, color_role_ids_json
                     FROM guild_settings
                     WHERE guild_id = ?
                     """,
@@ -3173,6 +3332,7 @@ class ActionStore:
                 "bot_log_channel_id": None,
                 "spicy_prompts_enabled": 0,
                 "spicy_prompts_channel_id": None,
+                "uptime_alert_channel_id": None,
                 "color_role_ids": [],
             }
         color_role_ids_raw = "[]"
@@ -3183,6 +3343,7 @@ class ActionStore:
             "bot_log_channel_id": int(row["bot_log_channel_id"]) if row["bot_log_channel_id"] else None,
             "spicy_prompts_enabled": int(row["spicy_prompts_enabled"] or 0),
             "spicy_prompts_channel_id": int(row["spicy_prompts_channel_id"]) if row["spicy_prompts_channel_id"] else None,
+            "uptime_alert_channel_id": int(row["uptime_alert_channel_id"]) if row["uptime_alert_channel_id"] else None,
             "color_role_ids": json.loads(str(color_role_ids_raw)),
         }
 
@@ -3193,6 +3354,7 @@ class ActionStore:
         bot_log_channel_id: int | None,
         spicy_prompts_enabled: bool | None = None,
         spicy_prompts_channel_id: int | None = None,
+        uptime_alert_channel_id: int | None = None,
         color_role_ids: list[int] | None = None,
     ) -> dict[str, int | None]:
         now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
@@ -3201,6 +3363,8 @@ class ActionStore:
             spicy_prompts_enabled = bool(int(current.get("spicy_prompts_enabled", 0) or 0))
         if spicy_prompts_channel_id is None and current.get("spicy_prompts_channel_id") is not None:
             spicy_prompts_channel_id = int(current.get("spicy_prompts_channel_id", 0) or 0)
+        if uptime_alert_channel_id is None and current.get("uptime_alert_channel_id") is not None:
+            uptime_alert_channel_id = int(current.get("uptime_alert_channel_id", 0) or 0)
         if color_role_ids is None:
             color_role_ids = [int(value) for value in (current.get("color_role_ids") or []) if int(value) > 0]
         with self._lock:
@@ -3208,13 +3372,14 @@ class ActionStore:
                 conn.execute(
                     """
                     INSERT INTO guild_settings (
-                        guild_id, bot_log_channel_id, spicy_prompts_enabled, spicy_prompts_channel_id, color_role_ids_json, updated_at
+                        guild_id, bot_log_channel_id, spicy_prompts_enabled, spicy_prompts_channel_id, uptime_alert_channel_id, color_role_ids_json, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(guild_id) DO UPDATE SET
                         bot_log_channel_id = excluded.bot_log_channel_id,
                         spicy_prompts_enabled = excluded.spicy_prompts_enabled,
                         spicy_prompts_channel_id = excluded.spicy_prompts_channel_id,
+                        uptime_alert_channel_id = excluded.uptime_alert_channel_id,
                         color_role_ids_json = excluded.color_role_ids_json,
                         updated_at = excluded.updated_at
                     """,
@@ -3223,6 +3388,7 @@ class ActionStore:
                         bot_log_channel_id,
                         1 if spicy_prompts_enabled else 0,
                         spicy_prompts_channel_id,
+                        uptime_alert_channel_id,
                         json.dumps(sorted({int(value) for value in (color_role_ids or []) if int(value) > 0})),
                         now,
                     ),
@@ -4611,11 +4777,13 @@ def run_web_save_guild_settings(payload: dict, _actor_email: str, guild_id: int)
     has_spicy_enabled = "spicy_prompts_enabled" in payload
     raw_spicy_channel_id = str(payload.get("spicy_prompts_channel_id", "")).strip()
     raw_spicy_enabled = str(payload.get("spicy_prompts_enabled", "")).strip().lower()
+    raw_uptime_channel_id = str(payload.get("uptime_alert_channel_id", "")).strip()
     color_role_names = payload.get("color_role_names", [])
     color_role_ids_payload = payload.get("color_role_ids", [])
     bot_log_channel_id: int | None
     spicy_prompts_channel_id: int | None
     spicy_prompts_enabled: bool | None
+    uptime_alert_channel_id: int | None
     if not raw_channel_id:
         bot_log_channel_id = None
     elif raw_channel_id.isdigit():
@@ -4633,6 +4801,12 @@ def run_web_save_guild_settings(payload: dict, _actor_email: str, guild_id: int)
     spicy_prompts_enabled = raw_spicy_enabled in {"1", "true", "yes", "on"} if has_spicy_enabled else None
     if spicy_prompts_enabled and spicy_prompts_channel_id is None:
         return {"ok": False, "error": "Spicy Prompts requires a configured Discord channel."}
+    if not raw_uptime_channel_id:
+        uptime_alert_channel_id = None
+    elif raw_uptime_channel_id.isdigit():
+        uptime_alert_channel_id = int(raw_uptime_channel_id)
+    else:
+        return {"ok": False, "error": "Uptime alert channel ID must be numeric."}
 
     parsed_role_ids: list[int] = []
     if isinstance(color_role_ids_payload, list):
@@ -4660,6 +4834,7 @@ def run_web_save_guild_settings(payload: dict, _actor_email: str, guild_id: int)
             bot_log_channel_id=bot_log_channel_id,
             spicy_prompts_enabled=spicy_prompts_enabled,
             spicy_prompts_channel_id=spicy_prompts_channel_id,
+            uptime_alert_channel_id=uptime_alert_channel_id,
             color_role_ids=merged_ids,
         )
     except Exception as exc:
@@ -5179,6 +5354,7 @@ class ModerationBot(commands.Bot):
                 await self.poll_reddit_feeds()
                 await self.poll_wordpress_feeds()
                 await self.poll_linkedin_feeds()
+                await self.poll_uptime_monitors()
                 if LOG_RETENTION_DAYS > 0:
                     prune_log_directory(LOG_DIR, LOG_RETENTION_DAYS)
             except Exception as exc:
@@ -5528,6 +5704,114 @@ class ModerationBot(commands.Bot):
             last_published_at=str(latest.get("published_at", "")) if latest else None,
         )
 
+    async def poll_uptime_monitors(self) -> None:
+        monitors = ACTION_STORE.list_uptime_monitors(enabled_only=True)
+        if not monitors:
+            return
+        for monitor in monitors:
+            await self._process_uptime_monitor(monitor)
+
+    async def _process_uptime_monitor(self, monitor: dict) -> None:
+        monitor_id = int(monitor.get("id", 0))
+        guild_id = int(monitor.get("guild_id", 0))
+        name = str(monitor.get("name", "")).strip() or "Monitor"
+        monitor_type = str(monitor.get("monitor_type", "")).strip().lower()
+        target = str(monitor.get("target", "")).strip()
+        if monitor_id <= 0 or guild_id <= 0 or not target:
+            return
+        if not monitor_due(monitor.get("last_checked_at"), monitor.get("interval_seconds")):
+            return
+
+        timeout_seconds = normalize_monitor_timeout_seconds(monitor.get("timeout_seconds"))
+        checked_at = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
+        previous_status = str(monitor.get("last_status") or "unknown").lower()
+        status = "down"
+        latency_ms: int | None = None
+        detail = ""
+        error_text: str | None = None
+        try:
+            if monitor_type == "http":
+                ok, latency_ms, detail = await asyncio.to_thread(check_http_endpoint, target, timeout_seconds)
+            elif monitor_type == "tcp":
+                host, port = parse_tcp_target(target)
+                ok, latency_ms, detail = await asyncio.to_thread(check_tcp_endpoint, host, port, timeout_seconds)
+            else:
+                raise ValueError("Unsupported monitor type.")
+            status = "up" if ok else "down"
+            if not ok:
+                error_text = detail
+        except Exception as exc:
+            status = "down"
+            error_text = str(exc)
+            detail = error_text or "Check failed"
+
+        status_changed = previous_status in {"up", "down"} and status != previous_status
+        change_at = checked_at if status_changed else None
+        ACTION_STORE.update_uptime_monitor_state(
+            monitor_id,
+            last_status=status,
+            last_checked_at=checked_at,
+            last_change_at=change_at,
+            last_error=error_text,
+            last_latency_ms=latency_ms,
+        )
+
+        if status_changed:
+            await self._notify_uptime_monitor_change(
+                guild_id=guild_id,
+                name=name,
+                target=target,
+                monitor_type=monitor_type,
+                status=status,
+                detail=detail,
+                latency_ms=latency_ms,
+                alert_channel_id=int(monitor.get("alert_channel_id", 0) or 0),
+            )
+
+    async def _notify_uptime_monitor_change(
+        self,
+        *,
+        guild_id: int,
+        name: str,
+        target: str,
+        monitor_type: str,
+        status: str,
+        detail: str,
+        latency_ms: int | None,
+        alert_channel_id: int,
+    ) -> None:
+        guild_settings = ACTION_STORE.get_guild_settings(guild_id=guild_id)
+        resolved_channel_id = alert_channel_id or int(guild_settings.get("uptime_alert_channel_id", 0) or 0)
+        if resolved_channel_id <= 0:
+            resolved_channel_id = resolve_bot_log_channel_id(guild_id=guild_id)
+        channel = await get_text_channel(self, resolved_channel_id)
+        if channel is None or channel.guild.id != guild_id:
+            logger.warning("Uptime monitor alert channel %s not found for guild %s", resolved_channel_id, guild_id)
+            return
+
+        is_up = status == "up"
+        title = "Service Online" if is_up else "Service Offline"
+        color = discord.Color.green() if is_up else discord.Color.red()
+        latency_text = f"{latency_ms} ms" if isinstance(latency_ms, int) else "-"
+        description = (
+            f"Monitor: **{name}**\n"
+            f"Type: `{monitor_type}`\n"
+            f"Target: `{target}`\n"
+            f"Status: **{status.upper()}**\n"
+            f"Detail: {detail}\n"
+            f"Latency: {latency_text}"
+        )
+        embed = discord.Embed(title=title, description=description, color=color)
+        await channel.send(embed=embed)
+        record_action_safe(
+            action="uptime_monitor",
+            status="success" if is_up else "failed",
+            moderator="system",
+            target=name,
+            reason=truncate_log_text(f"{status} - {detail}"),
+            guild=str(guild_id),
+        )
+
 
 bot = ModerationBot()
 birthday_group = app_commands.Group(name="birthday", description="Birthday commands")
@@ -5574,6 +5858,14 @@ def subscription_due(last_checked_at: object, interval_seconds: object) -> bool:
     if last_checked is None:
         return True
     interval = normalize_feed_interval_seconds(interval_seconds)
+    return datetime.now(UTC) >= (last_checked + timedelta(seconds=interval))
+
+
+def monitor_due(last_checked_at: object, interval_seconds: object) -> bool:
+    last_checked = parse_stored_datetime(last_checked_at)
+    if last_checked is None:
+        return True
+    interval = normalize_monitor_interval_seconds(interval_seconds)
     return datetime.now(UTC) >= (last_checked + timedelta(seconds=interval))
 
 
@@ -6662,6 +6954,34 @@ async def uptime(interaction: discord.Interaction) -> None:
         await log_interaction(interaction, action="uptime", reason=truncate_log_text(str(exc)), success=False)
 
 
+@bot.tree.command(name="monitor", description="Show internal monitor status summary.")
+async def monitor(interaction: discord.Interaction) -> None:
+    if not await ensure_interaction_command_access(interaction, "monitor"):
+        return
+    if interaction.guild_id is None:
+        await reply_ephemeral(interaction, "Monitor status is only available inside a guild.")
+        return
+    monitors = ACTION_STORE.list_uptime_monitors(guild_id=interaction.guild_id, enabled_only=False)
+    if not monitors:
+        await reply_ephemeral(interaction, "No uptime monitors are configured for this server yet.")
+        await log_interaction(interaction, action="monitor", reason="no monitors configured", success=False)
+        return
+    enabled = [item for item in monitors if int(item.get("enabled", 0)) == 1]
+    down = [item for item in enabled if str(item.get("last_status", "")).lower() == "down"]
+    lines = [
+        f"Monitors: {len(monitors)} total ({len(enabled)} enabled)",
+        f"Down: {len(down)}",
+    ]
+    if down:
+        lines.append("Down monitors:")
+        for item in down[:10]:
+            name = str(item.get("name") or "Monitor").strip()
+            target = str(item.get("target") or "").strip()
+            lines.append(f"- {name} ({target})")
+    await reply_ephemeral(interaction, "\n".join(lines))
+    await log_interaction(interaction, action="monitor", reason="status summary", success=True)
+
+
 @bot.tree.command(name="logs", description="View recent container error logs.")
 @app_commands.checks.has_permissions(manage_messages=True)
 @app_commands.describe(lines="Number of recent lines to show (10-400)")
@@ -6742,7 +7062,7 @@ async def help_command(interaction: discord.Interaction) -> None:
         "General: `/ping`, `/sayhi`, `/happy`, `/cat`, `/meme`, `/dadjoke`, `/help`\n"
         "Fun: `/eightball`, `/coinflip`, `/roll`, `/choose`, `/roastme`, `/compliment`, `/wisdom`, `/gif`, `/poll`, `/questionoftheday`, `/spicy` (supports `tag`), `/randomuser`, `/translate`, `/wikihelp`, `/ollama`, `/countdown`, `/trivia`, `/wouldyourather`, `/rps`, `/guess`\n"
         "Community: `/birthday set`, `/birthday view`, `/birthday upcoming`, `/birthday remove`, `/leaderboard`\n"
-        "Utilities: `/shorten`, `/expand`, `/uptime`, `/logs`, `/stats`\n"
+        "Utilities: `/shorten`, `/expand`, `/uptime`, `/monitor`, `/logs`, `/stats`\n"
         "Tags: `/tags`, `/tag <name>`, message tags like `!rules`\n"
         "Moderation: `/kick`, `/ban`, `/timeout`, `/untimeout`, `/purge`, `/unban`, `/addrole`, `/removerole`\n"
         "Use the web admin panel for settings, users, logs, wiki, command permissions, and tag responses."
