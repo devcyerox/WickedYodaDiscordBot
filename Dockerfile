@@ -20,4 +20,6 @@ RUN mkdir -p /app/data /app/logs \
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 CMD python -c "import os,sys,urllib.request; enabled=os.getenv('WEB_ENABLED','true').lower() in {'1','true','yes','on'}; url=f'http://127.0.0.1:{os.getenv(\"WEB_PORT\",\"8080\")}/healthz'; status=urllib.request.urlopen(url, timeout=3).status if enabled else 200; sys.exit(0 if status==200 else 1)"
 
+USER botuser
+
 ENTRYPOINT ["/app/entrypoint.sh"]

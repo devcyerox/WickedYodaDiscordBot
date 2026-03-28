@@ -23,6 +23,7 @@ SENSITIVE_ENV_KEYS = {
     "WEB_ADMIN_DEFAULT_PASSWORD_HASH",
     "WEB_ADMIN_SESSION_SECRET",
     "TRANSLATE_API_KEY",
+    "UPTIME_KUMA_API_KEY",
 }
 SESSION_SAMESITE_OPTIONS = ("Lax", "Strict", "None")
 BOOL_SELECT_OPTIONS = ("false", "true")
@@ -36,6 +37,17 @@ FEED_INTERVAL_OPTIONS = (
     (10800, "3 hours"),
     (21600, "6 hours"),
 )
+UPTIME_MONITOR_INTERVAL_OPTIONS = (
+    (30, "30 seconds"),
+    (60, "1 minute"),
+    (120, "2 minutes"),
+    (300, "5 minutes"),
+    (600, "10 minutes"),
+    (900, "15 minutes"),
+    (1800, "30 minutes"),
+    (3600, "1 hour"),
+)
+UPTIME_MONITOR_TIMEOUT_OPTIONS = (3, 5, 8, 10, 15, 30)
 AUTH_MODE_STANDARD = "standard"
 AUTH_MODE_REMEMBER = "remember"
 REMEMBER_LOGIN_DAYS = 5
@@ -92,6 +104,9 @@ SETTINGS_FIELD_ORDER = [
     "UPTIME_STATUS_ENABLED",
     "UPTIME_STATUS_PAGE_URL",
     "UPTIME_STATUS_TIMEOUT_SECONDS",
+    "UPTIME_KUMA_ENABLED",
+    "UPTIME_KUMA_BASE_URL",
+    "UPTIME_KUMA_API_KEY",
     "WEB_ADMIN_DEFAULT_USERNAME",
     "WEB_ADMIN_DEFAULT_PASSWORD",
     "WEB_ADMIN_SESSION_SECRET",
@@ -142,6 +157,7 @@ SETTINGS_DROPDOWN_OPTIONS: dict[str, tuple[str, ...]] = {
     "SPICY_PROMPTS_REFRESH_INTERVAL_HOURS": ("0", "6", "12", "24", "48", "72"),
     "MEMBER_ACTIVITY_BACKFILL_PROGRESS_LOG_INTERVAL": ("100", "250", "500", "1000", "2500"),
     "UPTIME_STATUS_TIMEOUT_SECONDS": ("5", "8", "10", "15", "30"),
+    "UPTIME_KUMA_ENABLED": BOOL_SELECT_OPTIONS,
 }
 
 
@@ -170,6 +186,38 @@ def _feed_interval_label(seconds: int | str | None) -> str:
         if value == normalized:
             return label
     return "5 minutes"
+
+
+def _normalize_monitor_interval(raw_value: str | int | None, default: int = 60) -> int:
+    allowed = {value for value, _label in UPTIME_MONITOR_INTERVAL_OPTIONS}
+    if isinstance(raw_value, int):
+        return raw_value if raw_value in allowed else default
+    candidate = str(raw_value or "").strip()
+    if candidate.isdigit():
+        parsed = int(candidate)
+        if parsed in allowed:
+            return parsed
+    return default
+
+
+def _monitor_interval_label(seconds: int | str | None) -> str:
+    normalized = _normalize_monitor_interval(seconds)
+    for value, label in UPTIME_MONITOR_INTERVAL_OPTIONS:
+        if value == normalized:
+            return label
+    return "1 minute"
+
+
+def _normalize_monitor_timeout(raw_value: str | int | None, default: int = 8) -> int:
+    allowed = set(UPTIME_MONITOR_TIMEOUT_OPTIONS)
+    if isinstance(raw_value, int):
+        return raw_value if raw_value in allowed else default
+    candidate = str(raw_value or "").strip()
+    if candidate.isdigit():
+        parsed = int(candidate)
+        if parsed in allowed:
+            return parsed
+    return default
 
 
 def _normalize_reddit_source(raw_value: str) -> tuple[str, str]:
@@ -207,6 +255,36 @@ def _normalize_wordpress_source(raw_value: str) -> str:
     path = parsed.path.rstrip("/")
     normalized = urlunparse((parsed.scheme, parsed.netloc, path or "/", "", "", ""))
     return normalized.rstrip("/") if normalized != f"{parsed.scheme}://{parsed.netloc}/" else normalized
+
+
+def _normalize_monitor_target(raw_value: str, monitor_type: str) -> str:
+    candidate = str(raw_value or "").strip()
+    if not candidate:
+        raise ValueError("Monitor target is required.")
+    if monitor_type == "http":
+        if "://" not in candidate:
+            candidate = f"https://{candidate}"
+        parsed = urlparse(candidate)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("HTTP monitor target must be a valid http(s) URL.")
+        return urlunparse(parsed)
+    if monitor_type == "tcp":
+        if candidate.startswith("tcp://"):
+            candidate = candidate[6:]
+        if "/" in candidate:
+            candidate = candidate.split("/", 1)[0]
+        if ":" not in candidate:
+            raise ValueError("TCP targets must be in host:port format.")
+        host, port_text = candidate.rsplit(":", 1)
+        if not host.strip():
+            raise ValueError("TCP target must include a host.")
+        if not port_text.strip().isdigit():
+            raise ValueError("TCP target port must be numeric.")
+        port = int(port_text.strip())
+        if port <= 0 or port > 65535:
+            raise ValueError("TCP target port must be between 1 and 65535.")
+        return f"{host.strip()}:{port}"
+    raise ValueError("Monitor type must be http or tcp.")
 
 
 def _normalize_linkedin_source(raw_value: str) -> str:
@@ -455,6 +533,37 @@ def _ensure_linkedin_feeds_table(db_path: str) -> None:
         conn.commit()
 
 
+def _ensure_uptime_monitors_table(db_path: str) -> None:
+    directory = os.path.dirname(db_path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    with _sqlite_connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS uptime_monitors (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                monitor_type TEXT NOT NULL,
+                target TEXT NOT NULL,
+                interval_seconds INTEGER NOT NULL DEFAULT 60,
+                timeout_seconds INTEGER NOT NULL DEFAULT 8,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                alert_channel_id INTEGER,
+                last_status TEXT,
+                last_checked_at TEXT,
+                last_change_at TEXT,
+                last_error TEXT,
+                last_latency_ms INTEGER,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_uptime_monitors_guild ON uptime_monitors(guild_id)")
+        conn.commit()
+
+
 def _ensure_spicy_prompt_tables(db_path: str) -> None:
     directory = os.path.dirname(db_path)
     if directory:
@@ -615,6 +724,79 @@ def _fetch_linkedin_feeds(db_path: str, limit: int = 300, channel_ids: list[int]
         conn.row_factory = sqlite3.Row
         rows = conn.execute(query, tuple(params)).fetchall()
     return [dict(row) for row in rows]
+
+
+def _fetch_uptime_monitors(db_path: str, guild_id: int, limit: int = 300) -> list[dict]:
+    _ensure_uptime_monitors_table(db_path)
+    query = """
+        SELECT id, guild_id, name, monitor_type, target, interval_seconds, timeout_seconds, enabled,
+               alert_channel_id, last_status, last_checked_at, last_change_at, last_error, last_latency_ms,
+               created_at, updated_at
+        FROM uptime_monitors
+        WHERE guild_id = ?
+        ORDER BY id DESC
+        LIMIT ?
+    """
+    with _sqlite_connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(query, (int(guild_id), int(limit))).fetchall()
+    return [dict(row) for row in rows]
+
+
+def _insert_uptime_monitor(
+    db_path: str,
+    *,
+    guild_id: int,
+    name: str,
+    monitor_type: str,
+    target: str,
+    interval_seconds: int,
+    timeout_seconds: int,
+    alert_channel_id: int | None,
+) -> None:
+    _ensure_uptime_monitors_table(db_path)
+    now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
+    with _sqlite_connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO uptime_monitors (
+                guild_id, name, monitor_type, target, interval_seconds, timeout_seconds,
+                alert_channel_id, enabled, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+            """,
+            (
+                int(guild_id),
+                name,
+                monitor_type,
+                target,
+                int(interval_seconds),
+                int(timeout_seconds),
+                alert_channel_id,
+                now,
+                now,
+            ),
+        )
+        conn.commit()
+
+
+def _set_uptime_monitor_enabled(db_path: str, monitor_id: int, enabled: bool) -> bool:
+    _ensure_uptime_monitors_table(db_path)
+    with _sqlite_connect(db_path) as conn:
+        cursor = conn.execute(
+            "UPDATE uptime_monitors SET enabled = ?, updated_at = ? WHERE id = ?",
+            (1 if enabled else 0, datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S"), int(monitor_id)),
+        )
+        conn.commit()
+    return cursor.rowcount > 0
+
+
+def _delete_uptime_monitor(db_path: str, monitor_id: int) -> bool:
+    _ensure_uptime_monitors_table(db_path)
+    with _sqlite_connect(db_path) as conn:
+        cursor = conn.execute("DELETE FROM uptime_monitors WHERE id = ?", (int(monitor_id),))
+        conn.commit()
+    return cursor.rowcount > 0
 
 
 def _fetch_spicy_prompt_status(db_path: str) -> dict:
@@ -1734,6 +1916,7 @@ PAGE_TEMPLATE = """
       .dashboard-section-head { align-items: start; flex-direction: column; }
       .dashboard-section-grid { grid-template-columns: 1fr 1fr; }
       .dashboard-pill { min-width: 0; flex: 1 1 180px; }
+      .dash-actions { display: none; }
     }
     @media (max-width: 576px) {
       .container-fluid, .container { padding-left: .9rem !important; padding-right: .9rem !important; }
@@ -1762,11 +1945,6 @@ PAGE_TEMPLATE = """
           <button type="button" class="theme-btn" data-theme-choice="forest">Forest</button>
         </div>
         {% if session.get("user") %}
-        <ul class="navbar-nav me-auto mb-2 mb-lg-0">
-          <li class="nav-item"><a class="nav-link" href="{{ url_for('guilds_page') }}">Servers</a></li>
-          <li class="nav-item"><a class="nav-link" href="{{ url_for('dashboard') }}">Dashboard</a></li>
-        </ul>
-
         <div class="nav-utility d-flex align-items-center gap-2">
           <span class="badge text-bg-light border">{{ snapshot.server_time if snapshot and snapshot.server_time else "n/a" }}</span>
           <div class="dropdown">
@@ -1775,6 +1953,8 @@ PAGE_TEMPLATE = """
             </button>
             <ul class="dropdown-menu dropdown-menu-end">
               <li><a class="dropdown-item" href="{{ url_for('home') }}">Home</a></li>
+              <li><a class="dropdown-item" href="{{ url_for('dashboard') }}">Dashboard</a></li>
+              <li><a class="dropdown-item" href="{{ url_for('overview') }}">Overview</a></li>
               <li><a class="dropdown-item" href="{{ url_for('actions') }}">Actions</a></li>
               <li><a class="dropdown-item" href="{{ url_for('random_user_page') }}">Random User</a></li>
               <li><a class="dropdown-item" href="{{ url_for('member_activity_page') }}">Member Activity</a></li>
@@ -1784,6 +1964,7 @@ PAGE_TEMPLATE = """
               <li><a class="dropdown-item" href="{{ url_for('youtube_subscriptions') }}">YouTube</a></li>
               <li><a class="dropdown-item" href="{{ url_for('spicy_prompts') }}">Spicy Prompts</a></li>
               <li><a class="dropdown-item" href="{{ url_for('status_page') }}">Status</a></li>
+              <li><a class="dropdown-item" href="{{ url_for('uptime_monitors_page') }}">Uptime Monitors</a></li>
               <li><a class="dropdown-item" href="{{ url_for('logs') }}">Logs</a></li>
               <li><a class="dropdown-item" href="{{ url_for('documentation') }}">Documentation</a></li>
               <li><a class="dropdown-item" href="{{ url_for('account') }}">Account</a></li>
@@ -1806,7 +1987,6 @@ PAGE_TEMPLATE = """
               <li><a class="dropdown-item" href="{{ url_for('logout') }}">Log out</a></li>
             </ul>
           </div>
-          <a class="btn btn-outline-danger btn-sm" href="{{ url_for('logout') }}">Log out</a>
           {% if guild_options %}
           <form method="post" action="{{ url_for('select_guild') }}" class="guild-switch-form d-flex">
             <input type="hidden" name="next_endpoint" value="{{ 'documentation' if request.endpoint == 'documentation_page' else (request.endpoint or 'home') }}">
@@ -1955,88 +2135,9 @@ PAGE_TEMPLATE = """
     {% elif page == "home" %}
       <div class="card card-soft p-3 mb-3">
         <h1 class="h5 mb-2">Control Center</h1>
-        <p class="text-secondary mb-0">Manage moderation workflows, guild configuration, notifications, and runtime health from one place.</p>
+        <p class="text-secondary mb-0">Use the Menu in the top-right corner to navigate. This landing page stays minimal for mobile.</p>
       </div>
-      <div class="row g-3 mb-3">
-        <div class="col-6 col-lg-3">
-          <a class="card card-soft p-3 h-100 text-decoration-none" href="{{ url_for('guilds_page') }}">
-            <p class="text-secondary small mb-1">Open</p>
-            <p class="mb-0 fw-semibold">Servers</p>
-          </a>
-        </div>
-        <div class="col-6 col-lg-3">
-          <a class="card card-soft p-3 h-100 text-decoration-none" href="{{ url_for('dashboard') }}">
-            <p class="text-secondary small mb-1">Open</p>
-            <p class="mb-0 fw-semibold">Dashboard</p>
-          </a>
-        </div>
-        <div class="col-6 col-lg-3">
-          <a class="card card-soft p-3 h-100 text-decoration-none" href="{{ url_for('documentation') }}">
-            <p class="text-secondary small mb-1">Open</p>
-            <p class="mb-0 fw-semibold">Documentation</p>
-          </a>
-        </div>
-        <div class="col-6 col-lg-3">
-          <a class="card card-soft p-3 h-100 text-decoration-none" href="{{ url_for('status_page') }}">
-            <p class="text-secondary small mb-1">Open</p>
-            <p class="mb-0 fw-semibold">Status</p>
-          </a>
-        </div>
-            <div class="card card-soft p-3 mb-3">
-        <div class="d-flex align-items-center justify-content-between mb-2">
-          <h2 class="h6 mb-0">Command Status</h2>
-          <a class="small" href="{{ url_for('command_permissions') }}">Manage</a>
-        </div>
-        {% if command_statuses %}
-        <div class="table-wrap">
-          <table class="table table-sm align-middle">
-            <thead>
-              <tr>
-                <th>Command</th>
-                <th>Access</th>
-                <th>Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {% for command in command_statuses %}
-              <tr>
-                <td>
-                  <div class="fw-semibold">{{ command.label }}</div>
-                  {% if command.description %}
-                  <div class="text-secondary small">{{ command.description }}</div>
-                  {% endif %}
-                </td>
-                <td class="small">{{ command.access }}</td>
-                <td>
-                  {% if command.enabled %}
-                  <span class="badge text-bg-success">Enabled</span>
-                  {% else %}
-                  <span class="badge text-bg-secondary">Disabled</span>
-                  {% endif %}
-                </td>
-              </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        </div>
-        {% else %}
-        <p class="text-secondary small mb-0">Command status is unavailable.</p>
-        {% endif %}
-      </div>
-</div>
       <div class="row g-3">
-        <div class="col-6 col-lg-3">
-          <a class="card card-soft p-3 h-100 text-decoration-none" href="{{ url_for('observability') }}">
-            <p class="text-secondary small mb-1">Open</p>
-            <p class="mb-0 fw-semibold">Observability</p>
-          </a>
-        </div>
-        <div class="col-6 col-lg-3">
-          <a class="card card-soft p-3 h-100 text-decoration-none" href="{{ url_for('logs') }}">
-            <p class="text-secondary small mb-1">Open</p>
-            <p class="mb-0 fw-semibold">Logs</p>
-          </a>
-        </div>
         <div class="col-12 col-md-4">
           <div class="card card-soft p-3 h-100">
             <p class="text-secondary small mb-1">Bot</p>
@@ -2056,7 +2157,7 @@ PAGE_TEMPLATE = """
           </div>
         </div>
       </div>
-    {% elif page == "dashboard" %}
+    {% elif page == "overview" %}
       <div class="dashboard-shell">
         <section class="dashboard-hero">
           <div class="card card-soft dashboard-hero-main">
@@ -2308,6 +2409,133 @@ PAGE_TEMPLATE = """
             </table>
           </div>
         </section>
+      </div>
+    {% elif page == "dashboard" %}
+      <div class="card card-soft p-3">
+        <h1 class="h5 mb-2">Dashboard</h1>
+        <p class="text-secondary mb-2">Select a section from the Menu to manage the bot or review activity. This page stays light for mobile.</p>
+        <div class="row g-3 mt-1">
+          <div class="col-12 col-md-4">
+            <div class="card card-soft p-3 h-100">
+              <p class="text-secondary small mb-1">Selected Guild</p>
+              <p class="mb-0 fw-semibold">{{ selected_guild_name or snapshot.guild_id }}</p>
+            </div>
+          </div>
+          <div class="col-12 col-md-4">
+            <div class="card card-soft p-3 h-100">
+              <p class="text-secondary small mb-1">Access</p>
+              <p class="mb-0 fw-semibold">{{ "Admin" if session.get("is_admin") else "Read-only" }}</p>
+            </div>
+          </div>
+          <div class="col-12 col-md-4">
+            <div class="card card-soft p-3 h-100">
+              <p class="text-secondary small mb-1">Latency</p>
+              <p class="mb-0 fw-semibold">{{ snapshot.latency_ms }} ms</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    {% elif page == "uptime_monitors" %}
+      <div class="card card-soft p-3 mb-3">
+        <h1 class="h5 mb-3">Uptime Monitors</h1>
+        <form method="post" action="{{ url_for('uptime_monitor_add') }}">
+          <div class="row g-2">
+            <div class="col-12 col-xl-3">
+              <label class="form-label" for="monitor_name">Name</label>
+              <input class="form-control" id="monitor_name" name="monitor_name" placeholder="API - prod" required {% if not session.get("is_admin") %}disabled{% endif %}>
+            </div>
+            <div class="col-12 col-md-6 col-xl-2">
+              <label class="form-label" for="monitor_type">Type</label>
+              <select class="form-select" id="monitor_type" name="monitor_type" {% if not session.get("is_admin") %}disabled{% endif %}>
+                <option value="http">HTTP</option>
+                <option value="tcp">TCP</option>
+              </select>
+            </div>
+            <div class="col-12 col-xl-4">
+              <label class="form-label" for="monitor_target">Target</label>
+              <input class="form-control" id="monitor_target" name="monitor_target" placeholder="https://example.com or host:port" required {% if not session.get("is_admin") %}disabled{% endif %}>
+            </div>
+            <div class="col-6 col-md-3 col-xl-1">
+              <label class="form-label" for="monitor_interval">Interval</label>
+              <select class="form-select" id="monitor_interval" name="interval_seconds" {% if not session.get("is_admin") %}disabled{% endif %}>
+                {% for option in monitor_interval_options %}
+                <option value="{{ option.value }}">{{ option.label }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="col-6 col-md-3 col-xl-1">
+              <label class="form-label" for="monitor_timeout">Timeout</label>
+              <select class="form-select" id="monitor_timeout" name="timeout_seconds" {% if not session.get("is_admin") %}disabled{% endif %}>
+                {% for option in monitor_timeout_options %}
+                <option value="{{ option }}">{{ option }}s</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="col-12 col-md-6 col-xl-4">
+              <label class="form-label" for="monitor_channel">Alert Channel</label>
+              <select class="form-select" id="monitor_channel" name="alert_channel_id" {% if not session.get("is_admin") %}disabled{% endif %}>
+                <option value="">Default (Bot Log / Guild Setting)</option>
+                {% for channel in notification_channels %}
+                <option value="{{ channel.id }}">{{ channel.name }} ({{ channel.id }})</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="col-12 col-xl-1 d-flex align-items-end">
+              <button class="btn btn-primary w-100" type="submit" {% if not session.get("is_admin") %}disabled{% endif %}>Add</button>
+            </div>
+          </div>
+        </form>
+        {% if not notification_channels %}
+        <p class="small text-danger mt-2 mb-0">No text channels found. Verify bot guild/channel permissions and refresh.</p>
+        {% endif %}
+      </div>
+      <div class="card card-soft p-3">
+        <h2 class="h6 mb-3">Configured Monitors</h2>
+        <div class="table-wrap">
+          <table class="table table-sm align-middle">
+            <thead><tr><th>Name</th><th>Target</th><th>Status</th><th>Interval</th><th>Last Check</th><th>Alert Channel</th><th>Action</th></tr></thead>
+            <tbody>
+              {% for row in uptime_monitors %}
+              <tr>
+                <td class="small">
+                  <div class="fw-semibold">{{ row.name }}</div>
+                  <div class="text-secondary small">{{ row.monitor_type|upper }}</div>
+                </td>
+                <td class="small">{{ row.target }}</td>
+                <td class="small">
+                  {% set status = (row.last_status or 'unknown') %}
+                  <span class="badge text-bg-{{ 'success' if status == 'up' else ('danger' if status == 'down' else 'secondary') }}">{{ status }}</span>
+                  {% if row.last_error %}
+                  <div class="text-secondary small">{{ row.last_error }}</div>
+                  {% endif %}
+                </td>
+                <td class="small">{{ row.interval_label }}</td>
+                <td class="small">{{ row.last_checked_at or '-' }}</td>
+                <td class="small">
+                  {% if row.alert_channel_name %}
+                  {{ row.alert_channel_name }} ({{ row.alert_channel_id }})
+                  {% else %}
+                  Default
+                  {% endif %}
+                </td>
+                <td class="small d-flex gap-2">
+                  <form method="post" action="{{ url_for('uptime_monitor_toggle', monitor_id=row.id) }}">
+                    <input type="hidden" name="enabled" value="{{ 0 if row.enabled else 1 }}">
+                    <button class="btn btn-sm btn-outline-secondary" type="submit" {% if not session.get("is_admin") %}disabled{% endif %}>
+                      {{ "Disable" if row.enabled else "Enable" }}
+                    </button>
+                  </form>
+                  <form method="post" action="{{ url_for('uptime_monitor_delete', monitor_id=row.id) }}">
+                    <button class="btn btn-sm btn-outline-danger" type="submit" {% if not session.get("is_admin") %}disabled{% endif %}>Delete</button>
+                  </form>
+                </td>
+              </tr>
+              {% else %}
+              <tr><td colspan="7" class="text-secondary">No monitors configured yet.</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
       </div>
     {% elif page == "status_admin" %}
       <div class="card card-soft p-3 mb-3">
@@ -3562,6 +3790,18 @@ PAGE_TEMPLATE = """
             </select>
             <div class="form-text">This guild-specific channel receives bot action logs and overrides the global env value.</div>
           </div>
+          <div class="mb-3">
+            <label class="form-label" for="uptime_alert_channel_id">Uptime Alert Channel</label>
+            <select class="form-select" id="uptime_alert_channel_id" name="uptime_alert_channel_id" {% if not session.get("is_admin") %}disabled{% endif %}>
+              <option value="">Use bot log channel</option>
+              {% for channel in notification_channels %}
+              <option value="{{ channel.id }}" {% if selected_uptime_channel_id == channel.id|string %}selected{% endif %}>
+                {{ channel.name }} ({{ channel.id }})
+              </option>
+              {% endfor %}
+            </select>
+            <div class="form-text">Optional override for uptime monitor alerts; falls back to the bot log channel when unset.</div>
+          </div>
           <button class="btn btn-primary" type="submit" {% if not session.get("is_admin") %}disabled{% endif %}>Save Guild Settings</button>
         </form>
       </div>
@@ -4665,6 +4905,95 @@ def create_app(
             else "No status log file configured.",
         )
 
+    @app.get("/admin/uptime-monitors")
+    @login_required
+    def uptime_monitors_page():
+        selected_guild_id, _, _ = _selected_guild_context()
+        catalog_payload = _call_get_discord_catalog(selected_guild_id)
+        channels: list[dict] = []
+        if isinstance(catalog_payload, dict) and catalog_payload.get("ok"):
+            raw_channels = catalog_payload.get("channels", [])
+            if isinstance(raw_channels, list):
+                channels = [item for item in raw_channels if isinstance(item, dict)]
+        if not channels:
+            channels = _call_get_notification_channels(selected_guild_id)
+        channel_map = {int(item["id"]): item for item in channels if str(item.get("id", "")).isdigit()}
+
+        monitors = _fetch_uptime_monitors(db_path, guild_id=selected_guild_id, limit=300)
+        for row in monitors:
+            row["interval_label"] = _monitor_interval_label(row.get("interval_seconds"))
+            channel_id = int(row.get("alert_channel_id", 0) or 0)
+            row["alert_channel_name"] = channel_map.get(channel_id, {}).get("name") if channel_id else None
+
+        return _render_page(
+            "uptime_monitors",
+            "Uptime Monitors",
+            notification_channels=channels,
+            uptime_monitors=monitors,
+            monitor_interval_options=[{"value": value, "label": label} for value, label in UPTIME_MONITOR_INTERVAL_OPTIONS],
+            monitor_timeout_options=list(UPTIME_MONITOR_TIMEOUT_OPTIONS),
+        )
+
+    @app.post("/admin/uptime-monitors/add")
+    @login_required
+    def uptime_monitor_add():
+        if not _current_user_is_admin():
+            return _reject_read_only_write("uptime_monitors_page")
+        selected_guild_id, _, _ = _selected_guild_context()
+        name = request.form.get("monitor_name", "").strip()
+        monitor_type = request.form.get("monitor_type", "http").strip().lower()
+        target = request.form.get("monitor_target", "").strip()
+        interval_seconds = _normalize_monitor_interval(request.form.get("interval_seconds", "60"))
+        timeout_seconds = _normalize_monitor_timeout(request.form.get("timeout_seconds", "8"))
+        raw_alert_channel_id = request.form.get("alert_channel_id", "").strip()
+        alert_channel_id = int(raw_alert_channel_id) if raw_alert_channel_id.isdigit() else None
+
+        try:
+            if not name:
+                raise ValueError("Monitor name is required.")
+            normalized_target = _normalize_monitor_target(target, monitor_type)
+            _insert_uptime_monitor(
+                db_path,
+                guild_id=selected_guild_id,
+                name=name,
+                monitor_type=monitor_type,
+                target=normalized_target,
+                interval_seconds=interval_seconds,
+                timeout_seconds=timeout_seconds,
+                alert_channel_id=alert_channel_id,
+            )
+        except Exception as exc:
+            flash(f"Failed to add monitor: {exc}", "danger")
+            return redirect(url_for("uptime_monitors_page"))
+
+        flash("Monitor added.", "success")
+        return redirect(url_for("uptime_monitors_page"))
+
+    @app.post("/admin/uptime-monitors/<int:monitor_id>/toggle")
+    @login_required
+    def uptime_monitor_toggle(monitor_id: int):
+        if not _current_user_is_admin():
+            return _reject_read_only_write("uptime_monitors_page")
+        enabled = str(request.form.get("enabled", "")).strip()
+        updated = _set_uptime_monitor_enabled(db_path, monitor_id, enabled == "1")
+        if updated:
+            flash("Monitor updated.", "success")
+        else:
+            flash("Monitor not found.", "warning")
+        return redirect(url_for("uptime_monitors_page"))
+
+    @app.post("/admin/uptime-monitors/<int:monitor_id>/delete")
+    @login_required
+    def uptime_monitor_delete(monitor_id: int):
+        if not _current_user_is_admin():
+            return _reject_read_only_write("uptime_monitors_page")
+        deleted = _delete_uptime_monitor(db_path, monitor_id)
+        if deleted:
+            flash("Monitor removed.", "success")
+        else:
+            flash("Monitor not found.", "warning")
+        return redirect(url_for("uptime_monitors_page"))
+
     @app.get("/admin/observability")
     @login_required
     def observability():
@@ -4794,6 +5123,7 @@ def create_app(
             "home",
             "guilds_page",
             "dashboard",
+            "overview",
             "status_page",
             "actions",
             "member_activity_page",
@@ -4803,6 +5133,7 @@ def create_app(
             "youtube_subscriptions",
             "spicy_prompts",
             "logs",
+            "uptime_monitors_page",
             "wiki",
             "documentation",
             "account",
@@ -4822,6 +5153,16 @@ def create_app(
     @app.get("/admin")
     @login_required
     def dashboard():
+        snapshot = get_bot_snapshot()
+        return _render_page(
+            "dashboard",
+            "Web Admin Dashboard",
+            snapshot=snapshot,
+        )
+
+    @app.get("/admin/overview")
+    @login_required
+    def overview():
         selected_guild_id, _, _ = _selected_guild_context()
         counts = _fetch_counts(db_path, guild_id=selected_guild_id)
         actions = _fetch_actions(db_path, limit=15, guild_id=selected_guild_id)
@@ -4854,8 +5195,8 @@ def create_app(
                     }
                 )
         return _render_page(
-            "dashboard",
-            "Web Admin Dashboard",
+            "overview",
+            "Web Admin Overview",
             counts=counts,
             actions=actions,
             snapshot=snapshot,
@@ -5668,7 +6009,10 @@ def create_app(
         if request.method == "POST":
             if not _current_user_is_admin():
                 return _reject_read_only_write("guild_settings")
-            payload = {"bot_log_channel_id": request.form.get("bot_log_channel_id", "").strip()}
+            payload = {
+                "bot_log_channel_id": request.form.get("bot_log_channel_id", "").strip(),
+                "uptime_alert_channel_id": request.form.get("uptime_alert_channel_id", "").strip(),
+            }
             result = _call_save_guild_settings(payload, str(session.get("user", "")), selected_guild_id)
             if isinstance(result, dict) and result.get("ok"):
                 flash(str(result.get("message", "Guild settings updated.")), "success")
@@ -5682,15 +6026,19 @@ def create_app(
 
         settings_payload = _call_get_guild_settings(selected_guild_id)
         selected_log_channel_id = ""
+        selected_uptime_channel_id = ""
         if isinstance(settings_payload, dict):
             raw_channel_id = settings_payload.get("bot_log_channel_id", "")
             selected_log_channel_id = str(raw_channel_id).strip() if raw_channel_id is not None else ""
+            raw_uptime_channel_id = settings_payload.get("uptime_alert_channel_id", "")
+            selected_uptime_channel_id = str(raw_uptime_channel_id).strip() if raw_uptime_channel_id is not None else ""
         return _render_page(
             "guild_settings",
             "Guild Settings",
             guild_settings=settings_payload if isinstance(settings_payload, dict) else {"ok": False},
             notification_channels=channel_options,
             selected_log_channel_id=selected_log_channel_id,
+            selected_uptime_channel_id=selected_uptime_channel_id,
         )
 
     @app.get("/admin/users")
