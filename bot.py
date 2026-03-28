@@ -1286,8 +1286,8 @@ def search_wiki_help(query: str) -> list[str]:
     content_type = str(headers.get("content-type", "")).lower()
     text = body_text
     if "html" in content_type:
-        text = re.sub(r"<script[^>]*>.*?</script\s*>", " ", text, flags=re.DOTALL | re.IGNORECASE)
-        text = re.sub(r"<style[^>]*>.*?</style\s*>", " ", text, flags=re.DOTALL | re.IGNORECASE)
+        text = re.sub(r"<script[^>]*>.*?</script\b[^>]*>", " ", text, flags=re.DOTALL | re.IGNORECASE)
+        text = re.sub(r"<style[^>]*>.*?</style\b[^>]*>", " ", text, flags=re.DOTALL | re.IGNORECASE)
         text = re.sub(r"<[^>]+>", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
     if not text:
