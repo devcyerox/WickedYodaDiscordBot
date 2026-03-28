@@ -1734,6 +1734,7 @@ PAGE_TEMPLATE = """
       .dashboard-section-head { align-items: start; flex-direction: column; }
       .dashboard-section-grid { grid-template-columns: 1fr 1fr; }
       .dashboard-pill { min-width: 0; flex: 1 1 180px; }
+      .dash-actions { display: none; }
     }
     @media (max-width: 576px) {
       .container-fluid, .container { padding-left: .9rem !important; padding-right: .9rem !important; }
@@ -1762,11 +1763,6 @@ PAGE_TEMPLATE = """
           <button type="button" class="theme-btn" data-theme-choice="forest">Forest</button>
         </div>
         {% if session.get("user") %}
-        <ul class="navbar-nav me-auto mb-2 mb-lg-0">
-          <li class="nav-item"><a class="nav-link" href="{{ url_for('guilds_page') }}">Servers</a></li>
-          <li class="nav-item"><a class="nav-link" href="{{ url_for('dashboard') }}">Dashboard</a></li>
-        </ul>
-
         <div class="nav-utility d-flex align-items-center gap-2">
           <span class="badge text-bg-light border">{{ snapshot.server_time if snapshot and snapshot.server_time else "n/a" }}</span>
           <div class="dropdown">
@@ -1775,6 +1771,8 @@ PAGE_TEMPLATE = """
             </button>
             <ul class="dropdown-menu dropdown-menu-end">
               <li><a class="dropdown-item" href="{{ url_for('home') }}">Home</a></li>
+              <li><a class="dropdown-item" href="{{ url_for('dashboard') }}">Dashboard</a></li>
+              <li><a class="dropdown-item" href="{{ url_for('overview') }}">Overview</a></li>
               <li><a class="dropdown-item" href="{{ url_for('actions') }}">Actions</a></li>
               <li><a class="dropdown-item" href="{{ url_for('random_user_page') }}">Random User</a></li>
               <li><a class="dropdown-item" href="{{ url_for('member_activity_page') }}">Member Activity</a></li>
@@ -1806,7 +1804,6 @@ PAGE_TEMPLATE = """
               <li><a class="dropdown-item" href="{{ url_for('logout') }}">Log out</a></li>
             </ul>
           </div>
-          <a class="btn btn-outline-danger btn-sm" href="{{ url_for('logout') }}">Log out</a>
           {% if guild_options %}
           <form method="post" action="{{ url_for('select_guild') }}" class="guild-switch-form d-flex">
             <input type="hidden" name="next_endpoint" value="{{ 'documentation' if request.endpoint == 'documentation_page' else (request.endpoint or 'home') }}">
@@ -1955,88 +1952,9 @@ PAGE_TEMPLATE = """
     {% elif page == "home" %}
       <div class="card card-soft p-3 mb-3">
         <h1 class="h5 mb-2">Control Center</h1>
-        <p class="text-secondary mb-0">Manage moderation workflows, guild configuration, notifications, and runtime health from one place.</p>
+        <p class="text-secondary mb-0">Use the Menu in the top-right corner to navigate. This landing page stays minimal for mobile.</p>
       </div>
-      <div class="row g-3 mb-3">
-        <div class="col-6 col-lg-3">
-          <a class="card card-soft p-3 h-100 text-decoration-none" href="{{ url_for('guilds_page') }}">
-            <p class="text-secondary small mb-1">Open</p>
-            <p class="mb-0 fw-semibold">Servers</p>
-          </a>
-        </div>
-        <div class="col-6 col-lg-3">
-          <a class="card card-soft p-3 h-100 text-decoration-none" href="{{ url_for('dashboard') }}">
-            <p class="text-secondary small mb-1">Open</p>
-            <p class="mb-0 fw-semibold">Dashboard</p>
-          </a>
-        </div>
-        <div class="col-6 col-lg-3">
-          <a class="card card-soft p-3 h-100 text-decoration-none" href="{{ url_for('documentation') }}">
-            <p class="text-secondary small mb-1">Open</p>
-            <p class="mb-0 fw-semibold">Documentation</p>
-          </a>
-        </div>
-        <div class="col-6 col-lg-3">
-          <a class="card card-soft p-3 h-100 text-decoration-none" href="{{ url_for('status_page') }}">
-            <p class="text-secondary small mb-1">Open</p>
-            <p class="mb-0 fw-semibold">Status</p>
-          </a>
-        </div>
-            <div class="card card-soft p-3 mb-3">
-        <div class="d-flex align-items-center justify-content-between mb-2">
-          <h2 class="h6 mb-0">Command Status</h2>
-          <a class="small" href="{{ url_for('command_permissions') }}">Manage</a>
-        </div>
-        {% if command_statuses %}
-        <div class="table-wrap">
-          <table class="table table-sm align-middle">
-            <thead>
-              <tr>
-                <th>Command</th>
-                <th>Access</th>
-                <th>Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {% for command in command_statuses %}
-              <tr>
-                <td>
-                  <div class="fw-semibold">{{ command.label }}</div>
-                  {% if command.description %}
-                  <div class="text-secondary small">{{ command.description }}</div>
-                  {% endif %}
-                </td>
-                <td class="small">{{ command.access }}</td>
-                <td>
-                  {% if command.enabled %}
-                  <span class="badge text-bg-success">Enabled</span>
-                  {% else %}
-                  <span class="badge text-bg-secondary">Disabled</span>
-                  {% endif %}
-                </td>
-              </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        </div>
-        {% else %}
-        <p class="text-secondary small mb-0">Command status is unavailable.</p>
-        {% endif %}
-      </div>
-</div>
       <div class="row g-3">
-        <div class="col-6 col-lg-3">
-          <a class="card card-soft p-3 h-100 text-decoration-none" href="{{ url_for('observability') }}">
-            <p class="text-secondary small mb-1">Open</p>
-            <p class="mb-0 fw-semibold">Observability</p>
-          </a>
-        </div>
-        <div class="col-6 col-lg-3">
-          <a class="card card-soft p-3 h-100 text-decoration-none" href="{{ url_for('logs') }}">
-            <p class="text-secondary small mb-1">Open</p>
-            <p class="mb-0 fw-semibold">Logs</p>
-          </a>
-        </div>
         <div class="col-12 col-md-4">
           <div class="card card-soft p-3 h-100">
             <p class="text-secondary small mb-1">Bot</p>
@@ -2056,7 +1974,7 @@ PAGE_TEMPLATE = """
           </div>
         </div>
       </div>
-    {% elif page == "dashboard" %}
+    {% elif page == "overview" %}
       <div class="dashboard-shell">
         <section class="dashboard-hero">
           <div class="card card-soft dashboard-hero-main">
@@ -2308,6 +2226,31 @@ PAGE_TEMPLATE = """
             </table>
           </div>
         </section>
+      </div>
+    {% elif page == "dashboard" %}
+      <div class="card card-soft p-3">
+        <h1 class="h5 mb-2">Dashboard</h1>
+        <p class="text-secondary mb-2">Select a section from the Menu to manage the bot or review activity. This page stays light for mobile.</p>
+        <div class="row g-3 mt-1">
+          <div class="col-12 col-md-4">
+            <div class="card card-soft p-3 h-100">
+              <p class="text-secondary small mb-1">Selected Guild</p>
+              <p class="mb-0 fw-semibold">{{ selected_guild_name or snapshot.guild_id }}</p>
+            </div>
+          </div>
+          <div class="col-12 col-md-4">
+            <div class="card card-soft p-3 h-100">
+              <p class="text-secondary small mb-1">Access</p>
+              <p class="mb-0 fw-semibold">{{ "Admin" if session.get("is_admin") else "Read-only" }}</p>
+            </div>
+          </div>
+          <div class="col-12 col-md-4">
+            <div class="card card-soft p-3 h-100">
+              <p class="text-secondary small mb-1">Latency</p>
+              <p class="mb-0 fw-semibold">{{ snapshot.latency_ms }} ms</p>
+            </div>
+          </div>
+        </div>
       </div>
     {% elif page == "status_admin" %}
       <div class="card card-soft p-3 mb-3">
@@ -4794,6 +4737,7 @@ def create_app(
             "home",
             "guilds_page",
             "dashboard",
+            "overview",
             "status_page",
             "actions",
             "member_activity_page",
@@ -4822,6 +4766,16 @@ def create_app(
     @app.get("/admin")
     @login_required
     def dashboard():
+        snapshot = get_bot_snapshot()
+        return _render_page(
+            "dashboard",
+            "Web Admin Dashboard",
+            snapshot=snapshot,
+        )
+
+    @app.get("/admin/overview")
+    @login_required
+    def overview():
         selected_guild_id, _, _ = _selected_guild_context()
         counts = _fetch_counts(db_path, guild_id=selected_guild_id)
         actions = _fetch_actions(db_path, limit=15, guild_id=selected_guild_id)
@@ -4854,8 +4808,8 @@ def create_app(
                     }
                 )
         return _render_page(
-            "dashboard",
-            "Web Admin Dashboard",
+            "overview",
+            "Web Admin Overview",
             counts=counts,
             actions=actions,
             snapshot=snapshot,
