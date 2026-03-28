@@ -915,6 +915,21 @@ def normalize_target_url(raw_url: str) -> str:
     return urllib.parse.urlunparse(parsed)
 
 
+def normalize_statuspage_api_url(raw_url: str) -> str:
+    value = raw_url.strip()
+    if not value:
+        raise ValueError("Status page URL is required.")
+    if "://" not in value:
+        value = f"https://{value}"
+    parsed = urllib.parse.urlparse(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("Status page URL must be valid http(s).")
+    path = parsed.path.rstrip("/")
+    if not path.endswith("/api/v2/status.json"):
+        path = f"{path}/api/v2/status.json" if path else "/api/v2/status.json"
+    return urllib.parse.urlunparse((parsed.scheme, parsed.netloc, path, "", "", ""))
+
+
 def parse_tcp_target(raw_value: str) -> tuple[str, int]:
     value = raw_value.strip()
     if value.startswith("tcp://"):
@@ -943,6 +958,27 @@ def check_http_endpoint(url: str, timeout_seconds: int) -> tuple[bool, int, str]
         status = int(response.status)
     elapsed_ms = int((time.monotonic() - start) * 1000)
     return 200 <= status < 400, elapsed_ms, f"HTTP {status}"
+
+
+def check_statuspage_endpoint(url: str, timeout_seconds: int) -> tuple[bool, int, str]:
+    start = time.monotonic()
+    request = urllib.request.Request(url, method="GET", headers={"User-Agent": "WickedYodaBot/1.0"})
+    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+        status_code = int(response.status)
+        body = response.read().decode("utf-8", errors="replace")
+    elapsed_ms = int((time.monotonic() - start) * 1000)
+    if status_code < 200 or status_code >= 400:
+        return False, elapsed_ms, f"HTTP {status_code}"
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError:
+        return False, elapsed_ms, "Invalid JSON response"
+    status = payload.get("status", {}) if isinstance(payload, dict) else {}
+    indicator = str(status.get("indicator", "")).lower()
+    description = str(status.get("description", "")).strip()
+    is_ok = indicator == "none"
+    detail = description or f"Indicator: {indicator or 'unknown'}"
+    return is_ok, elapsed_ms, detail
 
 
 def check_tcp_endpoint(host: str, port: int, timeout_seconds: int) -> tuple[bool, int, str]:
@@ -5735,6 +5771,8 @@ class ModerationBot(commands.Bot):
             elif monitor_type == "tcp":
                 host, port = parse_tcp_target(target)
                 ok, latency_ms, detail = await asyncio.to_thread(check_tcp_endpoint, host, port, timeout_seconds)
+            elif monitor_type == "statuspage":
+                ok, latency_ms, detail = await asyncio.to_thread(check_statuspage_endpoint, target, timeout_seconds)
             else:
                 raise ValueError("Unsupported monitor type.")
             status = "up" if ok else "down"

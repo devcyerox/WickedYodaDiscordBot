@@ -268,6 +268,16 @@ def _normalize_monitor_target(raw_value: str, monitor_type: str) -> str:
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             raise ValueError("HTTP monitor target must be a valid http(s) URL.")
         return urlunparse(parsed)
+    if monitor_type == "statuspage":
+        if "://" not in candidate:
+            candidate = f"https://{candidate}"
+        parsed = urlparse(candidate)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("Status page URL must be a valid http(s) URL.")
+        path = parsed.path.rstrip("/")
+        if not path.endswith("/api/v2/status.json"):
+            path = f"{path}/api/v2/status.json" if path else "/api/v2/status.json"
+        return urlunparse((parsed.scheme, parsed.netloc, path, "", "", ""))
     if monitor_type == "tcp":
         if candidate.startswith("tcp://"):
             candidate = candidate[6:]
@@ -284,7 +294,7 @@ def _normalize_monitor_target(raw_value: str, monitor_type: str) -> str:
         if port <= 0 or port > 65535:
             raise ValueError("TCP target port must be between 1 and 65535.")
         return f"{host.strip()}:{port}"
-    raise ValueError("Monitor type must be http or tcp.")
+    raise ValueError("Monitor type must be http, tcp, or statuspage.")
 
 
 def _normalize_linkedin_source(raw_value: str) -> str:
@@ -2447,13 +2457,23 @@ PAGE_TEMPLATE = """
             <div class="col-12 col-md-6 col-xl-2">
               <label class="form-label" for="monitor_type">Type</label>
               <select class="form-select" id="monitor_type" name="monitor_type" {% if not session.get("is_admin") %}disabled{% endif %}>
-                <option value="http">HTTP</option>
+                <option value="http">HTTP (Website/API)</option>
+                <option value="statuspage">Status Page</option>
                 <option value="tcp">TCP</option>
               </select>
             </div>
             <div class="col-12 col-xl-4">
               <label class="form-label" for="monitor_target">Target</label>
               <input class="form-control" id="monitor_target" name="monitor_target" placeholder="https://example.com or host:port" required {% if not session.get("is_admin") %}disabled{% endif %}>
+            </div>
+            <div class="col-12 col-xl-3">
+              <label class="form-label" for="monitor_preset">Preset</label>
+              <select class="form-select" id="monitor_preset" {% if not session.get("is_admin") %}disabled{% endif %}>
+                <option value="">Choose a preset...</option>
+                <option value="discord">Discord Status</option>
+                <option value="tailscale">Tailscale Status</option>
+              </select>
+              <div class="form-text">Presets use Statuspage endpoints.</div>
             </div>
             <div class="col-6 col-md-3 col-xl-1">
               <label class="form-label" for="monitor_interval">Interval</label>
@@ -2485,6 +2505,23 @@ PAGE_TEMPLATE = """
             </div>
           </div>
         </form>
+        <script>
+          (function () {
+            const preset = document.getElementById("monitor_preset");
+            const type = document.getElementById("monitor_type");
+            const target = document.getElementById("monitor_target");
+            if (!preset || !type || !target) return;
+            preset.addEventListener("change", () => {
+              if (preset.value === "discord") {
+                type.value = "statuspage";
+                target.value = "https://discordstatus.com";
+              } else if (preset.value === "tailscale") {
+                type.value = "statuspage";
+                target.value = "https://status.tailscale.com";
+              }
+            });
+          })();
+        </script>
         {% if not notification_channels %}
         <p class="small text-danger mt-2 mb-0">No text channels found. Verify bot guild/channel permissions and refresh.</p>
         {% endif %}
