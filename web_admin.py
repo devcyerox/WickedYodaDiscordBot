@@ -1390,6 +1390,7 @@ def _ensure_users_table(db_path: str) -> None:
                 first_name TEXT NOT NULL DEFAULT '',
                 last_name TEXT NOT NULL DEFAULT '',
                 is_admin INTEGER NOT NULL DEFAULT 0,
+                is_guild_admin INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 password_changed_at TEXT NOT NULL
             )
@@ -1405,7 +1406,146 @@ def _ensure_users_table(db_path: str) -> None:
         if "password_changed_at" not in columns:
             conn.execute("ALTER TABLE web_users ADD COLUMN password_changed_at TEXT")
             conn.execute("UPDATE web_users SET password_changed_at = COALESCE(password_changed_at, created_at)")
+        if "is_guild_admin" not in columns:
+            conn.execute("ALTER TABLE web_users ADD COLUMN is_guild_admin INTEGER NOT NULL DEFAULT 0")
         conn.commit()
+
+
+def _ensure_guild_access_tables(db_path: str) -> None:
+    directory = os.path.dirname(db_path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    with _sqlite_connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS guild_groups (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS guild_group_guilds (
+                group_id INTEGER NOT NULL,
+                guild_id INTEGER NOT NULL,
+                UNIQUE(group_id, guild_id)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS guild_group_users (
+                group_id INTEGER NOT NULL,
+                user_email TEXT NOT NULL,
+                UNIQUE(group_id, user_email)
+            )
+            """
+        )
+        conn.commit()
+
+
+def _list_guild_groups(db_path: str) -> list[dict]:
+    _ensure_guild_access_tables(db_path)
+    with _sqlite_connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute("SELECT id, name, created_at FROM guild_groups ORDER BY name ASC").fetchall()
+    return [dict(row) for row in rows]
+
+
+def _create_guild_group(db_path: str, name: str) -> None:
+    _ensure_guild_access_tables(db_path)
+    now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
+    with _sqlite_connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO guild_groups (name, created_at, updated_at)
+            VALUES (?, ?, ?)
+            """,
+            (name.strip(), now, now),
+        )
+        conn.commit()
+
+
+def _delete_guild_group(db_path: str, group_id: int) -> None:
+    _ensure_guild_access_tables(db_path)
+    with _sqlite_connect(db_path) as conn:
+        conn.execute("DELETE FROM guild_group_guilds WHERE group_id = ?", (int(group_id),))
+        conn.execute("DELETE FROM guild_group_users WHERE group_id = ?", (int(group_id),))
+        conn.execute("DELETE FROM guild_groups WHERE id = ?", (int(group_id),))
+        conn.commit()
+
+
+def _set_guild_group_guilds(db_path: str, group_id: int, guild_ids: list[int]) -> None:
+    _ensure_guild_access_tables(db_path)
+    with _sqlite_connect(db_path) as conn:
+        conn.execute("DELETE FROM guild_group_guilds WHERE group_id = ?", (int(group_id),))
+        for guild_id in sorted({int(value) for value in guild_ids if int(value) > 0}):
+            conn.execute(
+                "INSERT OR IGNORE INTO guild_group_guilds (group_id, guild_id) VALUES (?, ?)",
+                (int(group_id), int(guild_id)),
+            )
+        conn.commit()
+
+
+def _set_guild_group_users(db_path: str, group_id: int, user_emails: list[str]) -> None:
+    _ensure_guild_access_tables(db_path)
+    normalized = sorted({email.strip().lower() for email in user_emails if email.strip()})
+    with _sqlite_connect(db_path) as conn:
+        conn.execute("DELETE FROM guild_group_users WHERE group_id = ?", (int(group_id),))
+        for email in normalized:
+            conn.execute(
+                "INSERT OR IGNORE INTO guild_group_users (group_id, user_email) VALUES (?, ?)",
+                (int(group_id), email),
+            )
+        conn.commit()
+
+
+def _list_group_guild_ids(db_path: str, group_id: int) -> list[int]:
+    _ensure_guild_access_tables(db_path)
+    with _sqlite_connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT guild_id FROM guild_group_guilds WHERE group_id = ? ORDER BY guild_id ASC",
+            (int(group_id),),
+        ).fetchall()
+    return [int(row[0]) for row in rows]
+
+
+def _list_group_user_emails(db_path: str, group_id: int) -> list[str]:
+    _ensure_guild_access_tables(db_path)
+    with _sqlite_connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT user_email FROM guild_group_users WHERE group_id = ? ORDER BY user_email ASC",
+            (int(group_id),),
+        ).fetchall()
+    return [str(row[0]) for row in rows]
+
+
+def _allowed_guild_ids_for_user(db_path: str, user: dict | None) -> set[int] | None:
+    if not user:
+        return None
+    if bool(user.get("is_admin")):
+        return None
+    if not bool(user.get("is_guild_admin")):
+        return None
+    email = str(user.get("email", "")).strip().lower()
+    if not email:
+        return set()
+    _ensure_guild_access_tables(db_path)
+    with _sqlite_connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT guild_id
+            FROM guild_group_guilds
+            WHERE group_id IN (
+                SELECT group_id FROM guild_group_users WHERE user_email = ?
+            )
+            """,
+            (email,),
+        ).fetchall()
+    return {int(row[0]) for row in rows}
 
 
 def _build_display_name(display_name: str | None, first_name: str | None, last_name: str | None) -> str:
@@ -1420,6 +1560,7 @@ def _upsert_user(
     email: str,
     password_hash: str,
     is_admin: bool,
+    is_guild_admin: bool = False,
     display_name: str | None = None,
     first_name: str = "",
     last_name: str = "",
@@ -1435,8 +1576,10 @@ def _upsert_user(
     with _sqlite_connect(db_path) as conn:
         conn.execute(
             """
-            INSERT INTO web_users (email, password_hash, display_name, first_name, last_name, is_admin, created_at, password_changed_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO web_users (
+                email, password_hash, display_name, first_name, last_name, is_admin, is_guild_admin, created_at, password_changed_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(email) DO UPDATE SET
                 password_hash = excluded.password_hash,
                 display_name = excluded.display_name,
@@ -1446,7 +1589,8 @@ def _upsert_user(
                     WHEN ? IS NULL THEN web_users.password_changed_at
                     ELSE excluded.password_changed_at
                 END,
-                is_admin = excluded.is_admin
+                is_admin = excluded.is_admin,
+                is_guild_admin = excluded.is_guild_admin
             """,
             (
                 email.lower(),
@@ -1455,6 +1599,7 @@ def _upsert_user(
                 normalized_first_name,
                 normalized_last_name,
                 int(is_admin),
+                int(is_guild_admin),
                 created_at,
                 resolved_password_changed_at,
                 password_changed_at,
@@ -1468,7 +1613,11 @@ def _get_user(db_path: str, email: str) -> dict | None:
     with _sqlite_connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute(
-            "SELECT email, password_hash, display_name, first_name, last_name, is_admin, created_at, password_changed_at FROM web_users WHERE email = ?",
+            """
+            SELECT email, password_hash, display_name, first_name, last_name, is_admin, is_guild_admin, created_at, password_changed_at
+            FROM web_users
+            WHERE email = ?
+            """,
             (email.lower(),),
         ).fetchone()
     return dict(row) if row else None
@@ -1479,7 +1628,11 @@ def _list_users(db_path: str) -> list[dict]:
     with _sqlite_connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
-            "SELECT email, display_name, first_name, last_name, is_admin, created_at FROM web_users ORDER BY email ASC"
+            """
+            SELECT email, display_name, first_name, last_name, is_admin, is_guild_admin, created_at
+            FROM web_users
+            ORDER BY email ASC
+            """
         ).fetchall()
     return [dict(row) for row in rows]
 
@@ -1501,6 +1654,7 @@ def _update_user_record(
     first_name: str = "",
     last_name: str = "",
     is_admin: bool,
+    is_guild_admin: bool,
     password_hash: str | None = None,
 ) -> tuple[bool, str]:
     _ensure_users_table(db_path)
@@ -1526,7 +1680,7 @@ def _update_user_record(
         conn.execute(
             """
             UPDATE web_users
-            SET email = ?, password_hash = ?, display_name = ?, first_name = ?, last_name = ?, is_admin = ?, password_changed_at = ?
+            SET email = ?, password_hash = ?, display_name = ?, first_name = ?, last_name = ?, is_admin = ?, is_guild_admin = ?, password_changed_at = ?
             WHERE email = ?
             """,
             (
@@ -1536,6 +1690,7 @@ def _update_user_record(
                 first_name.strip(),
                 last_name.strip(),
                 int(is_admin),
+                int(is_guild_admin),
                 password_changed_at,
                 current_email.strip().lower(),
             ),
@@ -1964,6 +2119,7 @@ PAGE_TEMPLATE = """
             <ul class="dropdown-menu dropdown-menu-end">
               <li><h6 class="dropdown-header">Core</h6></li>
               <li><a class="dropdown-item" href="{{ url_for('home') }}">Home</a></li>
+              <li><a class="dropdown-item" href="{{ url_for('account') }}">Account</a></li>
               <li><a class="dropdown-item" href="{{ url_for('dashboard') }}">Dashboard</a></li>
               <li><a class="dropdown-item" href="{{ url_for('overview') }}">Overview</a></li>
               <li><a class="dropdown-item" href="{{ url_for('guilds_page') }}">Servers</a></li>
@@ -1987,14 +2143,16 @@ PAGE_TEMPLATE = """
               <li><h6 class="dropdown-header">Uptime</h6></li>
               <li><a class="dropdown-item" href="{{ url_for('uptime_monitors_page') }}">Uptime Monitors</a></li>
               <li><a class="dropdown-item" href="{{ url_for('status_page') }}">Status</a></li>
+              {% if session.get("is_admin") %}
               <li><hr class="dropdown-divider"></li>
               <li><h6 class="dropdown-header">Admin</h6></li>
               <li><a class="dropdown-item" href="{{ url_for('users') }}">Users</a></li>
-              <li><a class="dropdown-item" href="{{ url_for('account') }}">Account</a></li>
+              <li><a class="dropdown-item" href="{{ url_for('guild_access') }}">Guild Access</a></li>
               <li><a class="dropdown-item" href="{{ url_for('settings') }}">Settings (Global)</a></li>
               <li><a class="dropdown-item" href="{{ url_for('observability') }}">Observability (Global)</a></li>
               <li><a class="dropdown-item" href="{{ url_for('logs') }}">Logs (Global)</a></li>
               <li><a class="dropdown-item" href="{{ url_for('documentation') }}">Documentation (Global)</a></li>
+              {% endif %}
               {% if restart_enabled %}
               <li><hr class="dropdown-divider"></li>
               <li>
@@ -2042,7 +2200,7 @@ PAGE_TEMPLATE = """
     {% if session.get("user") and selected_guild_name %}
     <p class="small text-secondary mb-3">Managing guild: <strong>{{ selected_guild_name }}</strong> ({{ selected_guild_id }})</p>
     {% endif %}
-    {% if session.get("user") and not session.get("is_admin") %}
+    {% if session.get("user") and not session.get("is_admin") and not session.get("is_guild_admin") %}
     <div class="alert alert-info">Read-only account: you can view pages, but admin changes are restricted.</div>
     {% endif %}
 
@@ -2192,7 +2350,7 @@ PAGE_TEMPLATE = """
               </div>
               <div class="dashboard-pill">
                 <strong>Access</strong>
-                <span>{{ "Admin" if session.get("is_admin") else "Read-only" }}</span>
+                <span>{{ "Admin" if session.get("is_admin") else ("Guild Admin" if session.get("is_guild_admin") else "Read-only") }}</span>
               </div>
               <div class="dashboard-pill">
                 <strong>Commands Enabled</strong>
@@ -2444,7 +2602,7 @@ PAGE_TEMPLATE = """
           <div class="col-12 col-md-4">
             <div class="card card-soft p-3 h-100">
               <p class="text-secondary small mb-1">Access</p>
-              <p class="mb-0 fw-semibold">{{ "Admin" if session.get("is_admin") else "Read-only" }}</p>
+              <p class="mb-0 fw-semibold">{{ "Admin" if session.get("is_admin") else ("Guild Admin" if session.get("is_guild_admin") else "Read-only") }}</p>
             </div>
           </div>
           <div class="col-12 col-md-4">
@@ -2452,6 +2610,25 @@ PAGE_TEMPLATE = """
               <p class="text-secondary small mb-1">Latency</p>
               <p class="mb-0 fw-semibold">{{ snapshot.latency_ms }} ms</p>
             </div>
+          </div>
+        </div>
+        <div class="mt-4">
+          <h3 class="h6 mb-2">Latest Actions</h3>
+          <div class="table-wrap">
+            <table class="table table-sm align-middle">
+              <thead><tr><th>Time (UTC)</th><th>Action</th><th>Status</th></tr></thead>
+              <tbody>
+                {% for row in actions %}
+                <tr>
+                  <td class="small">{{ row.created_at }}</td>
+                  <td>{{ row.action }}</td>
+                  <td><span class="badge text-bg-{{ 'success' if row.status == 'success' else 'danger' }} status-pill">{{ row.status }}</span></td>
+                </tr>
+                {% else %}
+                <tr><td colspan="3" class="text-secondary">No actions logged yet.</td></tr>
+                {% endfor %}
+              </tbody>
+            </table>
           </div>
         </div>
       </div>
@@ -2462,11 +2639,11 @@ PAGE_TEMPLATE = """
           <div class="row g-2">
             <div class="col-12 col-xl-3">
               <label class="form-label" for="monitor_name">Name</label>
-              <input class="form-control" id="monitor_name" name="monitor_name" placeholder="API - prod" required {% if not session.get("is_admin") %}disabled{% endif %}>
+              <input class="form-control" id="monitor_name" name="monitor_name" placeholder="API - prod" required {% if not can_manage_guild %}disabled{% endif %}>
             </div>
             <div class="col-12 col-md-6 col-xl-2">
               <label class="form-label" for="monitor_type">Type</label>
-              <select class="form-select" id="monitor_type" name="monitor_type" {% if not session.get("is_admin") %}disabled{% endif %}>
+              <select class="form-select" id="monitor_type" name="monitor_type" {% if not can_manage_guild %}disabled{% endif %}>
                 <option value="http">HTTP (Website/API)</option>
                 <option value="statuspage">Status Page</option>
                 <option value="tcp">TCP</option>
@@ -2474,11 +2651,11 @@ PAGE_TEMPLATE = """
             </div>
             <div class="col-12 col-xl-4">
               <label class="form-label" for="monitor_target">Target</label>
-              <input class="form-control" id="monitor_target" name="monitor_target" placeholder="https://example.com or host:port" required {% if not session.get("is_admin") %}disabled{% endif %}>
+              <input class="form-control" id="monitor_target" name="monitor_target" placeholder="https://example.com or host:port" required {% if not can_manage_guild %}disabled{% endif %}>
             </div>
             <div class="col-12 col-xl-3">
               <label class="form-label" for="monitor_preset">Preset</label>
-              <select class="form-select" id="monitor_preset" {% if not session.get("is_admin") %}disabled{% endif %}>
+              <select class="form-select" id="monitor_preset" {% if not can_manage_guild %}disabled{% endif %}>
                 <option value="">Choose a preset...</option>
                 <option value="discord">Discord Status</option>
                 <option value="tailscale">Tailscale Status</option>
@@ -2487,7 +2664,7 @@ PAGE_TEMPLATE = """
             </div>
             <div class="col-6 col-md-3 col-xl-1">
               <label class="form-label" for="monitor_interval">Interval</label>
-              <select class="form-select" id="monitor_interval" name="interval_seconds" {% if not session.get("is_admin") %}disabled{% endif %}>
+              <select class="form-select" id="monitor_interval" name="interval_seconds" {% if not can_manage_guild %}disabled{% endif %}>
                 {% for option in monitor_interval_options %}
                 <option value="{{ option.value }}">{{ option.label }}</option>
                 {% endfor %}
@@ -2495,7 +2672,7 @@ PAGE_TEMPLATE = """
             </div>
             <div class="col-6 col-md-3 col-xl-1">
               <label class="form-label" for="monitor_timeout">Timeout</label>
-              <select class="form-select" id="monitor_timeout" name="timeout_seconds" {% if not session.get("is_admin") %}disabled{% endif %}>
+              <select class="form-select" id="monitor_timeout" name="timeout_seconds" {% if not can_manage_guild %}disabled{% endif %}>
                 {% for option in monitor_timeout_options %}
                 <option value="{{ option }}">{{ option }}s</option>
                 {% endfor %}
@@ -2503,7 +2680,7 @@ PAGE_TEMPLATE = """
             </div>
             <div class="col-12 col-md-6 col-xl-4">
               <label class="form-label" for="monitor_channel">Alert Channel</label>
-              <select class="form-select" id="monitor_channel" name="alert_channel_id" {% if not session.get("is_admin") %}disabled{% endif %}>
+              <select class="form-select" id="monitor_channel" name="alert_channel_id" {% if not can_manage_guild %}disabled{% endif %}>
                 <option value="">Default (Bot Log / Guild Setting)</option>
                 {% for channel in notification_channels %}
                 <option value="{{ channel.id }}">{{ channel.name }} ({{ channel.id }})</option>
@@ -2511,7 +2688,7 @@ PAGE_TEMPLATE = """
               </select>
             </div>
             <div class="col-12 col-xl-1 d-flex align-items-end">
-              <button class="btn btn-primary w-100" type="submit" {% if not session.get("is_admin") %}disabled{% endif %}>Add</button>
+              <button class="btn btn-primary w-100" type="submit" {% if not can_manage_guild %}disabled{% endif %}>Add</button>
             </div>
           </div>
         </form>
@@ -2568,12 +2745,12 @@ PAGE_TEMPLATE = """
                 <td class="small d-flex gap-2">
                   <form method="post" action="{{ url_for('uptime_monitor_toggle', monitor_id=row.id) }}">
                     <input type="hidden" name="enabled" value="{{ 0 if row.enabled else 1 }}">
-                    <button class="btn btn-sm btn-outline-secondary" type="submit" {% if not session.get("is_admin") %}disabled{% endif %}>
+                    <button class="btn btn-sm btn-outline-secondary" type="submit" {% if not can_manage_guild %}disabled{% endif %}>
                       {{ "Disable" if row.enabled else "Enable" }}
                     </button>
                   </form>
                   <form method="post" action="{{ url_for('uptime_monitor_delete', monitor_id=row.id) }}">
-                    <button class="btn btn-sm btn-outline-danger" type="submit" {% if not session.get("is_admin") %}disabled{% endif %}>Delete</button>
+                    <button class="btn btn-sm btn-outline-danger" type="submit" {% if not can_manage_guild %}disabled{% endif %}>Delete</button>
                   </form>
                 </td>
               </tr>
@@ -2771,7 +2948,7 @@ PAGE_TEMPLATE = """
             </select>
           </div>
           <div>
-            <button class="btn btn-primary" type="submit" {% if not session.get("is_admin") %}disabled{% endif %}>Pick Random User</button>
+            <button class="btn btn-primary" type="submit" {% if not can_manage_guild %}disabled{% endif %}>Pick Random User</button>
           </div>
         </form>
         {% if random_user_result %}
@@ -2792,11 +2969,11 @@ PAGE_TEMPLATE = """
           <div class="row g-2">
             <div class="col-12 col-xl-4">
               <label class="form-label" for="youtube_url">YouTube Channel URL</label>
-              <input class="form-control" id="youtube_url" name="youtube_url" placeholder="https://www.youtube.com/@channelname" required {% if not session.get("is_admin") %}disabled{% endif %}>
+              <input class="form-control" id="youtube_url" name="youtube_url" placeholder="https://www.youtube.com/@channelname" required {% if not can_manage_guild %}disabled{% endif %}>
             </div>
             <div class="col-12 col-md-6 col-xl-3">
               <label class="form-label" for="notify_channel_id">Discord Notify Channel</label>
-              <select class="form-select" id="notify_channel_id" name="notify_channel_id" required {% if not session.get("is_admin") %}disabled{% endif %}>
+              <select class="form-select" id="notify_channel_id" name="notify_channel_id" required {% if not can_manage_guild %}disabled{% endif %}>
                 <option value="">Select channel...</option>
                 {% for channel in notification_channels %}
                 <option value="{{ channel.id }}">{{ channel.name }} ({{ channel.id }})</option>
@@ -2805,7 +2982,7 @@ PAGE_TEMPLATE = """
             </div>
             <div class="col-12 col-md-6 col-xl-2">
               <label class="form-label" for="youtube_interval">Schedule</label>
-              <select class="form-select" id="youtube_interval" name="poll_interval_seconds" {% if not session.get("is_admin") %}disabled{% endif %}>
+              <select class="form-select" id="youtube_interval" name="poll_interval_seconds" {% if not can_manage_guild %}disabled{% endif %}>
                 {% for option in feed_interval_options %}
                 <option value="{{ option.value }}">{{ option.label }}</option>
                 {% endfor %}
@@ -2814,16 +2991,16 @@ PAGE_TEMPLATE = """
             <div class="col-12 col-xl-2">
               <label class="form-label d-block">Notify On</label>
               <div class="form-check">
-                <input class="form-check-input" type="checkbox" id="youtube_include_uploads" name="include_uploads" value="1" checked {% if not session.get("is_admin") %}disabled{% endif %}>
+                <input class="form-check-input" type="checkbox" id="youtube_include_uploads" name="include_uploads" value="1" checked {% if not can_manage_guild %}disabled{% endif %}>
                 <label class="form-check-label" for="youtube_include_uploads">Uploads / Shorts</label>
               </div>
               <div class="form-check">
-                <input class="form-check-input" type="checkbox" id="youtube_include_posts" name="include_community_posts" value="1" {% if not session.get("is_admin") %}disabled{% endif %}>
+                <input class="form-check-input" type="checkbox" id="youtube_include_posts" name="include_community_posts" value="1" {% if not can_manage_guild %}disabled{% endif %}>
                 <label class="form-check-label" for="youtube_include_posts">Community Posts</label>
               </div>
             </div>
             <div class="col-12 col-xl-1 d-flex align-items-end">
-              <button class="btn btn-primary w-100" type="submit" {% if not session.get("is_admin") %}disabled{% endif %}>Add</button>
+              <button class="btn btn-primary w-100" type="submit" {% if not can_manage_guild %}disabled{% endif %}>Add</button>
             </div>
           </div>
         </form>
@@ -2864,7 +3041,7 @@ PAGE_TEMPLATE = """
                 </td>
                 <td>
                   <form method="post" action="{{ url_for('youtube_delete', subscription_id=row.id) }}">
-                    <button class="btn btn-sm btn-outline-danger" type="submit" {% if not session.get("is_admin") %}disabled{% endif %}>Delete</button>
+                    <button class="btn btn-sm btn-outline-danger" type="submit" {% if not can_manage_guild %}disabled{% endif %}>Delete</button>
                   </form>
                 </td>
               </tr>
@@ -2882,11 +3059,11 @@ PAGE_TEMPLATE = """
           <div class="row g-2">
             <div class="col-12 col-xl-4">
               <label class="form-label" for="reddit_source">Reddit Forum</label>
-              <input class="form-control" id="reddit_source" name="reddit_source" placeholder="r/python or https://www.reddit.com/r/python" required {% if not session.get("is_admin") %}disabled{% endif %}>
+              <input class="form-control" id="reddit_source" name="reddit_source" placeholder="r/python or https://www.reddit.com/r/python" required {% if not can_manage_guild %}disabled{% endif %}>
             </div>
             <div class="col-12 col-md-6 col-xl-4">
               <label class="form-label" for="reddit_channel_id">Discord Notify Channel</label>
-              <select class="form-select" id="reddit_channel_id" name="notify_channel_id" required {% if not session.get("is_admin") %}disabled{% endif %}>
+              <select class="form-select" id="reddit_channel_id" name="notify_channel_id" required {% if not can_manage_guild %}disabled{% endif %}>
                 <option value="">Select channel...</option>
                 {% for channel in notification_channels %}
                 <option value="{{ channel.id }}">{{ channel.name }} ({{ channel.id }})</option>
@@ -2895,14 +3072,14 @@ PAGE_TEMPLATE = """
             </div>
             <div class="col-12 col-md-6 col-xl-3">
               <label class="form-label" for="reddit_interval">Schedule</label>
-              <select class="form-select" id="reddit_interval" name="poll_interval_seconds" {% if not session.get("is_admin") %}disabled{% endif %}>
+              <select class="form-select" id="reddit_interval" name="poll_interval_seconds" {% if not can_manage_guild %}disabled{% endif %}>
                 {% for option in feed_interval_options %}
                 <option value="{{ option.value }}">{{ option.label }}</option>
                 {% endfor %}
               </select>
             </div>
             <div class="col-12 col-xl-1 d-flex align-items-end">
-              <button class="btn btn-primary w-100" type="submit" {% if not session.get("is_admin") %}disabled{% endif %}>Add</button>
+              <button class="btn btn-primary w-100" type="submit" {% if not can_manage_guild %}disabled{% endif %}>Add</button>
             </div>
           </div>
         </form>
@@ -2935,7 +3112,7 @@ PAGE_TEMPLATE = """
                 </td>
                 <td>
                   <form method="post" action="{{ url_for('reddit_delete', feed_id=row.id) }}">
-                    <button class="btn btn-sm btn-outline-danger" type="submit" {% if not session.get("is_admin") %}disabled{% endif %}>Delete</button>
+                    <button class="btn btn-sm btn-outline-danger" type="submit" {% if not can_manage_guild %}disabled{% endif %}>Delete</button>
                   </form>
                 </td>
               </tr>
@@ -2953,11 +3130,11 @@ PAGE_TEMPLATE = """
           <div class="row g-2">
             <div class="col-12 col-xl-4">
               <label class="form-label" for="wordpress_site_url">WordPress Site URL</label>
-              <input class="form-control" id="wordpress_site_url" name="wordpress_site_url" placeholder="https://wickedyoda.com" required {% if not session.get("is_admin") %}disabled{% endif %}>
+              <input class="form-control" id="wordpress_site_url" name="wordpress_site_url" placeholder="https://wickedyoda.com" required {% if not can_manage_guild %}disabled{% endif %}>
             </div>
             <div class="col-12 col-md-6 col-xl-4">
               <label class="form-label" for="wordpress_channel_id">Discord Notify Channel</label>
-              <select class="form-select" id="wordpress_channel_id" name="notify_channel_id" required {% if not session.get("is_admin") %}disabled{% endif %}>
+              <select class="form-select" id="wordpress_channel_id" name="notify_channel_id" required {% if not can_manage_guild %}disabled{% endif %}>
                 <option value="">Select channel...</option>
                 {% for channel in notification_channels %}
                 <option value="{{ channel.id }}">{{ channel.name }} ({{ channel.id }})</option>
@@ -2966,14 +3143,14 @@ PAGE_TEMPLATE = """
             </div>
             <div class="col-12 col-md-6 col-xl-3">
               <label class="form-label" for="wordpress_interval">Schedule</label>
-              <select class="form-select" id="wordpress_interval" name="poll_interval_seconds" {% if not session.get("is_admin") %}disabled{% endif %}>
+              <select class="form-select" id="wordpress_interval" name="poll_interval_seconds" {% if not can_manage_guild %}disabled{% endif %}>
                 {% for option in feed_interval_options %}
                 <option value="{{ option.value }}">{{ option.label }}</option>
                 {% endfor %}
               </select>
             </div>
             <div class="col-12 col-xl-1 d-flex align-items-end">
-              <button class="btn btn-primary w-100" type="submit" {% if not session.get("is_admin") %}disabled{% endif %}>Add</button>
+              <button class="btn btn-primary w-100" type="submit" {% if not can_manage_guild %}disabled{% endif %}>Add</button>
             </div>
           </div>
         </form>
@@ -3007,7 +3184,7 @@ PAGE_TEMPLATE = """
                 </td>
                 <td>
                   <form method="post" action="{{ url_for('wordpress_delete', feed_id=row.id) }}">
-                    <button class="btn btn-sm btn-outline-danger" type="submit" {% if not session.get("is_admin") %}disabled{% endif %}>Delete</button>
+                    <button class="btn btn-sm btn-outline-danger" type="submit" {% if not can_manage_guild %}disabled{% endif %}>Delete</button>
                   </form>
                 </td>
               </tr>
@@ -3026,11 +3203,11 @@ PAGE_TEMPLATE = """
           <div class="row g-2">
             <div class="col-12 col-xl-4">
               <label class="form-label" for="linkedin_profile_url">LinkedIn Profile/Page URL</label>
-              <input class="form-control" id="linkedin_profile_url" name="linkedin_profile_url" placeholder="https://www.linkedin.com/in/example" required {% if not session.get("is_admin") %}disabled{% endif %}>
+              <input class="form-control" id="linkedin_profile_url" name="linkedin_profile_url" placeholder="https://www.linkedin.com/in/example" required {% if not can_manage_guild %}disabled{% endif %}>
             </div>
             <div class="col-12 col-md-6 col-xl-4">
               <label class="form-label" for="linkedin_channel_id">Discord Notify Channel</label>
-              <select class="form-select" id="linkedin_channel_id" name="notify_channel_id" required {% if not session.get("is_admin") %}disabled{% endif %}>
+              <select class="form-select" id="linkedin_channel_id" name="notify_channel_id" required {% if not can_manage_guild %}disabled{% endif %}>
                 <option value="">Select channel...</option>
                 {% for channel in notification_channels %}
                 <option value="{{ channel.id }}">{{ channel.name }} ({{ channel.id }})</option>
@@ -3039,14 +3216,14 @@ PAGE_TEMPLATE = """
             </div>
             <div class="col-12 col-md-6 col-xl-3">
               <label class="form-label" for="linkedin_interval">Schedule</label>
-              <select class="form-select" id="linkedin_interval" name="poll_interval_seconds" {% if not session.get("is_admin") %}disabled{% endif %}>
+              <select class="form-select" id="linkedin_interval" name="poll_interval_seconds" {% if not can_manage_guild %}disabled{% endif %}>
                 {% for option in feed_interval_options %}
                 <option value="{{ option.value }}">{{ option.label }}</option>
                 {% endfor %}
               </select>
             </div>
             <div class="col-12 col-xl-1 d-flex align-items-end">
-              <button class="btn btn-primary w-100" type="submit" {% if not session.get("is_admin") %}disabled{% endif %}>Add</button>
+              <button class="btn btn-primary w-100" type="submit" {% if not can_manage_guild %}disabled{% endif %}>Add</button>
             </div>
           </div>
         </form>
@@ -3080,7 +3257,7 @@ PAGE_TEMPLATE = """
                 </td>
                 <td>
                   <form method="post" action="{{ url_for('linkedin_delete', feed_id=row.id) }}">
-                    <button class="btn btn-sm btn-outline-danger" type="submit" {% if not session.get("is_admin") %}disabled{% endif %}>Delete</button>
+                    <button class="btn btn-sm btn-outline-danger" type="submit" {% if not can_manage_guild %}disabled{% endif %}>Delete</button>
                   </form>
                 </td>
               </tr>
@@ -3109,13 +3286,13 @@ PAGE_TEMPLATE = """
           <div class="row g-3">
             <div class="col-12 col-lg-4">
               <div class="form-check mt-4">
-                <input class="form-check-input" type="checkbox" id="spicy_prompts_enabled" name="spicy_prompts_enabled" value="1" {% if spicy_settings.spicy_prompts_enabled %}checked{% endif %} {% if not session.get("is_admin") %}disabled{% endif %}>
+                <input class="form-check-input" type="checkbox" id="spicy_prompts_enabled" name="spicy_prompts_enabled" value="1" {% if spicy_settings.spicy_prompts_enabled %}checked{% endif %} {% if not can_manage_guild %}disabled{% endif %}>
                 <label class="form-check-label" for="spicy_prompts_enabled">Enable `/spicy` for this guild</label>
               </div>
             </div>
             <div class="col-12 col-lg-8">
               <label class="form-label" for="spicy_prompts_channel_id">Allowed Channel</label>
-              <select class="form-select" id="spicy_prompts_channel_id" name="spicy_prompts_channel_id" {% if not session.get("is_admin") %}disabled{% endif %}>
+              <select class="form-select" id="spicy_prompts_channel_id" name="spicy_prompts_channel_id" {% if not can_manage_guild %}disabled{% endif %}>
                 <option value="">Select age-restricted channel...</option>
                 {% for channel in notification_channels %}
                 <option value="{{ channel.id }}" {% if selected_spicy_channel_id == channel.id|string %}selected{% endif %}>
@@ -3126,7 +3303,7 @@ PAGE_TEMPLATE = """
               <div class="form-text">`/spicy` only works in the configured age-restricted channel. Non-NSFW channels are rejected.</div>
             </div>
             <div class="col-12">
-              <button class="btn btn-primary" type="submit" {% if not session.get("is_admin") %}disabled{% endif %}>Save Spicy Prompt Settings</button>
+              <button class="btn btn-primary" type="submit" {% if not can_manage_guild %}disabled{% endif %}>Save Spicy Prompt Settings</button>
             </div>
           </div>
         </form>
@@ -3452,7 +3629,7 @@ PAGE_TEMPLATE = """
                   </td>
                   <td class="small">{{ item.default_policy_label }}</td>
                   <td>
-                    <select class="form-select" name="mode__{{ item.key }}" data-mode-select="{{ item.key }}" {% if not session.get("is_admin") %}disabled{% endif %}>
+                    <select class="form-select" name="mode__{{ item.key }}" data-mode-select="{{ item.key }}" {% if not can_manage_guild %}disabled{% endif %}>
                       <option value="default" {% if item.mode == "default" %}selected{% endif %}>Default</option>
                       <option value="disabled" {% if item.mode == "disabled" %}selected{% endif %}>Disabled</option>
                       <option value="public" {% if item.mode == "public" %}selected{% endif %}>Public</option>
@@ -3462,13 +3639,13 @@ PAGE_TEMPLATE = """
                   <td>
                     <div class="command-roles" data-role-container="{{ item.key }}">
                       {% if role_options %}
-                      <select class="form-select mb-2" name="role_ids__{{ item.key }}" multiple size="5" {% if not session.get("is_admin") %}disabled{% endif %}>
+                      <select class="form-select mb-2" name="role_ids__{{ item.key }}" multiple size="5" {% if not can_manage_guild %}disabled{% endif %}>
                         {% for role in role_options %}
                         <option value="{{ role.id }}" {% if role.id|string in item.role_id_strings %}selected{% endif %}>{{ role.name }} ({{ role.id }})</option>
                         {% endfor %}
                       </select>
                       {% endif %}
-                      <input class="form-control" name="role_ids_text__{{ item.key }}" value="{{ item.role_ids_csv }}" placeholder="Comma-separated role IDs" {% if not session.get("is_admin") %}disabled{% endif %}>
+                      <input class="form-control" name="role_ids_text__{{ item.key }}" value="{{ item.role_ids_csv }}" placeholder="Comma-separated role IDs" {% if not can_manage_guild %}disabled{% endif %}>
                     </div>
                   </td>
                 </tr>
@@ -3502,7 +3679,7 @@ PAGE_TEMPLATE = """
               }
             });
           </script>
-          <button class="btn btn-primary" type="submit" {% if not session.get("is_admin") %}disabled{% endif %}>Save Command Permissions</button>
+          <button class="btn btn-primary" type="submit" {% if not can_manage_guild %}disabled{% endif %}>Save Command Permissions</button>
         </form>
       </div>
     {% elif page == "tag_responses" %}
@@ -3511,9 +3688,9 @@ PAGE_TEMPLATE = """
         <p class="small text-secondary">Edit JSON mapping used by `/tag`, `/tags`, and `!tag` message shortcuts.</p>
         <form method="post" action="{{ url_for('tag_responses') }}">
           <div class="mb-3">
-            <textarea class="form-control font-monospace" rows="18" name="tag_json" {% if not session.get("is_admin") %}disabled{% endif %}>{{ tag_json }}</textarea>
+            <textarea class="form-control font-monospace" rows="18" name="tag_json" {% if not can_manage_guild %}disabled{% endif %}>{{ tag_json }}</textarea>
           </div>
-          <button class="btn btn-primary" type="submit" {% if not session.get("is_admin") %}disabled{% endif %}>Save Tag Responses</button>
+          <button class="btn btn-primary" type="submit" {% if not can_manage_guild %}disabled{% endif %}>Save Tag Responses</button>
         </form>
       </div>
     {% elif page == "users" %}
@@ -3542,10 +3719,11 @@ PAGE_TEMPLATE = """
               <input class="form-control" id="new_password" name="password" type="password" required {% if not session.get("is_admin") %}disabled{% endif %}>
             </div>
             <div class="col-12 col-lg-2">
-              <label class="form-label" for="new_is_admin">Role</label>
-              <select class="form-select" id="new_is_admin" name="is_admin" {% if not session.get("is_admin") %}disabled{% endif %}>
-                <option value="0">Read-only</option>
-                <option value="1">Admin</option>
+              <label class="form-label" for="new_role">Role</label>
+              <select class="form-select" id="new_role" name="role" {% if not session.get("is_admin") %}disabled{% endif %}>
+                <option value="read-only">Read-only</option>
+                <option value="guild-admin">Guild Admin</option>
+                <option value="admin">Admin</option>
               </select>
             </div>
             <div class="col-12 col-lg-1 d-flex align-items-end">
@@ -3579,9 +3757,10 @@ PAGE_TEMPLATE = """
                 </td>
                 <td class="small">{{ row.email }}</td>
                 <td>
-                    <select class="form-select form-select-sm" name="is_admin" {% if not session.get("is_admin") %}disabled{% endif %}>
-                      <option value="0" {% if not row.is_admin %}selected{% endif %}>Read-only</option>
-                      <option value="1" {% if row.is_admin %}selected{% endif %}>Admin</option>
+                    <select class="form-select form-select-sm" name="role" {% if not session.get("is_admin") %}disabled{% endif %}>
+                      <option value="read-only" {% if not row.is_admin and not row.is_guild_admin %}selected{% endif %}>Read-only</option>
+                      <option value="guild-admin" {% if row.is_guild_admin %}selected{% endif %}>Guild Admin</option>
+                      <option value="admin" {% if row.is_admin %}selected{% endif %}>Admin</option>
                     </select>
                 </td>
                 <td class="small">{{ row.created_at }}</td>
@@ -3601,6 +3780,62 @@ PAGE_TEMPLATE = """
               </tr>
               {% else %}
               <tr><td colspan="5" class="text-secondary">No users available.</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    {% elif page == "guild_access" %}
+      <div class="card card-soft p-3 mb-3">
+        <h1 class="h5 mb-3">Guild Access</h1>
+        <p class="text-secondary small mb-3">Create groups of guilds and assign users who can manage them.</p>
+        <form method="post" action="{{ url_for('guild_access_create') }}">
+          <div class="row g-2 align-items-end">
+            <div class="col-12 col-lg-6">
+              <label class="form-label" for="group_name">Group Name</label>
+              <input class="form-control" id="group_name" name="group_name" placeholder="Community Moderators" required>
+            </div>
+            <div class="col-12 col-lg-2">
+              <button class="btn btn-primary w-100" type="submit">Create Group</button>
+            </div>
+          </div>
+        </form>
+      </div>
+      <div class="card card-soft p-3">
+        <div class="table-wrap">
+          <table class="table table-sm align-middle">
+            <thead><tr><th>Group</th><th>Guilds</th><th>Users</th><th>Actions</th></tr></thead>
+            <tbody>
+              {% for group in guild_access_groups %}
+              <tr>
+                <td class="fw-semibold">{{ group.name }}</td>
+                <td>
+                  <form method="post" action="{{ url_for('guild_access_update') }}" class="d-grid gap-2">
+                    <input type="hidden" name="group_id" value="{{ group.id }}">
+                    <select class="form-select" name="guild_ids" multiple size="6">
+                      {% for guild in guild_access_guilds %}
+                      <option value="{{ guild.id }}" {% if guild.id in group.guild_ids %}selected{% endif %}>{{ guild.name }}</option>
+                      {% endfor %}
+                    </select>
+                </td>
+                <td>
+                    <select class="form-select" name="user_emails" multiple size="6">
+                      {% for user in guild_access_users %}
+                      <option value="{{ user.email }}" {% if user.email in group.user_emails %}selected{% endif %}>{{ user.display_name or user.email }}</option>
+                      {% endfor %}
+                    </select>
+                </td>
+                <td>
+                    <button class="btn btn-sm btn-primary w-100" type="submit">Save</button>
+                  </form>
+                  <form method="post" action="{{ url_for('guild_access_delete') }}" class="mt-2" onsubmit="return confirm('Delete this guild access group?');">
+                    <input type="hidden" name="group_id" value="{{ group.id }}">
+                    <button class="btn btn-sm btn-outline-danger w-100" type="submit">Delete</button>
+                  </form>
+                </td>
+              </tr>
+              {% else %}
+              <tr><td colspan="4" class="text-secondary">No guild access groups defined.</td></tr>
               {% endfor %}
             </tbody>
           </table>
@@ -3734,19 +3969,19 @@ PAGE_TEMPLATE = """
               <input type="hidden" name="action" value="identity">
               <div class="mb-3">
                 <label class="form-label" for="bot_name">Bot Username (optional)</label>
-                <input class="form-control" id="bot_name" name="bot_name" placeholder="WickedYodaBot" {% if not session.get("is_admin") %}disabled{% endif %}>
+                <input class="form-control" id="bot_name" name="bot_name" placeholder="WickedYodaBot" {% if not can_manage_guild %}disabled{% endif %}>
                 <div class="form-text">Leave blank to keep current username.</div>
               </div>
               <div class="mb-3">
                 <label class="form-label" for="server_nickname">Server Nickname (optional)</label>
-                <input class="form-control" id="server_nickname" name="server_nickname" placeholder="Wicked Yoda's Little Helper" {% if not session.get("is_admin") %}disabled{% endif %}>
+                <input class="form-control" id="server_nickname" name="server_nickname" placeholder="Wicked Yoda's Little Helper" {% if not can_manage_guild %}disabled{% endif %}>
                 <div class="form-text">Nickname applies only to selected guild.</div>
               </div>
               <div class="form-check mb-3">
-                <input class="form-check-input" type="checkbox" id="clear_server_nickname" name="clear_server_nickname" value="1" {% if not session.get("is_admin") %}disabled{% endif %}>
+                <input class="form-check-input" type="checkbox" id="clear_server_nickname" name="clear_server_nickname" value="1" {% if not can_manage_guild %}disabled{% endif %}>
                 <label class="form-check-label" for="clear_server_nickname">Clear server nickname</label>
               </div>
-              <button class="btn btn-primary" type="submit" {% if not session.get("is_admin") %}disabled{% endif %}>Update Bot Profile</button>
+              <button class="btn btn-primary" type="submit" {% if not can_manage_guild %}disabled{% endif %}>Update Bot Profile</button>
             </form>
           </div>
         </div>
@@ -3758,9 +3993,9 @@ PAGE_TEMPLATE = """
               <input type="hidden" name="action" value="avatar">
               <div class="mb-3">
                 <label class="form-label" for="avatar_file">Avatar Image</label>
-                <input class="form-control" id="avatar_file" name="avatar_file" type="file" accept=".png,.jpg,.jpeg,.webp,.gif,image/*" required {% if not session.get("is_admin") %}disabled{% endif %}>
+                <input class="form-control" id="avatar_file" name="avatar_file" type="file" accept=".png,.jpg,.jpeg,.webp,.gif,image/*" required {% if not can_manage_guild %}disabled{% endif %}>
               </div>
-              <button class="btn btn-primary" type="submit" {% if not session.get("is_admin") %}disabled{% endif %}>Upload Avatar</button>
+              <button class="btn btn-primary" type="submit" {% if not can_manage_guild %}disabled{% endif %}>Upload Avatar</button>
             </form>
           </div>
         </div>
@@ -3827,7 +4062,7 @@ PAGE_TEMPLATE = """
         <form method="post" action="{{ url_for('guild_settings') }}">
           <div class="mb-3">
             <label class="form-label" for="bot_log_channel_id">Bot Log Channel</label>
-            <select class="form-select" id="bot_log_channel_id" name="bot_log_channel_id" {% if not session.get("is_admin") %}disabled{% endif %}>
+            <select class="form-select" id="bot_log_channel_id" name="bot_log_channel_id" {% if not can_manage_guild %}disabled{% endif %}>
               <option value="">Use global default (env Bot_Log_Channel)</option>
               {% for channel in notification_channels %}
               <option value="{{ channel.id }}" {% if selected_log_channel_id == channel.id|string %}selected{% endif %}>
@@ -3839,7 +4074,7 @@ PAGE_TEMPLATE = """
           </div>
           <div class="mb-3">
             <label class="form-label" for="uptime_alert_channel_id">Uptime Alert Channel</label>
-            <select class="form-select" id="uptime_alert_channel_id" name="uptime_alert_channel_id" {% if not session.get("is_admin") %}disabled{% endif %}>
+            <select class="form-select" id="uptime_alert_channel_id" name="uptime_alert_channel_id" {% if not can_manage_guild %}disabled{% endif %}>
               <option value="">Use bot log channel</option>
               {% for channel in notification_channels %}
               <option value="{{ channel.id }}" {% if selected_uptime_channel_id == channel.id|string %}selected{% endif %}>
@@ -3849,7 +4084,7 @@ PAGE_TEMPLATE = """
             </select>
             <div class="form-text">Optional override for uptime monitor alerts; falls back to the bot log channel when unset.</div>
           </div>
-          <button class="btn btn-primary" type="submit" {% if not session.get("is_admin") %}disabled{% endif %}>Save Guild Settings</button>
+          <button class="btn btn-primary" type="submit" {% if not can_manage_guild %}disabled{% endif %}>Save Guild Settings</button>
         </form>
       </div>
     {% elif page == "settings" %}
@@ -3972,6 +4207,8 @@ def create_app(
     resolve_linkedin_feed: Callable[[str], dict] | None = None,
 ) -> Flask:
     app = Flask(__name__)
+    _ensure_users_table(db_path)
+    _ensure_guild_access_tables(db_path)
     configured_secret = os.getenv("WEB_ADMIN_SESSION_SECRET")
     if configured_secret:
         app.secret_key = configured_secret
@@ -4081,6 +4318,7 @@ def create_app(
                 raw_options = []
 
         options: list[dict] = []
+        allowed_ids = _allowed_guild_ids_for_user(db_path, _current_user())
         for item in raw_options:
             if not isinstance(item, dict):
                 continue
@@ -4097,6 +4335,8 @@ def create_app(
             member_count = item.get("member_count")
             if not isinstance(member_count, int):
                 member_count = None
+            if allowed_ids is not None and guild_id not in allowed_ids:
+                continue
             options.append(
                 {
                     "id": guild_id,
@@ -4107,6 +4347,8 @@ def create_app(
                 }
             )
 
+        if allowed_ids is not None:
+            return sorted(options, key=lambda item: item["name"].lower())
         if options:
             return sorted(options, key=lambda item: item["name"].lower())
 
@@ -4165,6 +4407,7 @@ def create_app(
             guild_options=guild_options,
             restart_enabled=restart_enabled,
             feed_interval_options=[{"value": value, "label": label} for value, label in FEED_INTERVAL_OPTIONS],
+            can_manage_guild=_current_user_is_admin() or _current_user_is_guild_admin(),
             **kwargs,
         )
 
@@ -4504,6 +4747,7 @@ def create_app(
     def _clear_auth_session() -> None:
         session.pop("user", None)
         session.pop("is_admin", None)
+        session.pop("is_guild_admin", None)
         session.pop("auth_mode", None)
         session.pop("auth_issued_at", None)
         session.pop("auth_last_seen", None)
@@ -4514,6 +4758,7 @@ def create_app(
         now_dt = datetime.now(UTC)
         session["user"] = str(user.get("email", "")).strip().lower()
         session["is_admin"] = bool(user.get("is_admin"))
+        session["is_guild_admin"] = bool(user.get("is_guild_admin"))
         session["auth_mode"] = AUTH_MODE_REMEMBER if remember_login else AUTH_MODE_STANDARD
         session["auth_issued_at"] = now_dt.isoformat()
         session["auth_last_seen"] = now_dt.isoformat()
@@ -4586,6 +4831,7 @@ def create_app(
             _clear_auth_session()
             return None
         session["is_admin"] = bool(user.get("is_admin"))
+        session["is_guild_admin"] = bool(user.get("is_guild_admin"))
         session["password_rotation_required"] = _password_rotation_required(user)
         return user
 
@@ -4638,6 +4884,12 @@ def create_app(
 
     def _current_user_is_admin() -> bool:
         return bool(session.get("is_admin"))
+
+    def _current_user_is_guild_admin() -> bool:
+        return bool(session.get("is_guild_admin"))
+
+    def _current_user_can_manage_guild() -> bool:
+        return _current_user_is_admin() or _current_user_is_guild_admin()
 
     def _reject_read_only_write(redirect_endpoint: str):
         flash("Read-only accounts can view this page but cannot make changes.", "warning")
@@ -4985,7 +5237,7 @@ def create_app(
     @app.post("/admin/uptime-monitors/add")
     @login_required
     def uptime_monitor_add():
-        if not _current_user_is_admin():
+        if not _current_user_can_manage_guild():
             return _reject_read_only_write("uptime_monitors_page")
         selected_guild_id, _, _ = _selected_guild_context()
         name = request.form.get("monitor_name", "").strip()
@@ -5020,7 +5272,7 @@ def create_app(
     @app.post("/admin/uptime-monitors/<int:monitor_id>/toggle")
     @login_required
     def uptime_monitor_toggle(monitor_id: int):
-        if not _current_user_is_admin():
+        if not _current_user_can_manage_guild():
             return _reject_read_only_write("uptime_monitors_page")
         enabled = str(request.form.get("enabled", "")).strip()
         updated = _set_uptime_monitor_enabled(db_path, monitor_id, enabled == "1")
@@ -5033,7 +5285,7 @@ def create_app(
     @app.post("/admin/uptime-monitors/<int:monitor_id>/delete")
     @login_required
     def uptime_monitor_delete(monitor_id: int):
-        if not _current_user_is_admin():
+        if not _current_user_can_manage_guild():
             return _reject_read_only_write("uptime_monitors_page")
         deleted = _delete_uptime_monitor(db_path, monitor_id)
         if deleted:
@@ -5043,7 +5295,7 @@ def create_app(
         return redirect(url_for("uptime_monitors_page"))
 
     @app.get("/admin/observability")
-    @login_required
+    @admin_required
     def observability():
         snapshot = _collect_observability_snapshot()
         observability_payload = {
@@ -5075,7 +5327,7 @@ def create_app(
         profile_payload = _call_get_bot_profile(selected_guild_id)
 
         if request.method == "POST":
-            if not _current_user_is_admin():
+            if not _current_user_can_manage_guild():
                 return _reject_read_only_write("bot_profile")
             action = str(request.form.get("action", "identity")).strip().lower()
             if action == "identity":
@@ -5188,6 +5440,7 @@ def create_app(
             "observability",
             "public_status_everything",
             "users",
+            "guild_access",
             "command_permissions",
             "tag_responses",
             "guild_settings",
@@ -5201,11 +5454,14 @@ def create_app(
     @app.get("/admin")
     @login_required
     def dashboard():
+        selected_guild_id, _, _ = _selected_guild_context()
         snapshot = get_bot_snapshot()
+        actions = _fetch_actions(db_path, limit=15, guild_id=selected_guild_id)
         return _render_page(
             "dashboard",
             "Web Admin Dashboard",
             snapshot=snapshot,
+            actions=actions,
         )
 
     @app.get("/admin/overview")
@@ -5279,7 +5535,7 @@ def create_app(
         selected_role_id = ""
         result: dict | None = None
         if request.method == "POST":
-            if not session.get("is_admin"):
+            if not _current_user_can_manage_guild():
                 return _reject_read_only_write("random_user_page")
             raw_role_id = str(request.form.get("role_id", "")).strip()
             selected_role_id = raw_role_id if raw_role_id.isdigit() else ""
@@ -5383,7 +5639,7 @@ def create_app(
     @app.post("/admin/youtube/add")
     @login_required
     def youtube_add():
-        if not _current_user_is_admin():
+        if not _current_user_can_manage_guild():
             return _reject_read_only_write("youtube_subscriptions")
         selected_guild_id, _, _ = _selected_guild_context()
         source_url = request.form.get("youtube_url", "").strip()
@@ -5449,7 +5705,7 @@ def create_app(
     @app.post("/admin/youtube/<int:subscription_id>/delete")
     @login_required
     def youtube_delete(subscription_id: int):
-        if not _current_user_is_admin():
+        if not _current_user_can_manage_guild():
             return _reject_read_only_write("youtube_subscriptions")
         selected_guild_id, _, _ = _selected_guild_context()
         catalog_payload = _call_get_discord_catalog(selected_guild_id)
@@ -5496,7 +5752,7 @@ def create_app(
     @app.post("/admin/reddit/add")
     @login_required
     def reddit_add():
-        if not _current_user_is_admin():
+        if not _current_user_can_manage_guild():
             return _reject_read_only_write("reddit_feeds")
         selected_guild_id, _, _ = _selected_guild_context()
         reddit_source = request.form.get("reddit_source", "").strip()
@@ -5535,7 +5791,7 @@ def create_app(
     @app.post("/admin/reddit/<int:feed_id>/delete")
     @login_required
     def reddit_delete(feed_id: int):
-        if not _current_user_is_admin():
+        if not _current_user_can_manage_guild():
             return _reject_read_only_write("reddit_feeds")
         selected_guild_id, _, _ = _selected_guild_context()
         catalog_payload = _call_get_discord_catalog(selected_guild_id)
@@ -5582,7 +5838,7 @@ def create_app(
     @app.post("/admin/wordpress/add")
     @login_required
     def wordpress_add():
-        if not _current_user_is_admin():
+        if not _current_user_can_manage_guild():
             return _reject_read_only_write("wordpress_feeds")
         selected_guild_id, _, _ = _selected_guild_context()
         wordpress_site_url = request.form.get("wordpress_site_url", "").strip()
@@ -5630,7 +5886,7 @@ def create_app(
     @app.post("/admin/wordpress/<int:feed_id>/delete")
     @login_required
     def wordpress_delete(feed_id: int):
-        if not _current_user_is_admin():
+        if not _current_user_can_manage_guild():
             return _reject_read_only_write("wordpress_feeds")
         selected_guild_id, _, _ = _selected_guild_context()
         catalog_payload = _call_get_discord_catalog(selected_guild_id)
@@ -5677,7 +5933,7 @@ def create_app(
     @app.post("/admin/linkedin/add")
     @login_required
     def linkedin_add():
-        if not _current_user_is_admin():
+        if not _current_user_can_manage_guild():
             return _reject_read_only_write("linkedin_feeds")
         selected_guild_id, _, _ = _selected_guild_context()
         linkedin_profile_url = request.form.get("linkedin_profile_url", "").strip()
@@ -5725,7 +5981,7 @@ def create_app(
     @app.post("/admin/linkedin/<int:feed_id>/delete")
     @login_required
     def linkedin_delete(feed_id: int):
-        if not _current_user_is_admin():
+        if not _current_user_can_manage_guild():
             return _reject_read_only_write("linkedin_feeds")
         selected_guild_id, _, _ = _selected_guild_context()
         catalog_payload = _call_get_discord_catalog(selected_guild_id)
@@ -5783,8 +6039,10 @@ def create_app(
         return redirect(url_for("spicy_prompts"))
 
     @app.post("/admin/spicy-prompts/settings")
-    @admin_required
+    @login_required
     def spicy_prompts_settings_save():
+        if not _current_user_can_manage_guild():
+            return _reject_read_only_write("spicy_prompts")
         selected_guild_id, _, _ = _selected_guild_context()
         catalog_payload = _call_get_discord_catalog(selected_guild_id)
         channels: list[dict] = []
@@ -5823,7 +6081,7 @@ def create_app(
         return redirect(url_for("spicy_prompts"))
 
     @app.get("/admin/logs")
-    @login_required
+    @admin_required
     def logs():
         log_dir = _resolve_log_directory(db_path)
         log_options = list(LOG_FILE_OPTIONS)
@@ -5850,7 +6108,7 @@ def create_app(
         )
 
     @app.get("/admin/logs/download")
-    @login_required
+    @admin_required
     def logs_download():
         log_dir = _resolve_log_directory(db_path)
         log_options = list(LOG_FILE_OPTIONS)
@@ -5960,7 +6218,7 @@ def create_app(
             role_options = catalog_payload.get("roles", []) or []
 
         if request.method == "POST":
-            if not _current_user_is_admin():
+            if not _current_user_can_manage_guild():
                 return _reject_read_only_write("command_permissions")
             command_updates: dict[str, dict] = {}
             for command_key in request.form.getlist("command_key"):
@@ -6009,7 +6267,7 @@ def create_app(
     def tag_responses():
         selected_guild_id, _, _ = _selected_guild_context()
         if request.method == "POST":
-            if not _current_user_is_admin():
+            if not _current_user_can_manage_guild():
                 return _reject_read_only_write("tag_responses")
             raw_json = request.form.get("tag_json", "")
             try:
@@ -6055,7 +6313,7 @@ def create_app(
                 channel_options = [item for item in raw_channels if isinstance(item, dict)]
 
         if request.method == "POST":
-            if not _current_user_is_admin():
+            if not _current_user_can_manage_guild():
                 return _reject_read_only_write("guild_settings")
             payload = {
                 "bot_log_channel_id": request.form.get("bot_log_channel_id", "").strip(),
@@ -6098,6 +6356,72 @@ def create_app(
             users=_list_users(db_path),
         )
 
+    @app.get("/admin/guild-access")
+    @admin_required
+    def guild_access():
+        groups = _list_guild_groups(db_path)
+        group_payload = []
+        for group in groups:
+            group_id = int(group.get("id", 0))
+            group_payload.append(
+                {
+                    **group,
+                    "guild_ids": _list_group_guild_ids(db_path, group_id),
+                    "user_emails": _list_group_user_emails(db_path, group_id),
+                }
+            )
+        guild_options = _managed_guild_options()
+        users_payload = _list_users(db_path)
+        return _render_page(
+            "guild_access",
+            "Guild Access",
+            guild_access_groups=group_payload,
+            guild_access_guilds=guild_options,
+            guild_access_users=users_payload,
+        )
+
+    @app.post("/admin/guild-access/create")
+    @admin_required
+    def guild_access_create():
+        group_name = request.form.get("group_name", "").strip()
+        if not group_name:
+            flash("Group name is required.", "danger")
+            return redirect(url_for("guild_access"))
+        _create_guild_group(db_path, group_name)
+        flash("Guild access group created.", "success")
+        return redirect(url_for("guild_access"))
+
+    @app.post("/admin/guild-access/update")
+    @admin_required
+    def guild_access_update():
+        group_id_raw = request.form.get("group_id", "").strip()
+        if not group_id_raw.isdigit():
+            flash("Invalid group selection.", "danger")
+            return redirect(url_for("guild_access"))
+        group_id = int(group_id_raw)
+        guild_ids = [int(value) for value in request.form.getlist("guild_ids") if str(value).isdigit()]
+        allowed_users = {str(user.get("email", "")).strip().lower() for user in _list_users(db_path)}
+        user_emails = [
+            email.strip().lower()
+            for email in request.form.getlist("user_emails")
+            if _is_valid_email(email) and email.strip().lower() in allowed_users
+        ]
+        _set_guild_group_guilds(db_path, group_id, guild_ids)
+        _set_guild_group_users(db_path, group_id, user_emails)
+        flash("Guild access group updated.", "success")
+        return redirect(url_for("guild_access"))
+
+    @app.post("/admin/guild-access/delete")
+    @admin_required
+    def guild_access_delete():
+        group_id_raw = request.form.get("group_id", "").strip()
+        if not group_id_raw.isdigit():
+            flash("Invalid group selection.", "danger")
+            return redirect(url_for("guild_access"))
+        _delete_guild_group(db_path, int(group_id_raw))
+        flash("Guild access group deleted.", "success")
+        return redirect(url_for("guild_access"))
+
     @app.post("/admin/users/add")
     @admin_required
     def users_add():
@@ -6106,7 +6430,9 @@ def create_app(
         first_name = request.form.get("first_name", "").strip()
         last_name = request.form.get("last_name", "").strip()
         password = request.form.get("password", "")
-        is_admin = request.form.get("is_admin", "0").strip() == "1"
+        role = request.form.get("role", "read-only").strip().lower()
+        is_admin = role == "admin"
+        is_guild_admin = role == "guild-admin"
 
         if not _is_valid_email(email):
             flash("Please provide a valid email address.", "danger")
@@ -6121,6 +6447,7 @@ def create_app(
             email,
             generate_password_hash(password),
             is_admin=is_admin,
+            is_guild_admin=is_guild_admin,
             display_name=display_name,
             first_name=first_name,
             last_name=last_name,
@@ -6138,7 +6465,9 @@ def create_app(
         first_name = request.form.get("first_name", "").strip()
         last_name = request.form.get("last_name", "").strip()
         new_password = request.form.get("new_password", "")
-        is_admin = request.form.get("is_admin", "0").strip() == "1"
+        role = request.form.get("role", "read-only").strip().lower()
+        is_admin = role == "admin"
+        is_guild_admin = role == "guild-admin"
         current_user = str(session.get("user", "")).strip().lower()
 
         if not current_email:
@@ -6148,7 +6477,7 @@ def create_app(
         if not user:
             flash("User not found.", "warning")
             return redirect(url_for("users"))
-        if current_email == current_user and not is_admin:
+        if current_email == current_user and role == "read-only":
             flash("You cannot make your own account read-only.", "danger")
             return redirect(url_for("users"))
         if bool(user.get("is_admin")) and not is_admin:
@@ -6172,6 +6501,7 @@ def create_app(
             first_name=first_name,
             last_name=last_name,
             is_admin=is_admin,
+            is_guild_admin=is_guild_admin,
             password_hash=password_hash,
         )
         if not ok:
@@ -6180,6 +6510,7 @@ def create_app(
         if current_email == current_user:
             session["user"] = (new_email or current_email).lower()
             session["is_admin"] = is_admin
+            session["is_guild_admin"] = is_guild_admin
         flash(message, "success")
         return redirect(url_for("users"))
 
@@ -6254,6 +6585,7 @@ def create_app(
                     first_name=first_name,
                     last_name=last_name,
                     is_admin=bool(user.get("is_admin")),
+                    is_guild_admin=bool(user.get("is_guild_admin")),
                     password_hash=generate_password_hash(new_password) if new_password else None,
                 )
                 if not ok:
@@ -6273,6 +6605,7 @@ def create_app(
                     first_name=first_name,
                     last_name=last_name,
                     is_admin=bool(user.get("is_admin")),
+                    is_guild_admin=bool(user.get("is_guild_admin")),
                     password_hash=None,
                 )
                 if not ok:
@@ -6309,6 +6642,7 @@ def create_app(
                 first_name=str(user.get("first_name", "")),
                 last_name=str(user.get("last_name", "")),
                 is_admin=bool(user.get("is_admin")),
+                is_guild_admin=bool(user.get("is_guild_admin")),
                 password_hash=generate_password_hash(new_password),
             )
             if not ok:

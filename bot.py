@@ -2599,9 +2599,7 @@ class ActionStore:
                 )
                 """
             )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_uptime_monitors_guild ON uptime_monitors(guild_id)"
-            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_uptime_monitors_guild ON uptime_monitors(guild_id)")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS member_activity_summary (
