@@ -1,6 +1,6 @@
 # Command Reference
 
-Last Updated: 2026-03-25
+Last Updated: 2026-03-28
 
 Guild-scoped slash commands currently registered in `bot.py`.
 
@@ -219,6 +219,43 @@ Example usage:
   - Reply visibility follows `COMMAND_RESPONSES_EPHEMERAL`.
   - Logs success/failure to configured guild log channel (or global `Bot_Log_Channel` fallback) and SQLite action history.
 
+## `/translate`
+
+- Description: Translate text to a selected language.
+- Parameters:
+  - `text` (`str`)
+  - `language` (`choice`) - target language
+- Required user permissions: none
+- Bot action:
+  - Uses `TRANSLATE_API_URL` (default LibreTranslate) to translate the input text.
+  - Returns translated text (truncated if extremely long).
+  - Reply visibility follows `COMMAND_RESPONSES_EPHEMERAL`.
+  - Logs success/failure to configured guild log channel (or global `Bot_Log_Channel` fallback) and SQLite.
+
+## `/wikihelp`
+
+- Description: Search the configured game help wiki.
+- Parameters:
+  - `query` (`str`)
+- Required user permissions: none
+- Bot action:
+  - Requires `WIKI_SEARCH_ENABLED=true` and `WIKI_SEARCH_URL` configured.
+  - Returns up to a small set of best matches.
+  - Reply visibility follows `COMMAND_RESPONSES_EPHEMERAL`.
+  - Logs success/failure to configured guild log channel (or global `Bot_Log_Channel` fallback) and SQLite.
+
+## `/ollama`
+
+- Description: Ask the configured Ollama model.
+- Parameters:
+  - `prompt` (`str`)
+- Required user permissions: none
+- Bot action:
+  - Requires `OLLAMA_ENABLED=true` and `OLLAMA_BASE_URL` configured.
+  - Uses `OLLAMA_MODEL` and `OLLAMA_TIMEOUT_SECONDS` for requests.
+  - Reply visibility follows `COMMAND_RESPONSES_EPHEMERAL`.
+  - Logs success/failure to configured guild log channel (or global `Bot_Log_Channel` fallback) and SQLite.
+
 ## `/countdown`
 
 - Description: Count down to a future date.
@@ -269,6 +306,16 @@ Example usage:
   - Includes a short list of currently down monitors.
   - Reply visibility follows `COMMAND_RESPONSES_EPHEMERAL`.
   - Logs success/failure to configured guild log channel (or global `Bot_Log_Channel` fallback) and SQLite action history.
+
+## `/monitor`
+
+- Description: Show internal uptime monitor status summary for the current guild.
+- Parameters: none
+- Required user permissions: none
+- Bot action:
+  - Summarizes monitor counts and lists down monitors.
+  - Reply visibility follows `COMMAND_RESPONSES_EPHEMERAL`.
+  - Logs success/failure to configured guild log channel (or global `Bot_Log_Channel` fallback) and SQLite.
 
 ## `/logs`
 

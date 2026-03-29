@@ -1,6 +1,6 @@
 # Web Admin Interface
 
-Last Updated: 2026-03-22
+Last Updated: 2026-03-28
 
 The web admin is served by `web_admin.py` and is mobile-friendly.
 
@@ -12,7 +12,8 @@ The web admin is served by `web_admin.py` and is mobile-friendly.
 - Login attempts are rate-limited per IP.
 - Password rotation is enforced every 90 days.
 - Existing users can update their own email, name, and password in `My Account`.
-- Admins can manage other web users.
+- Admins can manage other web users and guild access groups.
+- Guild Admins can manage only the guilds assigned to their access groups.
 - Read-only users can view the full portal but cannot submit changes.
 
 ## Security Controls
@@ -26,17 +27,21 @@ The web admin is served by `web_admin.py` and is mobile-friendly.
 
 ## Navigation and Themes
 
-- Light/Black theme switch in top nav (saved in browser storage).
+- Theme switch in top nav (Light/Black/Ocean/Ember/Forest).
 - "Go to page..." quick selector in nav.
 - Guild selector at top controls the active guild context for guild-scoped pages.
+- Guild access is filtered by the logged-in user's role (Admin vs Guild Admin vs Read-only).
 
 ## Key Pages
 
 - Home: `/admin/home`
 - Servers: `/admin/guilds`
 - Dashboard: `/admin`
+- Overview: `/admin/overview`
 - Status: `/admin/status`
+- Uptime monitors: `/admin/uptime-monitors`
 - Actions: `/admin/actions`
+- Random user: `/admin/random-user`
 - Member activity: `/admin/member-activity`
 - Reddit feeds: `/admin/reddit`
 - WordPress feeds: `/admin/wordpress`
@@ -44,10 +49,12 @@ The web admin is served by `web_admin.py` and is mobile-friendly.
 - YouTube subscriptions: `/admin/youtube`
 - Spicy Prompts: `/admin/spicy-prompts`
 - Logs: `/admin/logs`
+- Logs download: `/admin/logs/download`
 - Documentation viewer: `/admin/documentation`
 - Wiki redirect: `/admin/wiki`
 - Account management: `/admin/account`
 - Users: `/admin/users` (login required, admin writes only)
+- Guild Access: `/admin/guild-access` (login required, admin only)
 - Command permissions: `/admin/command-permissions` (login required, admin writes only)
 - Tag responses: `/admin/tag-responses` (login required, admin writes only)
 - Guild settings: `/admin/guild-settings` (login required, admin writes only)
@@ -82,6 +89,14 @@ Users can manage their own profile from `/admin/account`:
 - change password
 
 Profile changes require the current password. If the email is changed, the active session is updated to the new email.
+
+## Roles and Guild Access
+
+- `Admin`: full read/write access across all guilds and global pages.
+- `Guild Admin`: read/write access for assigned guilds only.
+- `Read-only`: view access only.
+
+Guild Admin access is configured under `/admin/guild-access` by creating groups, assigning guilds to each group, and then assigning user emails to those groups.
 
 ## Feed Automation Pages
 
@@ -124,11 +139,27 @@ Related env vars:
 - `/admin/restart` is only useful when `WEB_RESTART_ENABLED=true`.
 - Intended for containerized environments where process exit triggers container restart.
 
+## Uptime Monitors
+
+Uptime monitoring is configured per guild in `/admin/uptime-monitors`.
+
+- Monitor types: HTTP, TCP, Status Page
+- Target examples:
+  - HTTP: `https://example.com`
+  - TCP: `host:port`
+  - Status Page: `https://status.example.com`
+- Poll interval and timeout are configured per monitor.
+- Alerts post to the per-guild uptime alert channel set in `/admin/guild-settings`.
+
+## Logs
+
+- Logs are surfaced under `/admin/logs`.
+- Download all log files as a zip from `/admin/logs/download`.
 
 ## Dashboard
 
-- Spicy Prompts status (enabled/disabled + channel) is shown for the selected guild.
-- Command Status table lists commands with Public/Moderator/Custom Roles/Disabled and enabled state.
+- `/admin/overview` provides the full dashboard with status cards, command visibility, and recent actions.
+- `/admin` provides a categorized directory of every admin page, grouped by Core, Community, Feeds, Uptime, Admin, and Account.
 
 
 ## Navigation

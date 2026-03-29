@@ -1,6 +1,6 @@
 # Feed Integrations
 
-Last Updated: 2026-03-22
+Last Updated: 2026-03-28
 
 The bot supports background content notifications configured entirely through the web GUI. These feeds are guild-scoped: each server chooses its own sources, target channels, and polling schedules.
 
@@ -50,7 +50,14 @@ The bot supports background content notifications configured entirely through th
 - Notes:
   - experimental
   - only works when LinkedIn exposes recent activity without authentication
-  - LinkedIn may block scraping or show a sign-in wall, which prevents notifications
+- LinkedIn may block scraping or show a sign-in wall, which prevents notifications
+
+## Uptime Monitoring (Related)
+
+Uptime monitors are configured separately under `/admin/uptime-monitors`, but they share the same guild-scoped behavior:
+
+- Each guild can create HTTP, TCP, or Status Page monitors.
+- Alerts post into the per-guild uptime alert channel set in `/admin/guild-settings`.
 
 ## Shared Feed Scheduling
 

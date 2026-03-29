@@ -1,6 +1,6 @@
 # Security Hardening
 
-Last Updated: 2026-03-22
+Last Updated: 2026-03-28
 
 This document tracks the active security controls implemented in the bot and web admin.
 
@@ -8,8 +8,9 @@ This document tracks the active security controls implemented in the bot and web
 
 - No public self-signup route
 - Admin-controlled user provisioning
-- Two web roles:
+- Three web roles:
   - `Admin`: full read/write access
+  - `Guild Admin`: read/write access scoped to assigned guilds only
   - `Read-only`: can view the full portal but cannot make changes
 - Admin self-demotion protection
 - Account self-service for:
