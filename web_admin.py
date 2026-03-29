@@ -2591,24 +2591,72 @@ PAGE_TEMPLATE = """
     {% elif page == "dashboard" %}
       <div class="card card-soft p-3">
         <h1 class="h5 mb-2">Dashboard</h1>
-        <p class="text-secondary mb-2">Select a section from the Menu to manage the bot or review activity. This page stays light for mobile.</p>
-        <div class="row g-3 mt-1">
-          <div class="col-12 col-md-4">
+        <p class="text-secondary mb-3">Every category is listed here for quick access.</p>
+        <div class="row g-3">
+          <div class="col-12 col-lg-4">
             <div class="card card-soft p-3 h-100">
-              <p class="text-secondary small mb-1">Selected Guild</p>
-              <p class="mb-0 fw-semibold">{{ selected_guild_name or snapshot.guild_id }}</p>
+              <h3 class="h6 mb-2">Core</h3>
+              <div class="d-grid gap-2">
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('home') }}">Home</a>
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('overview') }}">Overview</a>
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('guilds_page') }}">Servers</a>
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('guild_settings') }}">Guild Settings</a>
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('command_permissions') }}">Command Permissions</a>
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('bot_profile') }}">Bot Profile</a>
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('random_user_page') }}">Random User</a>
+              </div>
             </div>
           </div>
-          <div class="col-12 col-md-4">
+          <div class="col-12 col-lg-4">
             <div class="card card-soft p-3 h-100">
-              <p class="text-secondary small mb-1">Access</p>
-              <p class="mb-0 fw-semibold">{{ "Admin" if session.get("is_admin") else ("Guild Admin" if session.get("is_guild_admin") else "Read-only") }}</p>
+              <h3 class="h6 mb-2">Community</h3>
+              <div class="d-grid gap-2">
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('member_activity_page') }}">Member Activity</a>
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('actions') }}">Moderation Actions</a>
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('tag_responses') }}">Tag Responses</a>
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('spicy_prompts') }}">Spicy Prompts</a>
+              </div>
             </div>
           </div>
-          <div class="col-12 col-md-4">
+          <div class="col-12 col-lg-4">
             <div class="card card-soft p-3 h-100">
-              <p class="text-secondary small mb-1">Latency</p>
-              <p class="mb-0 fw-semibold">{{ snapshot.latency_ms }} ms</p>
+              <h3 class="h6 mb-2">Feeds</h3>
+              <div class="d-grid gap-2">
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('youtube_subscriptions') }}">YouTube</a>
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('reddit_feeds') }}">Reddit</a>
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('wordpress_feeds') }}">WordPress</a>
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('linkedin_feeds') }}">LinkedIn</a>
+              </div>
+            </div>
+          </div>
+          <div class="col-12 col-lg-4">
+            <div class="card card-soft p-3 h-100">
+              <h3 class="h6 mb-2">Uptime</h3>
+              <div class="d-grid gap-2">
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('uptime_monitors_page') }}">Uptime Monitors</a>
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('status_page') }}">Status</a>
+              </div>
+            </div>
+          </div>
+          <div class="col-12 col-lg-4">
+            <div class="card card-soft p-3 h-100">
+              <h3 class="h6 mb-2">Admin</h3>
+              <div class="d-grid gap-2">
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('users') }}">Users</a>
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('guild_access') }}">Guild Access</a>
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('settings') }}">Settings (Global)</a>
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('observability') }}">Observability (Global)</a>
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('logs') }}">Logs (Global)</a>
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('documentation') }}">Documentation (Global)</a>
+              </div>
+            </div>
+          </div>
+          <div class="col-12 col-lg-4">
+            <div class="card card-soft p-3 h-100">
+              <h3 class="h6 mb-2">Account</h3>
+              <div class="d-grid gap-2">
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('account') }}">My Account</a>
+              </div>
             </div>
           </div>
         </div>
