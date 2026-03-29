@@ -45,6 +45,7 @@ Current feature areas include moderation commands, fun/community slash commands,
   - `/admin/documentation/<page>`
   - `/admin/logs`
   - `/admin/logs/download`
+  - `/admin/logs/export`
   - `/admin/wiki`
   - `/admin/account`
 - Admin-write pages and actions:

@@ -20,11 +20,11 @@ Last Updated: 2026-03-28
 
 - In the shipped Docker Compose example, `DATA_DIR` in `env.env` is the host-side bind path for persistent data.
 - In the shipped Docker Compose example, `LOG_DIR` in `env.env` is the host-side bind path for persistent logs.
-- `docker-compose.yml` overrides the bot's in-container `DATA_DIR` to `/app/data` and `LOG_DIR` to `/app/logs`.
+- `docker-compose.yml` overrides the bot's in-container `DATA_DIR` to `/app/data` and `LOG_DIR` to `/logs`.
 - `ACTION_DB_PATH` defaults to the in-container `DATA_DIR/mod_actions.db` when unset.
 - `LOG_DIR` defaults under the in-container `DATA_DIR` when unset or invalid, but the shipped Compose example pins it to `/app/log`.
 - The shipped `docker-compose.yml` example bind-mounts `${DATA_DIR:-/root/docker/wickedyodabot}` to `/app/data`.
-- The shipped `docker-compose.yml` example bind-mounts `${LOG_DIR:-/root/docker/wickedyodabot/log}` to `/app/logs`.
+- The shipped `docker-compose.yml` example bind-mounts `${LOG_DIR:-/root/docker/wickedyodabot/log}` to `/logs`.
 - Start Compose with `docker compose --env-file env.env up -d` so the bind path comes from `env.env`.
 
 ## env.env Overlay
@@ -104,7 +104,7 @@ LOG_DIR=/root/docker/wickedyodabot/logs
 ## Log Retention
 
 - `LOG_RETENTION_DAYS` controls how long log files are kept (default 90).
-- Logs are written inside the container to `/app/logs` and should be bind-mounted to the host (e.g. `./logs:/app/logs`).
+- Logs are written inside the container to `/logs` and should be bind-mounted to the host (e.g. `./logs:/logs`).
 
 ## Guild Admin Access
 

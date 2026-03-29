@@ -154,7 +154,8 @@ Uptime monitoring is configured per guild in `/admin/uptime-monitors`.
 ## Logs
 
 - Logs are surfaced under `/admin/logs`.
-- Download all log files as a zip from `/admin/logs/download`.
+- Auto-refresh dropdown supports 1-120s intervals.
+- Export all log files (with manifest) from `/admin/logs/download` or `/admin/logs/export`.
 
 ## Dashboard
 

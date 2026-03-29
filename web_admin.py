@@ -2,6 +2,7 @@ import io
 import json
 import logging
 import os
+import re
 import secrets
 import sqlite3
 import threading
@@ -27,7 +28,17 @@ SENSITIVE_ENV_KEYS = {
 }
 SESSION_SAMESITE_OPTIONS = ("Lax", "Strict", "None")
 BOOL_SELECT_OPTIONS = ("false", "true")
-LOG_FILE_OPTIONS = ("bot.log", "bot_log.log", "container_errors.log", "web_gui_audit.log")
+LOG_FILE_OPTIONS = (
+    "bot.log",
+    "bot_log.log",
+    "container_errors.log",
+    "web_admin.log",
+    "web_audit.log",
+    "web_gui_audit.log",
+)
+AUTO_REFRESH_INTERVAL_OPTIONS = (0, 1, 5, 10, 30, 60, 120)
+LOG_EMAIL_PATTERN = re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b")
+LOG_SECRET_PATTERN = re.compile(r"(?i)\b(discord_token|token|password|authorization|cookie|secret)\b\s*[:=]\s*([^\s,;]+)")
 FEED_INTERVAL_OPTIONS = (
     (300, "5 minutes"),
     (600, "10 minutes"),
@@ -1283,7 +1294,7 @@ def _validate_settings_payload(
 def _resolve_log_directory(db_path: str) -> Path:
     configured = os.getenv("LOG_DIR", "").strip()
     fallback = Path(db_path).resolve().parent
-    preferred = Path(configured).expanduser() if configured else fallback
+    preferred = Path(configured).expanduser() if configured else Path("/logs")
     candidates = [preferred]
     if fallback != preferred:
         candidates.append(fallback)
@@ -1308,9 +1319,21 @@ def _resolve_log_path(log_dir: Path, selected_log: str) -> Path | None:
         return (log_dir / "bot_log.log").resolve()
     if selected_log == "container_errors.log":
         return (log_dir / "container_errors.log").resolve()
+    if selected_log == "web_admin.log":
+        return (log_dir / "web_admin.log").resolve()
+    if selected_log == "web_audit.log":
+        return (log_dir / "web_audit.log").resolve()
     if selected_log == "web_gui_audit.log":
         return (log_dir / "web_gui_audit.log").resolve()
     return None
+
+
+def _sanitize_log_text(text: str) -> str:
+    if not text:
+        return text
+    sanitized = LOG_EMAIL_PATTERN.sub("[redacted-email]", text)
+    sanitized = LOG_SECRET_PATTERN.sub(lambda match: f"{match.group(1)}=<redacted>", sanitized)
+    return sanitized
 
 
 def _tail_file(safe_path: Path, line_limit: int = 400) -> str:
@@ -1322,7 +1345,31 @@ def _tail_file(safe_path: Path, line_limit: int = 400) -> str:
         lines = handle.readlines()
     if not lines:
         return "(empty log file)"
-    return "".join(lines[-line_limit:])
+    return _sanitize_log_text("".join(lines[-line_limit:]))
+
+
+def _build_logs_export_payload(log_dir: Path, available_paths: list[Path]) -> tuple[bytes, list[str]]:
+    manifest_lines = [
+        f"generated_at_utc={datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S')}",
+        f"log_dir={log_dir}",
+        "",
+        "files:",
+    ]
+    archive = io.BytesIO()
+    exported_names: list[str] = []
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for path in available_paths:
+            try:
+                stat = path.stat()
+                exported_names.append(path.name)
+                manifest_lines.append(f"- {path.name} ({stat.st_size} bytes)")
+                zf.write(path, arcname=path.name)
+            except OSError:
+                continue
+        manifest_text = "\n".join(manifest_lines).strip() + "\n"
+        zf.writestr("manifest.txt", manifest_text)
+    archive.seek(0)
+    return archive.getvalue(), exported_names
 
 
 def _list_wiki_files() -> list[str]:
@@ -3461,7 +3508,7 @@ PAGE_TEMPLATE = """
             <h1 class="h5 mb-1">Logs</h1>
             <p class="text-secondary small mb-0">Download or preview the latest log files.</p>
           </div>
-          <a class="btn btn-outline-primary btn-sm" href="{{ url_for('logs_download') }}">Download all logs (ZIP)</a>
+          <a class="btn btn-outline-primary btn-sm" href="{{ url_for('logs_download') }}">Export all logs (ZIP)</a>
         </div>
         <form method="get" class="row g-2">
           <input type="hidden" name="_" value="1">
@@ -3470,6 +3517,16 @@ PAGE_TEMPLATE = """
             <select class="form-select" id="log" name="log" onchange="this.form.submit()">
               {% for option in log_options %}
               <option value="{{ option }}" {% if option == selected_log %}selected{% endif %}>{{ option }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="col-12 col-lg-3">
+            <label class="form-label" for="refresh_interval">Auto Refresh</label>
+            <select class="form-select" id="refresh_interval" name="refresh" onchange="this.form.submit()">
+              {% for interval in refresh_interval_options %}
+              <option value="{{ interval }}" {% if interval == selected_refresh_interval %}selected{% endif %}>
+                {% if interval == 0 %}Off{% else %}{{ interval }}s{% endif %}
+              </option>
               {% endfor %}
             </select>
           </div>
@@ -4208,6 +4265,15 @@ PAGE_TEMPLATE = """
         });
       }
 
+      const refreshValue = Number("{{ selected_refresh_interval|default(0) }}");
+      if (refreshValue && refreshValue > 0) {
+        window.setTimeout(() => {
+          const url = new URL(window.location.href);
+          url.searchParams.set("refresh", String(refreshValue));
+          window.location.href = url.toString();
+        }, refreshValue * 1000);
+      }
+
       const csrfToken = "{{ csrf_token }}";
       if (csrfToken) {
         document.querySelectorAll("form[method='post'], form[method='POST']").forEach((form) => {
@@ -4282,7 +4348,7 @@ def create_app(
     observability_history: deque[dict] = deque(maxlen=240)
 
     try:
-        audit_log_path = _resolve_log_directory(db_path) / "web_gui_audit.log"
+        audit_log_path = _resolve_log_directory(db_path) / "web_audit.log"
         audit_logger = logging.getLogger("wickedyoda-helper.web-audit")
         audit_logger.setLevel(logging.INFO)
         already_attached = any(
@@ -6139,6 +6205,10 @@ def create_app(
         selected_log = Path(request.args.get("log", default_log).strip()).name
         if selected_log not in log_options:
             selected_log = default_log
+        raw_refresh = request.args.get("refresh", "0").strip()
+        selected_refresh_interval = int(raw_refresh) if raw_refresh.isdigit() else 0
+        if selected_refresh_interval not in AUTO_REFRESH_INTERVAL_OPTIONS:
+            selected_refresh_interval = 0
         selected_path = resolved_paths.get(selected_log)
         if selected_path is None:
             log_preview = "Invalid log file selection."
@@ -6153,6 +6223,8 @@ def create_app(
             selected_log=selected_log,
             log_options=log_options,
             log_preview=log_preview,
+            selected_refresh_interval=selected_refresh_interval,
+            refresh_interval_options=list(AUTO_REFRESH_INTERVAL_OPTIONS),
         )
 
     @app.get("/admin/logs/download")
@@ -6165,21 +6237,18 @@ def create_app(
         if not existing_paths:
             flash("No log files found to download.", "danger")
             return redirect(url_for("logs"))
-
-        archive = io.BytesIO()
-        with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-            for path in existing_paths:
-                try:
-                    zf.write(path, arcname=path.name)
-                except OSError:
-                    continue
-        archive.seek(0)
+        payload_bytes, _ = _build_logs_export_payload(log_dir, existing_paths)
         return send_file(
-            archive,
+            io.BytesIO(payload_bytes),
             mimetype="application/zip",
             as_attachment=True,
             download_name="wickedyoda-logs.zip",
         )
+
+    @app.get("/admin/logs/export")
+    @admin_required
+    def logs_export():
+        return logs_download()
 
     @app.get("/admin/wiki")
     @login_required

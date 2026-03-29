@@ -6,6 +6,7 @@ import importlib.util
 import io
 import json
 import logging
+import logging.handlers
 import os
 import re
 import secrets
@@ -209,6 +210,8 @@ MEMBER_ACTIVITY_BACKFILL_GUILD_ID = optional_positive_int_env("MEMBER_ACTIVITY_B
 MEMBER_ACTIVITY_BACKFILL_PROGRESS_LOG_INTERVAL = env_int("MEMBER_ACTIVITY_BACKFILL_PROGRESS_LOG_INTERVAL", 500)
 RANDOM_USER_COOLDOWN_DAYS = 30
 LOG_RETENTION_DAYS = env_int("LOG_RETENTION_DAYS", 90)
+LOG_ROTATION_INTERVAL_DAYS = env_int("LOG_ROTATION_INTERVAL_DAYS", 1)
+LOG_HARDEN_FILE_PERMISSIONS = env_bool("LOG_HARDEN_FILE_PERMISSIONS", True)
 POPULAR_COLOR_ROLES = {
     "Red": 0xE74C3C,
     "Orange": 0xE67E22,
@@ -2241,7 +2244,7 @@ def parse_log_level(value: str, default: int = logging.INFO) -> int:
 
 def resolve_log_dir(db_path: str) -> str:
     configured = os.getenv("LOG_DIR", "").strip()
-    preferred = configured or "/app/logs"
+    preferred = configured or "/logs"
     fallback = os.path.dirname(db_path) or "."
     candidates: list[str] = [preferred]
     if fallback != preferred:
@@ -2249,7 +2252,8 @@ def resolve_log_dir(db_path: str) -> str:
 
     for candidate in candidates:
         try:
-            ensure_private_directory(candidate)
+            if LOG_HARDEN_FILE_PERMISSIONS:
+                ensure_private_directory(candidate)
             test_path = os.path.join(candidate, ".wickedyoda-log-write-test")
             with open(test_path, "a", encoding="utf-8"):
                 pass
@@ -2292,11 +2296,24 @@ def add_file_handler(target_logger: logging.Logger, path: str, level: int) -> No
         if isinstance(handler, logging.FileHandler) and os.path.abspath(handler.baseFilename) == normalized:
             handler.setLevel(level)
             return
-    file_handler = logging.FileHandler(path, encoding="utf-8")
+    if LOG_ROTATION_INTERVAL_DAYS > 0:
+        backup_count = max(1, int(LOG_RETENTION_DAYS // max(LOG_ROTATION_INTERVAL_DAYS, 1))) if LOG_RETENTION_DAYS > 0 else 0
+        file_handler = logging.handlers.TimedRotatingFileHandler(
+            path,
+            when="D",
+            interval=max(1, int(LOG_ROTATION_INTERVAL_DAYS)),
+            backupCount=backup_count,
+            encoding="utf-8",
+            utc=True,
+        )
+        file_handler.suffix = "%Y-%m-%d"
+    else:
+        file_handler = logging.FileHandler(path, encoding="utf-8")
     file_handler.setLevel(level)
     file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
     target_logger.addHandler(file_handler)
-    apply_best_effort_permissions(path, 0o600)
+    if LOG_HARDEN_FILE_PERMISSIONS:
+        apply_best_effort_permissions(path, 0o600)
 
 
 def configure_runtime_logging(log_dir: str) -> tuple[str, str, str]:
