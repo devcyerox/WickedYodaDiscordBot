@@ -1712,6 +1712,10 @@ PAGE_TEMPLATE = """
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="csrf-token" content="{{ csrf_token }}">
   <title>{{ title }}</title>
+  <link rel="icon" href="{{ url_for('static', filename='wicked-yoda-favicon.png') }}">
+  <link rel="apple-touch-icon" sizes="180x180" href="{{ url_for('static', filename='wicked-yoda-avatar.png') }}">
+  <meta property="og:image" content="{{ url_for('static', filename='wicked-yoda-avatar.png') }}">
+  <meta name="twitter:image" content="{{ url_for('static', filename='wicked-yoda-avatar.png') }}">
   {% if page == "status_public" and status_refresh_seconds and status_refresh_seconds > 0 %}
   <meta http-equiv="refresh" content="{{ status_refresh_seconds }}">
   {% endif %}
@@ -2234,7 +2238,7 @@ PAGE_TEMPLATE = """
   <header>
     <div class="header-toprow">
       <div class="header-brand">
-        <strong>Wicked Yoda's Little Helper</strong>
+        <strong>Wicked Yoda Bot Admin</strong>
         <span class="header-version">{{ snapshot.server_time if snapshot and snapshot.server_time else "n/a" }}</span>
       </div>
       <div class="header-tools">
