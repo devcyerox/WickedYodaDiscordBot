@@ -2251,9 +2251,8 @@ PAGE_TEMPLATE = """
               <label class="sr-only" for="mobile-nav-page-select">Open page</label>
               <select id="mobile-nav-page-select" class="nav-select nav-page-select">
                 <option value="">Go to page...</option>
-                <option value="{{ url_for('home') }}">Home</option>
+                <option value="{{ url_for('dashboard') }}">Dashboard (Home)</option>
                 <option value="{{ url_for('account') }}">Account</option>
-                <option value="{{ url_for('dashboard') }}">Dashboard</option>
                 <option value="{{ url_for('overview') }}">Overview</option>
                 <option value="{{ url_for('guilds_page') }}">Servers</option>
                 <option value="{{ url_for('guild_settings') }}">Guild Settings</option>
@@ -2342,9 +2341,8 @@ PAGE_TEMPLATE = """
           <label class="sr-only" for="desktop-nav-page-select">Open page</label>
           <select id="desktop-nav-page-select" class="nav-select nav-page-select">
             <option value="">Go to page...</option>
-            <option value="{{ url_for('home') }}">Home</option>
+            <option value="{{ url_for('dashboard') }}">Dashboard (Home)</option>
             <option value="{{ url_for('account') }}">Account</option>
-            <option value="{{ url_for('dashboard') }}">Dashboard</option>
             <option value="{{ url_for('overview') }}">Overview</option>
             <option value="{{ url_for('guilds_page') }}">Servers</option>
             <option value="{{ url_for('guild_settings') }}">Guild Settings</option>
@@ -2798,7 +2796,7 @@ PAGE_TEMPLATE = """
             <div class="card card-soft p-3 h-100">
               <h3 class="h6 mb-2">Core</h3>
               <div class="d-grid gap-2">
-                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('home') }}">Home</a>
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('home') }}">Landing Page</a>
                 <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('overview') }}">Overview</a>
                 <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('guilds_page') }}">Servers</a>
                 <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('guild_settings') }}">Guild Settings</a>
