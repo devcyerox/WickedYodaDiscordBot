@@ -1712,6 +1712,10 @@ PAGE_TEMPLATE = """
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="csrf-token" content="{{ csrf_token }}">
   <title>{{ title }}</title>
+  <link rel="icon" href="{{ url_for('static', filename='wicked-yoda-favicon.png') }}">
+  <link rel="apple-touch-icon" sizes="180x180" href="{{ url_for('static', filename='wicked-yoda-avatar.png') }}">
+  <meta property="og:image" content="{{ url_for('static', filename='wicked-yoda-avatar.png') }}">
+  <meta name="twitter:image" content="{{ url_for('static', filename='wicked-yoda-avatar.png') }}">
   {% if page == "status_public" and status_refresh_seconds and status_refresh_seconds > 0 %}
   <meta http-equiv="refresh" content="{{ status_refresh_seconds }}">
   {% endif %}
@@ -2234,7 +2238,7 @@ PAGE_TEMPLATE = """
   <header>
     <div class="header-toprow">
       <div class="header-brand">
-        <strong>Wicked Yoda's Little Helper</strong>
+        <strong>Wicked Yoda Bot Admin</strong>
         <span class="header-version">{{ snapshot.server_time if snapshot and snapshot.server_time else "n/a" }}</span>
       </div>
       <div class="header-tools">
@@ -2251,9 +2255,8 @@ PAGE_TEMPLATE = """
               <label class="sr-only" for="mobile-nav-page-select">Open page</label>
               <select id="mobile-nav-page-select" class="nav-select nav-page-select">
                 <option value="">Go to page...</option>
-                <option value="{{ url_for('home') }}">Home</option>
+                <option value="{{ url_for('dashboard') }}">Dashboard (Home)</option>
                 <option value="{{ url_for('account') }}">Account</option>
-                <option value="{{ url_for('dashboard') }}">Dashboard</option>
                 <option value="{{ url_for('overview') }}">Overview</option>
                 <option value="{{ url_for('guilds_page') }}">Servers</option>
                 <option value="{{ url_for('guild_settings') }}">Guild Settings</option>
@@ -2342,9 +2345,8 @@ PAGE_TEMPLATE = """
           <label class="sr-only" for="desktop-nav-page-select">Open page</label>
           <select id="desktop-nav-page-select" class="nav-select nav-page-select">
             <option value="">Go to page...</option>
-            <option value="{{ url_for('home') }}">Home</option>
+            <option value="{{ url_for('dashboard') }}">Dashboard (Home)</option>
             <option value="{{ url_for('account') }}">Account</option>
-            <option value="{{ url_for('dashboard') }}">Dashboard</option>
             <option value="{{ url_for('overview') }}">Overview</option>
             <option value="{{ url_for('guilds_page') }}">Servers</option>
             <option value="{{ url_for('guild_settings') }}">Guild Settings</option>
@@ -2798,7 +2800,7 @@ PAGE_TEMPLATE = """
             <div class="card card-soft p-3 h-100">
               <h3 class="h6 mb-2">Core</h3>
               <div class="d-grid gap-2">
-                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('home') }}">Home</a>
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('home') }}">Landing Page</a>
                 <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('overview') }}">Overview</a>
                 <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('guilds_page') }}">Servers</a>
                 <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('guild_settings') }}">Guild Settings</a>
