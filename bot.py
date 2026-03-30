@@ -6,6 +6,7 @@ import importlib.util
 import io
 import json
 import logging
+import logging.handlers
 import os
 import re
 import secrets
@@ -25,6 +26,31 @@ from defusedxml import ElementTree as DefusedET
 from discord import app_commands
 from discord.ext import commands
 
+from bot_constants import (
+    COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR,
+    COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
+    COMMAND_PERMISSION_METADATA,
+    COMMAND_PERMISSION_MODE_CUSTOM_ROLES,
+    COMMAND_PERMISSION_MODE_DEFAULT,
+    COMMAND_PERMISSION_MODE_DISABLED,
+    COMMAND_PERMISSION_MODE_PUBLIC,
+    COMMAND_PERMISSION_POLICY_LABELS,
+    DEFAULT_TAG_RESPONSES,
+    LINKEDIN_ACTIVITY_URN_PATTERN,
+    LINKEDIN_OG_TITLE_PATTERN,
+    LINKEDIN_POST_URL_PATTERN,
+    LINKEDIN_TEXT_PATTERN,
+    SHORT_CODE_REGEX,
+    SPICY_PROMPT_ALLOWED_TYPES,
+    SPICY_PROMPT_BLOCKED_CATEGORIES,
+    SPICY_PROMPT_BLOCKED_TAGS,
+    STATUS_PAGE_PATH_REGEX,
+    USER_ID_INPUT_PATTERN,
+    YOUTUBE_CHANNEL_ID_META_PATTERNS,
+    YOUTUBE_CHANNEL_ID_PATTERN,
+    YOUTUBE_POST_ID_PATTERN,
+    YOUTUBE_TEXT_PATTERN,
+)
 from web_admin import start_web_admin
 
 logging.basicConfig(
@@ -209,6 +235,8 @@ MEMBER_ACTIVITY_BACKFILL_GUILD_ID = optional_positive_int_env("MEMBER_ACTIVITY_B
 MEMBER_ACTIVITY_BACKFILL_PROGRESS_LOG_INTERVAL = env_int("MEMBER_ACTIVITY_BACKFILL_PROGRESS_LOG_INTERVAL", 500)
 RANDOM_USER_COOLDOWN_DAYS = 30
 LOG_RETENTION_DAYS = env_int("LOG_RETENTION_DAYS", 90)
+LOG_ROTATION_INTERVAL_DAYS = env_int("LOG_ROTATION_INTERVAL_DAYS", 1)
+LOG_HARDEN_FILE_PERMISSIONS = env_bool("LOG_HARDEN_FILE_PERMISSIONS", True)
 POPULAR_COLOR_ROLES = {
     "Red": 0xE74C3C,
     "Orange": 0xE67E22,
@@ -268,162 +296,6 @@ INVALID_BOT_LOG_CHANNEL_CACHE: set[tuple[int | None, int]] = set()
 WARNED_INVALID_BOT_LOG_CHANNEL_CACHE: set[tuple[int | None, int]] = set()
 BOT_LOG_SEND_MAX_ATTEMPTS = 3
 BOT_LOG_SEND_RETRY_DELAY_SECONDS = 2
-
-SHORT_CODE_REGEX = re.compile(r"Link saved:\s*([0-9]{4,})")
-STATUS_PAGE_PATH_REGEX = re.compile(r"^/status/([^/]+)/?$")
-YOUTUBE_CHANNEL_ID_PATTERN = re.compile(r"(UC[a-zA-Z0-9_-]{22})")
-YOUTUBE_CHANNEL_ID_META_PATTERNS = (
-    re.compile(r'"channelId":"(UC[a-zA-Z0-9_-]{22})"'),
-    re.compile(r'itemprop="channelId"\s+content="(UC[a-zA-Z0-9_-]{22})"'),
-    re.compile(r'"externalId":"(UC[a-zA-Z0-9_-]{22})"'),
-)
-USER_ID_INPUT_PATTERN = re.compile(r"^\d{17,20}$")
-YOUTUBE_POST_ID_PATTERN = re.compile(r'"postId":"([^"]+)"')
-YOUTUBE_TEXT_PATTERN = re.compile(r'"text":"([^"]+)"')
-LINKEDIN_ACTIVITY_URN_PATTERN = re.compile(r"urn:li:activity:(\d{8,})")
-LINKEDIN_POST_URL_PATTERN = re.compile(r"https://www\.linkedin\.com/(?:feed/update/urn:li:activity:\d+|posts/[^\"'<>\s]+)")
-LINKEDIN_TEXT_PATTERN = re.compile(r'"text":"([^"]+)"')
-LINKEDIN_OG_TITLE_PATTERN = re.compile(r'<meta\s+property="og:title"\s+content="([^"]+)"', re.IGNORECASE)
-SPICY_PROMPT_ALLOWED_TYPES = {"prompt", "truth", "dare", "would_you_rather", "icebreaker", "quiz"}
-SPICY_PROMPT_BLOCKED_TAGS = {
-    "minor",
-    "minors",
-    "underage",
-    "teen",
-    "incest",
-    "coercion",
-    "non-consensual",
-    "nonconsensual",
-    "sexual-violence",
-    "assault",
-    "bestiality",
-    "trafficking",
-    "exploitation",
-}
-SPICY_PROMPT_BLOCKED_CATEGORIES = {
-    "minor",
-    "minors",
-    "underage",
-    "incest",
-    "coercion",
-    "non-consensual",
-    "nonconsensual",
-    "sexual-violence",
-    "assault",
-    "bestiality",
-    "trafficking",
-    "exploitation",
-}
-
-COMMAND_PERMISSION_MODE_DEFAULT = "default"
-COMMAND_PERMISSION_MODE_PUBLIC = "public"
-COMMAND_PERMISSION_MODE_CUSTOM_ROLES = "custom_roles"
-COMMAND_PERMISSION_MODE_DISABLED = "disabled"
-COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC = "public"
-COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR = "moderator"
-COMMAND_PERMISSION_POLICY_LABELS = {
-    COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC: "Public (all members)",
-    COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR: "Moderator (ban/kick/manage roles/messages/moderate)",
-}
-COMMAND_PERMISSION_METADATA: dict[str, dict[str, str]] = {
-    "ping": {"label": "/ping", "description": "Health check", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
-    "sayhi": {"label": "/sayhi", "description": "Bot introduction", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
-    "happy": {"label": "/happy", "description": "Random puppy image", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
-    "cat": {"label": "/cat", "description": "Random cat image", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
-    "meme": {"label": "/meme", "description": "Random meme", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
-    "dadjoke": {"label": "/dadjoke", "description": "Random dad joke", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
-    "eightball": {"label": "/eightball", "description": "Magic eight-ball", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
-    "coinflip": {"label": "/coinflip", "description": "Flip a coin", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
-    "roll": {"label": "/roll", "description": "Roll dice", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
-    "choose": {"label": "/choose", "description": "Pick an option", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
-    "roastme": {"label": "/roastme", "description": "Playful roast", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
-    "compliment": {
-        "label": "/compliment",
-        "description": "Friendly compliment",
-        "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
-    },
-    "wisdom": {"label": "/wisdom", "description": "Yoda-style wisdom", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
-    "gif": {"label": "/gif", "description": "Reaction GIF", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
-    "poll": {"label": "/poll", "description": "Quick poll", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
-    "questionoftheday": {
-        "label": "/questionoftheday",
-        "description": "Conversation starter",
-        "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
-    },
-    "spicy": {"label": "/spicy", "description": "Random spicy prompt", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
-    "ollama": {"label": "/ollama", "description": "Ask the Ollama model", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
-    "randomuser": {
-        "label": "/randomuser",
-        "description": "Pick a random user (30-day cooldown)",
-        "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
-    },
-    "translate": {"label": "/translate", "description": "Translate text", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
-    "wikihelp": {
-        "label": "/wikihelp",
-        "description": "Search the game help wiki",
-        "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
-    },
-    "color": {"label": "/color", "description": "Pick a name color role", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
-    "countdown": {"label": "/countdown", "description": "Countdown to a date", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
-    "leaderboard": {
-        "label": "/leaderboard",
-        "description": "Activity leaderboard",
-        "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
-    },
-    "trivia": {"label": "/trivia", "description": "Trivia question", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
-    "wouldyourather": {
-        "label": "/wouldyourather",
-        "description": "Would you rather prompt",
-        "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
-    },
-    "rps": {"label": "/rps", "description": "Rock paper scissors", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
-    "guess": {"label": "/guess", "description": "Guessing game", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
-    "birthday_set": {"label": "/birthday set", "description": "Set a birthday", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
-    "birthday_view": {
-        "label": "/birthday view",
-        "description": "View a birthday",
-        "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
-    },
-    "birthday_upcoming": {
-        "label": "/birthday upcoming",
-        "description": "List upcoming birthdays",
-        "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
-    },
-    "birthday_remove": {
-        "label": "/birthday remove",
-        "description": "Remove a birthday",
-        "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
-    },
-    "shorten": {"label": "/shorten", "description": "Create short URL", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
-    "expand": {"label": "/expand", "description": "Expand short URL", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
-    "uptime": {"label": "/uptime", "description": "Uptime monitor summary", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
-    "monitor": {"label": "/monitor", "description": "Service monitor status", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
-    "logs": {"label": "/logs", "description": "Read recent error logs", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR},
-    "stats": {
-        "label": "/stats",
-        "description": "Your private activity summary",
-        "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
-    },
-    "help": {"label": "/help", "description": "Command overview", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
-    "tags": {"label": "/tags", "description": "List configured tags", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
-    "tag": {"label": "/tag", "description": "Post a configured tag", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC},
-    "kick": {"label": "/kick", "description": "Kick member", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR},
-    "ban": {"label": "/ban", "description": "Ban member", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR},
-    "timeout": {"label": "/timeout", "description": "Timeout member", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR},
-    "untimeout": {"label": "/untimeout", "description": "Remove timeout", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR},
-    "purge": {"label": "/purge", "description": "Purge messages", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR},
-    "unban": {"label": "/unban", "description": "Unban by user ID", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR},
-    "addrole": {"label": "/addrole", "description": "Add role to member", "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR},
-    "removerole": {
-        "label": "/removerole",
-        "description": "Remove role from member",
-        "default_policy": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR,
-    },
-}
-DEFAULT_TAG_RESPONSES = {
-    "!rules": "Please review the server rules and pinned messages before posting.",
-    "!support": "Need help? Open a support thread with details and device/version info.",
-}
 COUNTDOWN_INPUT_FORMATS = (
     "%Y-%m-%d",
     "%Y-%m-%d %H:%M",
@@ -2241,7 +2113,7 @@ def parse_log_level(value: str, default: int = logging.INFO) -> int:
 
 def resolve_log_dir(db_path: str) -> str:
     configured = os.getenv("LOG_DIR", "").strip()
-    preferred = configured or "/app/logs"
+    preferred = configured or "/logs"
     fallback = os.path.dirname(db_path) or "."
     candidates: list[str] = [preferred]
     if fallback != preferred:
@@ -2249,7 +2121,8 @@ def resolve_log_dir(db_path: str) -> str:
 
     for candidate in candidates:
         try:
-            ensure_private_directory(candidate)
+            if LOG_HARDEN_FILE_PERMISSIONS:
+                ensure_private_directory(candidate)
             test_path = os.path.join(candidate, ".wickedyoda-log-write-test")
             with open(test_path, "a", encoding="utf-8"):
                 pass
@@ -2292,11 +2165,24 @@ def add_file_handler(target_logger: logging.Logger, path: str, level: int) -> No
         if isinstance(handler, logging.FileHandler) and os.path.abspath(handler.baseFilename) == normalized:
             handler.setLevel(level)
             return
-    file_handler = logging.FileHandler(path, encoding="utf-8")
+    if LOG_ROTATION_INTERVAL_DAYS > 0:
+        backup_count = max(1, int(LOG_RETENTION_DAYS // max(LOG_ROTATION_INTERVAL_DAYS, 1))) if LOG_RETENTION_DAYS > 0 else 0
+        file_handler = logging.handlers.TimedRotatingFileHandler(
+            path,
+            when="D",
+            interval=max(1, int(LOG_ROTATION_INTERVAL_DAYS)),
+            backupCount=backup_count,
+            encoding="utf-8",
+            utc=True,
+        )
+        file_handler.suffix = "%Y-%m-%d"
+    else:
+        file_handler = logging.FileHandler(path, encoding="utf-8")
     file_handler.setLevel(level)
     file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
     target_logger.addHandler(file_handler)
-    apply_best_effort_permissions(path, 0o600)
+    if LOG_HARDEN_FILE_PERMISSIONS:
+        apply_best_effort_permissions(path, 0o600)
 
 
 def configure_runtime_logging(log_dir: str) -> tuple[str, str, str]:

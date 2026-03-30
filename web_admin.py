@@ -17,148 +17,24 @@ from urllib.parse import urlparse, urlunparse
 from flask import Flask, flash, redirect, render_template_string, request, send_file, session, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
 
-SENSITIVE_ENV_KEYS = {
-    "DISCORD_TOKEN",
-    "WEB_ADMIN_DEFAULT_PASSWORD",
-    "WEB_ADMIN_DEFAULT_PASSWORD_HASH",
-    "WEB_ADMIN_SESSION_SECRET",
-    "TRANSLATE_API_KEY",
-    "UPTIME_KUMA_API_KEY",
-}
-SESSION_SAMESITE_OPTIONS = ("Lax", "Strict", "None")
-BOOL_SELECT_OPTIONS = ("false", "true")
-LOG_FILE_OPTIONS = ("bot.log", "bot_log.log", "container_errors.log", "web_gui_audit.log")
-FEED_INTERVAL_OPTIONS = (
-    (300, "5 minutes"),
-    (600, "10 minutes"),
-    (900, "15 minutes"),
-    (1800, "30 minutes"),
-    (3600, "1 hour"),
-    (10800, "3 hours"),
-    (21600, "6 hours"),
+from web_admin_constants import (
+    AUTH_MODE_REMEMBER,
+    AUTH_MODE_STANDARD,
+    AUTO_REFRESH_INTERVAL_OPTIONS,
+    FEED_INTERVAL_OPTIONS,
+    LOG_EMAIL_PATTERN,
+    LOG_FILE_OPTIONS,
+    LOG_SECRET_PATTERN,
+    PASSWORD_MIN_LENGTH,
+    PASSWORD_ROTATION_DAYS,
+    REMEMBER_LOGIN_DAYS,
+    SENSITIVE_ENV_KEYS,
+    SETTINGS_DROPDOWN_OPTIONS,
+    SETTINGS_FIELD_ORDER,
+    SQLITE_TIMEOUT_SECONDS,
+    UPTIME_MONITOR_INTERVAL_OPTIONS,
+    UPTIME_MONITOR_TIMEOUT_OPTIONS,
 )
-UPTIME_MONITOR_INTERVAL_OPTIONS = (
-    (30, "30 seconds"),
-    (60, "1 minute"),
-    (120, "2 minutes"),
-    (300, "5 minutes"),
-    (600, "10 minutes"),
-    (900, "15 minutes"),
-    (1800, "30 minutes"),
-    (3600, "1 hour"),
-)
-UPTIME_MONITOR_TIMEOUT_OPTIONS = (3, 5, 8, 10, 15, 30)
-AUTH_MODE_STANDARD = "standard"
-AUTH_MODE_REMEMBER = "remember"
-REMEMBER_LOGIN_DAYS = 5
-PASSWORD_ROTATION_DAYS = 90
-PASSWORD_MIN_LENGTH = 6
-POPULAR_COLOR_NAMES = ["Red", "Orange", "Yellow", "Green", "Teal", "Blue", "Navy", "Purple", "Pink", "White"]
-SQLITE_TIMEOUT_SECONDS = 10
-SETTINGS_FIELD_ORDER = [
-    "DISCORD_TOKEN",
-    "GUILD_ID",
-    "Bot_Log_Channel",
-    "WEB_ENABLED",
-    "WEB_BIND_HOST",
-    "WEB_PORT",
-    "WEB_TLS_ENABLED",
-    "WEB_TLS_PORT",
-    "WEB_TLS_CERT_FILE",
-    "WEB_TLS_KEY_FILE",
-    "ENABLE_MEMBERS_INTENT",
-    "ENABLE_MESSAGE_CONTENT_INTENT",
-    "COMMAND_RESPONSES_EPHEMERAL",
-    "PUPPY_IMAGE_API_URL",
-    "PUPPY_IMAGE_TIMEOUT_SECONDS",
-    "SHORTENER_ENABLED",
-    "SHORTENER_BASE_URL",
-    "SHORTENER_TIMEOUT_SECONDS",
-    "YOUTUBE_NOTIFY_ENABLED",
-    "YOUTUBE_POLL_INTERVAL_SECONDS",
-    "YOUTUBE_REQUEST_TIMEOUT_SECONDS",
-    "TRANSLATE_API_URL",
-    "TRANSLATE_API_KEY",
-    "TRANSLATE_TIMEOUT_SECONDS",
-    "OLLAMA_ENABLED",
-    "OLLAMA_BASE_URL",
-    "OLLAMA_MODEL",
-    "OLLAMA_TIMEOUT_SECONDS",
-    "WIKI_SEARCH_ENABLED",
-    "WIKI_SEARCH_URL",
-    "WIKI_SEARCH_TIMEOUT_SECONDS",
-    "SPICY_PROMPTS_ENABLED",
-    "SPICY_PROMPTS_REPO_URL",
-    "SPICY_PROMPTS_REPO_BRANCH",
-    "SPICY_PROMPTS_MANIFEST_PATH",
-    "SPICY_PROMPTS_REQUEST_TIMEOUT_SECONDS",
-    "TRANSLATE_API_URL",
-    "TRANSLATE_API_KEY",
-    "TRANSLATE_TIMEOUT_SECONDS",
-    "SPICY_PROMPTS_REFRESH_ON_BOOT",
-    "SPICY_PROMPTS_REFRESH_INTERVAL_HOURS",
-    "MEMBER_ACTIVITY_BACKFILL_ENABLED",
-    "MEMBER_ACTIVITY_BACKFILL_SINCE",
-    "MEMBER_ACTIVITY_BACKFILL_GUILD_ID",
-    "MEMBER_ACTIVITY_BACKFILL_PROGRESS_LOG_INTERVAL",
-    "UPTIME_STATUS_ENABLED",
-    "UPTIME_STATUS_PAGE_URL",
-    "UPTIME_STATUS_TIMEOUT_SECONDS",
-    "UPTIME_KUMA_ENABLED",
-    "UPTIME_KUMA_BASE_URL",
-    "UPTIME_KUMA_API_KEY",
-    "WEB_ADMIN_DEFAULT_USERNAME",
-    "WEB_ADMIN_DEFAULT_PASSWORD",
-    "WEB_ADMIN_SESSION_SECRET",
-    "WEB_SESSION_COOKIE_SECURE",
-    "WEB_SESSION_COOKIE_SAMESITE",
-    "WEB_SESSION_TIMEOUT_MINUTES",
-    "WEB_AVATAR_MAX_UPLOAD_BYTES",
-    "WEB_ENFORCE_CSRF",
-    "WEB_ENFORCE_SAME_ORIGIN_POSTS",
-    "WEB_RESTART_ENABLED",
-    "DATA_DIR",
-    "LOG_DIR",
-    "ACTION_DB_PATH",
-    "WEB_ENV_FILE",
-    "WEB_GITHUB_WIKI_URL",
-]
-SETTINGS_DROPDOWN_OPTIONS: dict[str, tuple[str, ...]] = {
-    "WEB_ENABLED": BOOL_SELECT_OPTIONS,
-    "WEB_TLS_ENABLED": BOOL_SELECT_OPTIONS,
-    "ENABLE_MEMBERS_INTENT": BOOL_SELECT_OPTIONS,
-    "ENABLE_MESSAGE_CONTENT_INTENT": BOOL_SELECT_OPTIONS,
-    "COMMAND_RESPONSES_EPHEMERAL": BOOL_SELECT_OPTIONS,
-    "SHORTENER_ENABLED": BOOL_SELECT_OPTIONS,
-    "YOUTUBE_NOTIFY_ENABLED": BOOL_SELECT_OPTIONS,
-    "SPICY_PROMPTS_ENABLED": BOOL_SELECT_OPTIONS,
-    "SPICY_PROMPTS_REFRESH_ON_BOOT": BOOL_SELECT_OPTIONS,
-    "MEMBER_ACTIVITY_BACKFILL_ENABLED": BOOL_SELECT_OPTIONS,
-    "UPTIME_STATUS_ENABLED": BOOL_SELECT_OPTIONS,
-    "WEB_SESSION_COOKIE_SECURE": BOOL_SELECT_OPTIONS,
-    "WEB_ENFORCE_CSRF": BOOL_SELECT_OPTIONS,
-    "WEB_ENFORCE_SAME_ORIGIN_POSTS": BOOL_SELECT_OPTIONS,
-    "WEB_RESTART_ENABLED": BOOL_SELECT_OPTIONS,
-    "WEB_SESSION_COOKIE_SAMESITE": SESSION_SAMESITE_OPTIONS,
-    "WEB_SESSION_TIMEOUT_MINUTES": ("30", "60", "120", "240"),
-    "WEB_AVATAR_MAX_UPLOAD_BYTES": ("262144", "524288", "1048576", "2097152", "3145728", "4194304"),
-    "WEB_PORT": ("8080", "8000", "5000"),
-    "WEB_TLS_PORT": ("8081", "8443", "4443"),
-    "PUPPY_IMAGE_TIMEOUT_SECONDS": ("5", "8", "10", "15", "30"),
-    "SHORTENER_TIMEOUT_SECONDS": ("5", "8", "10", "15", "30"),
-    "YOUTUBE_POLL_INTERVAL_SECONDS": ("60", "120", "300", "600", "900"),
-    "YOUTUBE_REQUEST_TIMEOUT_SECONDS": ("8", "10", "12", "15", "30"),
-    "SPICY_PROMPTS_REQUEST_TIMEOUT_SECONDS": ("8", "10", "12", "15", "30"),
-    "TRANSLATE_TIMEOUT_SECONDS": ("5", "8", "10", "12", "15", "30"),
-    "OLLAMA_ENABLED": BOOL_SELECT_OPTIONS,
-    "OLLAMA_TIMEOUT_SECONDS": ("10", "15", "30", "45", "60", "90", "120"),
-    "WIKI_SEARCH_ENABLED": BOOL_SELECT_OPTIONS,
-    "WIKI_SEARCH_TIMEOUT_SECONDS": ("5", "8", "10", "12", "15", "30"),
-    "SPICY_PROMPTS_REFRESH_INTERVAL_HOURS": ("0", "6", "12", "24", "48", "72"),
-    "MEMBER_ACTIVITY_BACKFILL_PROGRESS_LOG_INTERVAL": ("100", "250", "500", "1000", "2500"),
-    "UPTIME_STATUS_TIMEOUT_SECONDS": ("5", "8", "10", "15", "30"),
-    "UPTIME_KUMA_ENABLED": BOOL_SELECT_OPTIONS,
-}
 
 
 def _is_sensitive_key(key: str) -> bool:
@@ -1283,7 +1159,7 @@ def _validate_settings_payload(
 def _resolve_log_directory(db_path: str) -> Path:
     configured = os.getenv("LOG_DIR", "").strip()
     fallback = Path(db_path).resolve().parent
-    preferred = Path(configured).expanduser() if configured else fallback
+    preferred = Path(configured).expanduser() if configured else Path("/logs")
     candidates = [preferred]
     if fallback != preferred:
         candidates.append(fallback)
@@ -1308,9 +1184,21 @@ def _resolve_log_path(log_dir: Path, selected_log: str) -> Path | None:
         return (log_dir / "bot_log.log").resolve()
     if selected_log == "container_errors.log":
         return (log_dir / "container_errors.log").resolve()
+    if selected_log == "web_admin.log":
+        return (log_dir / "web_admin.log").resolve()
+    if selected_log == "web_audit.log":
+        return (log_dir / "web_audit.log").resolve()
     if selected_log == "web_gui_audit.log":
         return (log_dir / "web_gui_audit.log").resolve()
     return None
+
+
+def _sanitize_log_text(text: str) -> str:
+    if not text:
+        return text
+    sanitized = LOG_EMAIL_PATTERN.sub("[redacted-email]", text)
+    sanitized = LOG_SECRET_PATTERN.sub(lambda match: f"{match.group(1)}=<redacted>", sanitized)
+    return sanitized
 
 
 def _tail_file(safe_path: Path, line_limit: int = 400) -> str:
@@ -1322,7 +1210,31 @@ def _tail_file(safe_path: Path, line_limit: int = 400) -> str:
         lines = handle.readlines()
     if not lines:
         return "(empty log file)"
-    return "".join(lines[-line_limit:])
+    return _sanitize_log_text("".join(lines[-line_limit:]))
+
+
+def _build_logs_export_payload(log_dir: Path, available_paths: list[Path]) -> tuple[bytes, list[str]]:
+    manifest_lines = [
+        f"generated_at_utc={datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S')}",
+        f"log_dir={log_dir}",
+        "",
+        "files:",
+    ]
+    archive = io.BytesIO()
+    exported_names: list[str] = []
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for path in available_paths:
+            try:
+                stat = path.stat()
+                exported_names.append(path.name)
+                manifest_lines.append(f"- {path.name} ({stat.st_size} bytes)")
+                zf.write(path, arcname=path.name)
+            except OSError:
+                continue
+        manifest_text = "\n".join(manifest_lines).strip() + "\n"
+        zf.writestr("manifest.txt", manifest_text)
+    archive.seek(0)
+    return archive.getvalue(), exported_names
 
 
 def _list_wiki_files() -> list[str]:
@@ -1805,23 +1717,9 @@ PAGE_TEMPLATE = """
   {% endif %}
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
   <style>
+    * { box-sizing: border-box; }
+    html { -webkit-text-size-adjust: 100%; }
     :root {
-      --bg: #eef3fb;
-      --bg-grad-a: #eef3fb;
-      --bg-grad-b: #f8fbff;
-      --fg: #1e293b;
-      --muted: #64748b;
-      --card: #ffffff;
-      --border: #d6dee9;
-      --header: #ffffff;
-      --link: #1d4ed8;
-      --btn-bg: #2563eb;
-      --btn-secondary: #475569;
-      --btn-danger: #dc2626;
-      --input-bg: #ffffff;
-      --input-fg: #1e293b;
-    }
-    body[data-theme="black"] {
       --bg: #0a0a0a;
       --bg-grad-a: #101010;
       --bg-grad-b: #141923;
@@ -1834,65 +1732,162 @@ PAGE_TEMPLATE = """
       --btn-bg: #2563eb;
       --btn-secondary: #374151;
       --btn-danger: #dc2626;
+      --flash-err-bg: #3b1318;
+      --flash-err-fg: #fecaca;
+      --flash-ok-bg: #102c1c;
+      --flash-ok-fg: #bbf7d0;
       --input-bg: #0f141d;
       --input-fg: #e7edf7;
     }
-    body[data-theme="ocean"] {
-      --bg: #e6f2ff;
-      --bg-grad-a: #e1f0ff;
-      --bg-grad-b: #f2f9ff;
-      --fg: #0f2a4a;
-      --muted: #3d5a7a;
+    body[data-theme="light"] {
+      --bg: #eef3fb;
+      --bg-grad-a: #eef3fb;
+      --bg-grad-b: #f8fbff;
+      --fg: #1e293b;
+      --muted: #64748b;
       --card: #ffffff;
-      --border: #c7d7eb;
+      --border: #d6dee9;
       --header: #ffffff;
-      --link: #0b5ed7;
-      --btn-bg: #0d6efd;
-      --btn-secondary: #496789;
-      --btn-danger: #dc3545;
+      --link: #1d4ed8;
+      --btn-bg: #2563eb;
+      --btn-secondary: #475569;
+      --btn-danger: #dc2626;
+      --flash-err-bg: #fee2e2;
+      --flash-err-fg: #991b1b;
+      --flash-ok-bg: #dcfce7;
+      --flash-ok-fg: #166534;
       --input-bg: #ffffff;
-      --input-fg: #0f2a4a;
-    }
-    body[data-theme="ember"] {
-      --bg: #fff3e6;
-      --bg-grad-a: #fff1df;
-      --bg-grad-b: #fff8f0;
-      --fg: #3b1f0f;
-      --muted: #7a4a33;
-      --card: #ffffff;
-      --border: #ecd2c0;
-      --header: #ffffff;
-      --link: #c2410c;
-      --btn-bg: #ea580c;
-      --btn-secondary: #8c4f2d;
-      --btn-danger: #b91c1c;
-      --input-bg: #ffffff;
-      --input-fg: #3b1f0f;
+      --input-fg: #1e293b;
     }
     body[data-theme="forest"] {
-      --bg: #e9f5ee;
-      --bg-grad-a: #e6f3ea;
-      --bg-grad-b: #f4fbf7;
-      --fg: #0f2f1f;
-      --muted: #3f6b52;
-      --card: #ffffff;
-      --border: #cfe3d7;
-      --header: #ffffff;
-      --link: #0f7a4a;
-      --btn-bg: #0f9d58;
-      --btn-secondary: #4b7a5f;
-      --btn-danger: #b42318;
+      --bg: #0b1511;
+      --bg-grad-a: #102018;
+      --bg-grad-b: #183329;
+      --fg: #ecfdf5;
+      --muted: #9ec7b2;
+      --card: #11211a;
+      --border: #24503d;
+      --header: #09110d;
+      --link: #86efac;
+      --btn-bg: #15803d;
+      --btn-secondary: #365346;
+      --btn-danger: #b91c1c;
+      --flash-err-bg: #3f1717;
+      --flash-err-fg: #fecaca;
+      --flash-ok-bg: #103522;
+      --flash-ok-fg: #bbf7d0;
+      --input-bg: #0f1a15;
+      --input-fg: #ecfdf5;
+    }
+    body[data-theme="ember"] {
+      --bg: #1a1010;
+      --bg-grad-a: #241414;
+      --bg-grad-b: #48221a;
+      --fg: #fff4ec;
+      --muted: #e4b8a0;
+      --card: #241616;
+      --border: #5c342b;
+      --header: #140b0b;
+      --link: #fdba74;
+      --btn-bg: #ea580c;
+      --btn-secondary: #6b463f;
+      --btn-danger: #dc2626;
+      --flash-err-bg: #491b1b;
+      --flash-err-fg: #fecaca;
+      --flash-ok-bg: #3a2411;
+      --flash-ok-fg: #fde68a;
+      --input-bg: #1d1111;
+      --input-fg: #fff4ec;
+    }
+    body[data-theme="ice"] {
+      --bg: #eef6fb;
+      --bg-grad-a: #eef6fb;
+      --bg-grad-b: #dbeafe;
+      --fg: #102132;
+      --muted: #4b6b84;
+      --card: #f9fcff;
+      --border: #bfd5e8;
+      --header: #e9f4fb;
+      --link: #0369a1;
+      --btn-bg: #0284c7;
+      --btn-secondary: #5b7a90;
+      --btn-danger: #dc2626;
+      --flash-err-bg: #fee2e2;
+      --flash-err-fg: #991b1b;
+      --flash-ok-bg: #d1fae5;
+      --flash-ok-fg: #065f46;
       --input-bg: #ffffff;
-      --input-fg: #0f2f1f;
+      --input-fg: #102132;
     }
     body {
+      font-family: "Trebuchet MS", "Lucida Sans", "Segoe UI", sans-serif;
+      margin: 0;
+      color: var(--fg);
       background:
         radial-gradient(1100px 450px at 20% -20%, var(--bg-grad-b), transparent 55%),
         radial-gradient(900px 360px at 100% 0%, #10213d, transparent 50%),
         var(--bg);
       min-height: 100vh;
-      color: var(--fg);
       overflow-x: hidden;
+    }
+    a { color: var(--link); }
+    header {
+      background: var(--header);
+      border-bottom: 1px solid var(--border);
+      color: var(--fg);
+      padding: 12px 18px;
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      gap: 14px;
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+    .header-toprow { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+    .header-brand { min-width: 170px; }
+    .header-brand strong { display: block; }
+    .header-version {
+      display: inline-block;
+      margin-top: 4px;
+      font-size: 0.82rem;
+      color: var(--muted);
+      letter-spacing: 0.02em;
+    }
+    .header-tools { display: flex; align-items: center; gap: 12px; margin-left: auto; }
+    .header-right { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; justify-content: center; }
+    .desktop-nav { display: flex; }
+    .mobile-quickbar { display: none; }
+    .nav-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: center; }
+    .nav-controls a { text-decoration: none; }
+    .current-user { color: var(--muted); font-size: 0.95rem; }
+    .current-user-email { color: var(--muted); font-size: 0.85rem; }
+    .header-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 36px;
+      padding: 7px 12px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.03);
+      color: var(--fg);
+      font-size: 0.88rem;
+      line-height: 1.2;
+    }
+    .header-chip strong {
+      font-size: 0.78rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .wrap { max-width: 1200px; margin: 22px auto; padding: 0 16px; }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 18px;
+      margin-bottom: 16px;
     }
     .card-soft {
       border: 1px solid var(--border);
@@ -1900,52 +1895,265 @@ PAGE_TEMPLATE = """
       border-radius: 14px;
       box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
     }
-    .brand { font-weight: 700; letter-spacing: .2px; color: var(--fg); }
-    a { color: var(--link); }
-    .navbar { background: var(--header) !important; border-bottom-color: var(--border) !important; }
-    .navbar-collapse { gap: .75rem; }
-    .navbar-toggler { border-color: var(--border); }
-    .navbar-toggler:focus { box-shadow: 0 0 0 .2rem rgba(37, 99, 235, .2); }
-    .navbar-toggler-icon {
-      background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 30 30'%3e%3cpath stroke='rgba(30,41,59,0.92)' stroke-linecap='round' stroke-miterlimit='10' stroke-width='2' d='M4 7h22M4 15h22M4 23h22'/%3e%3c/svg%3e");
-    }
-    body[data-theme="black"] .navbar-toggler-icon {
-      background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 30 30'%3e%3cpath stroke='rgba(231,237,247,0.92)' stroke-linecap='round' stroke-miterlimit='10' stroke-width='2' d='M4 7h22M4 15h22M4 23h22'/%3e%3c/svg%3e");
-    }
-    .nav-link { color: var(--fg); }
-    .nav-link:hover { color: var(--link); }
-    .text-secondary, .small.text-secondary { color: var(--muted) !important; }
-    .form-control, .form-select, textarea {
-      background: var(--input-bg);
-      color: var(--input-fg);
-      border-color: var(--border);
+    .flash { padding: 10px 12px; border-radius: 8px; margin-bottom: 10px; border: 1px solid var(--border); }
+    .flash.error { background: var(--flash-err-bg); color: var(--flash-err-fg); }
+    .flash.success { background: var(--flash-ok-bg); color: var(--flash-ok-fg); }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { border-bottom: 1px solid var(--border); padding: 10px; text-align: left; vertical-align: top; }
+    input[type=text], input[type=email], input[type=password], textarea, select, .form-control, .form-select {
+      width: 100%;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px;
+      min-height: 44px;
       font-size: 16px;
-    }
-    .form-control:focus, .form-select:focus, textarea:focus {
       background: var(--input-bg);
       color: var(--input-fg);
-      border-color: var(--btn-bg);
-      box-shadow: 0 0 0 .25rem rgba(37, 99, 235, .2);
     }
+    textarea { min-height: 220px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .btn {
+      background: var(--btn-bg);
+      border: 0;
+      color: #fff;
+      padding: 9px 14px;
+      border-radius: 8px;
+      cursor: pointer;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 44px;
+    }
+    .btn.secondary { background: var(--btn-secondary); }
+    .btn.danger { background: var(--btn-danger); }
     .btn-primary { background: var(--btn-bg); border-color: var(--btn-bg); }
     .btn-outline-secondary { border-color: var(--border); color: var(--fg); }
     .btn-outline-secondary:hover { background: var(--btn-secondary); border-color: var(--btn-secondary); color: #fff; }
+    .inline-form { display: inline-flex; margin-left: 0; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .muted { color: var(--muted); font-size: 0.9rem; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
     .theme-switch { display: inline-flex; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
     .theme-btn {
       border: 0;
       background: transparent;
       color: var(--fg);
-      padding: 6px 10px;
+      padding: 7px 11px;
       cursor: pointer;
-      font-weight: 600;
+      font-weight: 700;
+      letter-spacing: 0.02em;
     }
     .theme-btn.active { background: var(--btn-bg); color: #fff; }
-    .nav-utility { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
-    .guild-switch-form { min-width: 220px; }
+    .nav-select {
+      width: 280px;
+      max-width: 70vw;
+      min-width: 190px;
+      padding: 7px 9px;
+    }
+    .mobile-nav { display: none; position: relative; }
+    .mobile-nav summary {
+      list-style: none;
+      cursor: pointer;
+      user-select: none;
+      min-height: 44px;
+      padding: 10px 14px;
+      border-radius: 10px;
+      background: var(--btn-bg);
+      color: #fff;
+      font-weight: 700;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      border: 0;
+    }
+    .mobile-nav summary::-webkit-details-marker { display: none; }
+    .mobile-nav-panel {
+      margin-top: 10px;
+      padding: 14px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: var(--card);
+      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.2);
+      display: grid;
+      gap: 12px;
+    }
+    .mobile-user-block {
+      display: grid;
+      gap: 4px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid var(--border);
+    }
+    .mobile-link-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+    .mobile-panel-section { display: grid; gap: 8px; }
+    .mobile-panel-title {
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.76rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .mobile-link-grid .btn,
+    .mobile-nav-panel .btn,
+    .mobile-nav-panel .inline-form,
+    .mobile-nav-panel .inline-form .btn,
+    .mobile-nav-panel .nav-select {
+      width: 100%;
+    }
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+    .dash-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+    .dashboard-shell { display: grid; gap: 18px; }
+    .dashboard-hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1.7fr) minmax(280px, 1fr);
+      gap: 16px;
+      align-items: stretch;
+    }
+    .dashboard-hero-main,
+    .dashboard-hero-side,
+    .dashboard-section,
+    .dash-card {
+      position: relative;
+      overflow: hidden;
+    }
+    .dashboard-hero-main::before,
+    .dashboard-hero-side::before,
+    .dash-card::before {
+      content: "";
+      position: absolute;
+      inset: 0 auto auto 0;
+      width: 100%;
+      height: 3px;
+      background: linear-gradient(90deg, var(--btn-bg), transparent 78%);
+      opacity: 0.75;
+      pointer-events: none;
+    }
+    .dashboard-hero-main h2,
+    .dashboard-hero-side h3,
+    .dashboard-section-head h3,
+    .dash-card h3 {
+      margin-top: 0;
+    }
+    .dashboard-hero-main p,
+    .dashboard-hero-side p,
+    .dash-card p {
+      margin-top: 0;
+    }
+    .dashboard-hero-main {
+      display: grid;
+      gap: 14px;
+      align-content: start;
+      padding-top: 20px;
+    }
+    .dashboard-hero-lead {
+      font-size: 1.02rem;
+      line-height: 1.55;
+      max-width: 58ch;
+    }
+    .dashboard-pill-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+    .dashboard-pill {
+      display: grid;
+      gap: 2px;
+      min-width: 132px;
+      padding: 11px 13px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: rgba(255, 255, 255, 0.03);
+    }
+    .dashboard-pill strong {
+      font-size: 0.74rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .dashboard-pill span {
+      font-size: 0.96rem;
+      font-weight: 700;
+      line-height: 1.3;
+    }
+    .dashboard-hero-side {
+      display: grid;
+      gap: 14px;
+      align-content: start;
+      padding-top: 20px;
+    }
+    .dashboard-list {
+      display: grid;
+      gap: 10px;
+    }
+    .dashboard-list-item {
+      display: grid;
+      gap: 4px;
+      padding: 11px 12px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: rgba(255, 255, 255, 0.03);
+    }
+    .dashboard-list-item strong { font-size: 0.9rem; }
+    .dashboard-section {
+      display: grid;
+      gap: 12px;
+      padding-top: 18px;
+    }
+    .dashboard-section-head {
+      display: flex;
+      align-items: end;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .dashboard-section-head p {
+      margin: 0;
+      max-width: 70ch;
+    }
+    .dashboard-section-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 14px;
+    }
+    .dash-card {
+      display: grid;
+      gap: 12px;
+      align-content: start;
+      min-height: 100%;
+      padding-top: 20px;
+    }
+    .dash-card h3 { margin-bottom: 2px; }
+    .dash-card p { min-height: 0; line-height: 1.5; }
+    .dash-card.primary {
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent 48%), var(--card);
+    }
+    .dash-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: auto; }
+    .dash-actions .btn { min-width: 0; }
+    .dashboard-note {
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.88rem;
+      line-height: 1.45;
+    }
     .table-wrap {
       overflow-x: auto;
       -webkit-overflow-scrolling: touch;
       border-radius: 12px;
+      border: 1px solid var(--border);
     }
     .table-wrap table { min-width: 640px; }
     .status-pill { text-transform: capitalize; }
@@ -1979,213 +2187,206 @@ PAGE_TEMPLATE = """
     .documentation-link.active .small {
       color: rgba(255, 255, 255, 0.78) !important;
     }
-    .dashboard-shell { display: grid; gap: 18px; }
-    .dashboard-hero {
-      display: grid;
-      grid-template-columns: 2fr 1fr;
-      gap: 18px;
+    @media (max-width: 1180px) {
+      .dashboard-hero { grid-template-columns: 1fr; }
     }
-    .dashboard-hero-main,
-    .dashboard-hero-side,
-    .dashboard-section,
-    .dash-card {
-      position: relative;
-      overflow: hidden;
-    }
-    .dashboard-hero-main::before,
-    .dashboard-hero-side::before,
-    .dash-card::before {
-      content: "";
-      position: absolute;
-      inset: 0;
-      background: linear-gradient(120deg, rgba(37, 99, 235, 0.12), transparent);
-      opacity: 0.7;
-      pointer-events: none;
-    }
-    .dashboard-hero-main h2,
-    .dashboard-hero-side h3,
-    .dashboard-section-head h3,
-    .dash-card h3 {
-      margin: 0;
-      font-size: 1.05rem;
-      font-weight: 700;
-    }
-    .dashboard-hero-main p,
-    .dashboard-hero-side p,
-    .dash-card p {
-      margin: 0;
-    }
-    .dashboard-hero-main {
-      padding: 22px;
-      display: flex;
-      flex-direction: column;
-      gap: 16px;
-    }
-    .dashboard-hero-lead { font-size: 0.95rem; color: var(--muted); }
-    .dashboard-pill-row { display: flex; flex-wrap: wrap; gap: 12px; }
-    .dashboard-pill {
-      background: rgba(15, 23, 42, 0.08);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 10px 12px;
-      min-width: 140px;
-      flex: 1 1 160px;
-    }
-    .dashboard-pill strong { display: block; font-size: 0.78rem; color: var(--muted); font-weight: 600; }
-    .dashboard-pill span { display: block; font-weight: 700; }
-    .dashboard-hero-side { padding: 22px; display: flex; flex-direction: column; gap: 16px; }
-    .dashboard-list { display: grid; gap: 12px; }
-    .dashboard-list-item { padding: 12px; border-radius: 12px; border: 1px solid var(--border); background: rgba(15, 23, 42, 0.06); }
-    .dashboard-list-item strong { display: block; margin-bottom: 4px; }
-    .dashboard-section { padding: 18px; }
-    .dashboard-section-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 12px; }
-    .dashboard-section-head p { color: var(--muted); font-size: 0.9rem; }
-    .dashboard-section-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; }
-    .dash-card {
-      padding: 16px;
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      background: var(--card);
-    }
-    .dash-card.primary { border-color: var(--btn-bg); box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.2); }
-    .dash-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: auto; }
-    .dashboard-note { font-size: 0.85rem; color: var(--muted); }
+    @media (max-width: 1080px) { .dash-grid { grid-template-columns: 1fr 1fr; } }
     @media (max-width: 900px) {
-      .navbar-brand {
-        max-width: calc(100% - 60px);
-        font-size: 1rem;
-        line-height: 1.2;
-        white-space: normal;
-      }
-      .navbar-collapse { padding-top: .75rem; }
-      .navbar-nav { gap: .15rem; }
-      .nav-link { padding: .65rem .15rem; }
-      .nav-utility {
-        width: 100%;
-        flex-direction: column;
-        align-items: stretch;
-      }
-      .nav-utility > * { width: 100%; }
-      .theme-switch, .go-page-select, .guild-switch-form, .guild-switch-form .form-select { width: 100%; max-width: 100%; }
+      .grid { grid-template-columns: 1fr; }
+      .dash-grid { grid-template-columns: 1fr; }
+      .dashboard-section-head { align-items: start; flex-direction: column; }
+      .dashboard-section-grid { grid-template-columns: 1fr 1fr; }
+      header { padding: 10px 12px; align-items: center; }
+      .wrap { margin: 14px auto; padding: 0 10px; }
+      .card { padding: 14px; }
+      .header-toprow { width: 100%; align-items: flex-start; }
+      .header-tools { margin-left: 0; width: auto; flex-shrink: 0; }
+      .header-right.desktop-nav { display: none; }
+      .mobile-quickbar { display: grid; grid-template-columns: 1fr; gap: 10px; width: 100%; }
+      .mobile-nav { display: block; width: 100%; }
+      .nav-select { width: 100%; max-width: 100%; min-width: 0; }
+      .theme-switch { width: 100%; }
+      .header-tools .theme-switch { display: none; }
       .theme-btn { flex: 1; min-height: 42px; }
-      .btn-sm, .nav-utility .btn { min-height: 42px; }
-      .guild-card-action { width: 100%; }
+      .current-user-email { display: block; }
+      .dash-actions .btn { width: 100%; }
+      .dashboard-pill { min-width: 0; flex: 1 1 180px; }
+      th, td { padding: 8px; }
+      .table-wrap > table { min-width: 680px; }
       .table-wrap table { min-width: 560px; }
       .mobile-pre { max-height: 48vh; font-size: .875rem; }
       .documentation-sidebar { max-height: none; }
-      .list-group-item { padding: .9rem .95rem; }
-      .dashboard-hero { grid-template-columns: 1fr; }
-      .dashboard-section-head { align-items: start; flex-direction: column; }
-      .dashboard-section-grid { grid-template-columns: 1fr 1fr; }
-      .dashboard-pill { min-width: 0; flex: 1 1 180px; }
-      .dash-actions { display: none; }
     }
-    @media (max-width: 576px) {
-      .container-fluid, .container { padding-left: .9rem !important; padding-right: .9rem !important; }
-      main.container { padding-top: 1rem !important; padding-bottom: 1.25rem !important; }
-      .card-soft { border-radius: 12px; }
-      .table-wrap table { min-width: 520px; }
+    @media (max-width: 600px) {
+      .card { border-radius: 10px; }
+      .table-wrap > table { min-width: 620px; }
+      .header-toprow { flex-direction: column; align-items: stretch; }
+      .header-tools { width: 100%; flex-direction: column; align-items: stretch; }
       .dashboard-section-grid { grid-template-columns: 1fr; }
       .dashboard-pill-row { display: grid; grid-template-columns: 1fr 1fr; }
       .dashboard-pill { min-width: 0; }
+      .mobile-link-grid { grid-template-columns: 1fr; }
+      main.container { padding-top: 1rem !important; padding-bottom: 1.25rem !important; }
     }
   </style>
 </head>
-<body data-theme="light">
-  <nav class="navbar navbar-expand-lg border-bottom sticky-top">
-    <div class="container-fluid px-3 px-lg-4">
-      <a class="navbar-brand brand" href="{{ url_for('home') }}">Wicked Yoda's Little Helper</a>
-      <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#topNav">
-        <span class="navbar-toggler-icon"></span>
-      </button>
-      <div class="collapse navbar-collapse" id="topNav">
-        <div class="theme-switch me-2 mb-2 mb-lg-0" aria-label="Theme selector">
+<body data-theme="black">
+  <header>
+    <div class="header-toprow">
+      <div class="header-brand">
+        <strong>Wicked Yoda's Little Helper</strong>
+        <span class="header-version">{{ snapshot.server_time if snapshot and snapshot.server_time else "n/a" }}</span>
+      </div>
+      <div class="header-tools">
+        {% if session.get("user") %}
+        <details class="mobile-nav">
+          <summary>Menu</summary>
+          <div class="mobile-nav-panel">
+            <div class="mobile-user-block">
+              <span class="current-user">{{ session.get("display_name") or session.get("user") }}{% if session.get("is_admin") %} (Admin){% elif session.get("is_guild_admin") %} (Guild Admin){% else %} (Read Only){% endif %}</span>
+              {% if selected_guild_name %}<span class="current-user">Server: {{ selected_guild_name }}</span>{% endif %}
+            </div>
+            <div class="mobile-panel-section">
+              <p class="mobile-panel-title">Quick Jump</p>
+              <label class="sr-only" for="mobile-nav-page-select">Open page</label>
+              <select id="mobile-nav-page-select" class="nav-select nav-page-select">
+                <option value="">Go to page...</option>
+                <option value="{{ url_for('home') }}">Home</option>
+                <option value="{{ url_for('account') }}">Account</option>
+                <option value="{{ url_for('dashboard') }}">Dashboard</option>
+                <option value="{{ url_for('overview') }}">Overview</option>
+                <option value="{{ url_for('guilds_page') }}">Servers</option>
+                <option value="{{ url_for('guild_settings') }}">Guild Settings</option>
+                <option value="{{ url_for('command_permissions') }}">Command Permissions</option>
+                <option value="{{ url_for('bot_profile') }}">Bot Profile</option>
+                <option value="{{ url_for('random_user_page') }}">Random User</option>
+                <option value="{{ url_for('member_activity_page') }}">Member Activity</option>
+                <option value="{{ url_for('actions') }}">Actions</option>
+                <option value="{{ url_for('tag_responses') }}">Tag Responses</option>
+                <option value="{{ url_for('spicy_prompts') }}">Spicy Prompts</option>
+                <option value="{{ url_for('youtube_subscriptions') }}">YouTube</option>
+                <option value="{{ url_for('reddit_feeds') }}">Reddit</option>
+                <option value="{{ url_for('wordpress_feeds') }}">WordPress</option>
+                <option value="{{ url_for('linkedin_feeds') }}">LinkedIn</option>
+                <option value="{{ url_for('uptime_monitors_page') }}">Uptime Monitors</option>
+                <option value="{{ url_for('status_page') }}">Status</option>
+                {% if session.get("is_admin") %}
+                <option value="{{ url_for('users') }}">Users</option>
+                <option value="{{ url_for('guild_access') }}">Guild Access</option>
+                <option value="{{ url_for('settings') }}">Settings (Global)</option>
+                <option value="{{ url_for('observability') }}">Observability (Global)</option>
+                <option value="{{ url_for('logs') }}">Logs (Global)</option>
+                <option value="{{ url_for('documentation') }}">Documentation (Global)</option>
+                {% endif %}
+                <option value="{{ url_for('logout') }}">Logout</option>
+              </select>
+            </div>
+            <div class="mobile-panel-section">
+              <p class="mobile-panel-title">Primary Actions</p>
+              <div class="mobile-link-grid">
+                <a class="btn secondary" href="{{ url_for('guilds_page') }}">Servers</a>
+                <a class="btn secondary" href="{{ url_for('account') }}">My Account</a>
+                <a class="btn secondary" href="{{ url_for('member_activity_page') }}">Member Activity</a>
+                <a class="btn secondary" href="{{ url_for('dashboard') }}">Dashboard</a>
+                <a class="btn secondary" href="{{ url_for('command_permissions') }}">Permissions</a>
+                <a class="btn secondary" href="{{ url_for('guild_settings') }}">Settings</a>
+                <a class="btn secondary" href="{{ url_for('logs') }}">Logs</a>
+                <a class="btn secondary" href="{{ url_for('logout') }}">Logout</a>
+              </div>
+            </div>
+            <div class="mobile-panel-section">
+              <p class="mobile-panel-title">Theme</p>
+              <div class="theme-switch" aria-label="Theme selector">
+                <button type="button" class="theme-btn" data-theme-choice="light">Light</button>
+                <button type="button" class="theme-btn" data-theme-choice="black">Black</button>
+                <button type="button" class="theme-btn" data-theme-choice="forest">Forest</button>
+                <button type="button" class="theme-btn" data-theme-choice="ember">Ember</button>
+                <button type="button" class="theme-btn" data-theme-choice="ice">Ice</button>
+              </div>
+            </div>
+          </div>
+        </details>
+        {% endif %}
+        <div class="theme-switch" aria-label="Theme selector">
           <button type="button" class="theme-btn" data-theme-choice="light">Light</button>
           <button type="button" class="theme-btn" data-theme-choice="black">Black</button>
-          <button type="button" class="theme-btn" data-theme-choice="ocean">Ocean</button>
-          <button type="button" class="theme-btn" data-theme-choice="ember">Ember</button>
           <button type="button" class="theme-btn" data-theme-choice="forest">Forest</button>
+          <button type="button" class="theme-btn" data-theme-choice="ember">Ember</button>
+          <button type="button" class="theme-btn" data-theme-choice="ice">Ice</button>
         </div>
-        {% if session.get("user") %}
-        <div class="nav-utility d-flex align-items-center gap-2">
-          <span class="badge text-bg-light border">{{ snapshot.server_time if snapshot and snapshot.server_time else "n/a" }}</span>
-          <div class="dropdown">
-            <button class="btn btn-outline-secondary btn-sm dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
-              Menu
-            </button>
-            <ul class="dropdown-menu dropdown-menu-end">
-              <li><h6 class="dropdown-header">Core</h6></li>
-              <li><a class="dropdown-item" href="{{ url_for('home') }}">Home</a></li>
-              <li><a class="dropdown-item" href="{{ url_for('account') }}">Account</a></li>
-              <li><a class="dropdown-item" href="{{ url_for('dashboard') }}">Dashboard</a></li>
-              <li><a class="dropdown-item" href="{{ url_for('overview') }}">Overview</a></li>
-              <li><a class="dropdown-item" href="{{ url_for('guilds_page') }}">Servers</a></li>
-              <li><a class="dropdown-item" href="{{ url_for('guild_settings') }}">Guild Settings</a></li>
-              <li><a class="dropdown-item" href="{{ url_for('command_permissions') }}">Command Permissions</a></li>
-              <li><a class="dropdown-item" href="{{ url_for('bot_profile') }}">Bot Profile</a></li>
-              <li><a class="dropdown-item" href="{{ url_for('random_user_page') }}">Random User</a></li>
-              <li><hr class="dropdown-divider"></li>
-              <li><h6 class="dropdown-header">Community</h6></li>
-              <li><a class="dropdown-item" href="{{ url_for('member_activity_page') }}">Member Activity</a></li>
-              <li><a class="dropdown-item" href="{{ url_for('actions') }}">Actions</a></li>
-              <li><a class="dropdown-item" href="{{ url_for('tag_responses') }}">Tag Responses</a></li>
-              <li><a class="dropdown-item" href="{{ url_for('spicy_prompts') }}">Spicy Prompts</a></li>
-              <li><hr class="dropdown-divider"></li>
-              <li><h6 class="dropdown-header">Feeds</h6></li>
-              <li><a class="dropdown-item" href="{{ url_for('youtube_subscriptions') }}">YouTube</a></li>
-              <li><a class="dropdown-item" href="{{ url_for('reddit_feeds') }}">Reddit</a></li>
-              <li><a class="dropdown-item" href="{{ url_for('wordpress_feeds') }}">WordPress</a></li>
-              <li><a class="dropdown-item" href="{{ url_for('linkedin_feeds') }}">LinkedIn</a></li>
-              <li><hr class="dropdown-divider"></li>
-              <li><h6 class="dropdown-header">Uptime</h6></li>
-              <li><a class="dropdown-item" href="{{ url_for('uptime_monitors_page') }}">Uptime Monitors</a></li>
-              <li><a class="dropdown-item" href="{{ url_for('status_page') }}">Status</a></li>
-              {% if session.get("is_admin") %}
-              <li><hr class="dropdown-divider"></li>
-              <li><h6 class="dropdown-header">Admin</h6></li>
-              <li><a class="dropdown-item" href="{{ url_for('users') }}">Users</a></li>
-              <li><a class="dropdown-item" href="{{ url_for('guild_access') }}">Guild Access</a></li>
-              <li><a class="dropdown-item" href="{{ url_for('settings') }}">Settings (Global)</a></li>
-              <li><a class="dropdown-item" href="{{ url_for('observability') }}">Observability (Global)</a></li>
-              <li><a class="dropdown-item" href="{{ url_for('logs') }}">Logs (Global)</a></li>
-              <li><a class="dropdown-item" href="{{ url_for('documentation') }}">Documentation (Global)</a></li>
-              {% endif %}
-              {% if restart_enabled %}
-              <li><hr class="dropdown-divider"></li>
-              <li>
-                <form method="post" action="{{ url_for('restart_service') }}" class="px-3 py-1" onsubmit="return confirm('WARNING: This restarts the container process. Continue?');">
-                  <button class="btn btn-outline-danger btn-sm w-100" type="submit" {% if not session.get("is_admin") %}disabled{% endif %}>Restart</button>
-                </form>
-              </li>
-              {% endif %}
-              <li><hr class="dropdown-divider"></li>
-              <li><a class="dropdown-item" href="{{ url_for('logout') }}">Log out</a></li>
-            </ul>
-          </div>
+      </div>
+    </div>
+    {% if session.get("user") %}
+    <div class="mobile-quickbar">
+      <div class="header-chip">
+        <strong>Server</strong>
+        <span>{{ selected_guild_name or "No server selected" }}</span>
+      </div>
+      <div class="mobile-link-grid">
+        <a class="btn secondary" href="{{ url_for('guilds_page') }}">Servers</a>
+        <a class="btn secondary" href="{{ url_for('account') }}">My Account</a>
+        <a class="btn secondary" href="{{ url_for('member_activity_page') }}">Member Activity</a>
+        <a class="btn secondary" href="{{ url_for('logout') }}">Logout</a>
+        <a class="btn secondary" href="{{ url_for('dashboard') }}">Dashboard</a>
+      </div>
+    </div>
+    {% endif %}
+    <div class="header-right desktop-nav">
+      {% if session.get("user") %}
+        <nav class="nav-controls">
+          <span class="current-user">{{ session.get("display_name") or session.get("user") }}{% if session.get("is_admin") %} (Admin){% elif session.get("is_guild_admin") %} (Guild Admin){% else %} (Read Only){% endif %}</span>
+          {% if selected_guild_name %}<span class="current-user">Server: {{ selected_guild_name }}</span>{% endif %}
+          <a class="btn secondary" href="{{ url_for('guilds_page') }}">Servers</a>
+          <a class="btn secondary" href="{{ url_for('dashboard') }}">Dashboard</a>
+          <a class="btn secondary" href="{{ url_for('logout') }}">Logout</a>
+          <label class="sr-only" for="desktop-nav-page-select">Open page</label>
+          <select id="desktop-nav-page-select" class="nav-select nav-page-select">
+            <option value="">Go to page...</option>
+            <option value="{{ url_for('home') }}">Home</option>
+            <option value="{{ url_for('account') }}">Account</option>
+            <option value="{{ url_for('dashboard') }}">Dashboard</option>
+            <option value="{{ url_for('overview') }}">Overview</option>
+            <option value="{{ url_for('guilds_page') }}">Servers</option>
+            <option value="{{ url_for('guild_settings') }}">Guild Settings</option>
+            <option value="{{ url_for('command_permissions') }}">Command Permissions</option>
+            <option value="{{ url_for('bot_profile') }}">Bot Profile</option>
+            <option value="{{ url_for('random_user_page') }}">Random User</option>
+            <option value="{{ url_for('member_activity_page') }}">Member Activity</option>
+            <option value="{{ url_for('actions') }}">Actions</option>
+            <option value="{{ url_for('tag_responses') }}">Tag Responses</option>
+            <option value="{{ url_for('spicy_prompts') }}">Spicy Prompts</option>
+            <option value="{{ url_for('youtube_subscriptions') }}">YouTube</option>
+            <option value="{{ url_for('reddit_feeds') }}">Reddit</option>
+            <option value="{{ url_for('wordpress_feeds') }}">WordPress</option>
+            <option value="{{ url_for('linkedin_feeds') }}">LinkedIn</option>
+            <option value="{{ url_for('uptime_monitors_page') }}">Uptime Monitors</option>
+            <option value="{{ url_for('status_page') }}">Status</option>
+            {% if session.get("is_admin") %}
+            <option value="{{ url_for('users') }}">Users</option>
+            <option value="{{ url_for('guild_access') }}">Guild Access</option>
+            <option value="{{ url_for('settings') }}">Settings (Global)</option>
+            <option value="{{ url_for('observability') }}">Observability (Global)</option>
+            <option value="{{ url_for('logs') }}">Logs (Global)</option>
+            <option value="{{ url_for('documentation') }}">Documentation (Global)</option>
+            {% endif %}
+            <option value="{{ url_for('logout') }}">Logout</option>
+          </select>
           {% if guild_options %}
-          <form method="post" action="{{ url_for('select_guild') }}" class="guild-switch-form d-flex">
+          <form method="post" action="{{ url_for('select_guild') }}" class="inline-form">
             <input type="hidden" name="next_endpoint" value="{{ 'documentation' if request.endpoint == 'documentation_page' else (request.endpoint or 'home') }}">
-            <select class="form-select form-select-sm" name="guild_id" onchange="this.form.submit()">
+            <select class="nav-select" name="guild_id" onchange="this.form.submit()">
               {% for guild in guild_options %}
               <option value="{{ guild.id }}" {% if selected_guild_id == guild.id %}selected{% endif %}>{{ guild.name }}</option>
               {% endfor %}
             </select>
           </form>
           {% endif %}
-        </div>
-        {% else %}
-        <ul class="navbar-nav me-auto mb-2 mb-lg-0">
-          <li class="nav-item"><a class="nav-link" href="{{ url_for('public_status_everything') }}">Status</a></li>
-        </ul>
-        {% endif %}
-      </div>
+        </nav>
+      {% endif %}
     </div>
-  </nav>
+  </header>
 
-  <main class="container px-3 px-lg-4 py-4">
+  <main class="container wrap">
     {% with messages = get_flashed_messages(with_categories=true) %}
       {% if messages %}
         {% for category, message in messages %}
@@ -2591,24 +2792,72 @@ PAGE_TEMPLATE = """
     {% elif page == "dashboard" %}
       <div class="card card-soft p-3">
         <h1 class="h5 mb-2">Dashboard</h1>
-        <p class="text-secondary mb-2">Select a section from the Menu to manage the bot or review activity. This page stays light for mobile.</p>
-        <div class="row g-3 mt-1">
-          <div class="col-12 col-md-4">
+        <p class="text-secondary mb-3">Every category is listed here for quick access.</p>
+        <div class="row g-3">
+          <div class="col-12 col-lg-4">
             <div class="card card-soft p-3 h-100">
-              <p class="text-secondary small mb-1">Selected Guild</p>
-              <p class="mb-0 fw-semibold">{{ selected_guild_name or snapshot.guild_id }}</p>
+              <h3 class="h6 mb-2">Core</h3>
+              <div class="d-grid gap-2">
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('home') }}">Home</a>
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('overview') }}">Overview</a>
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('guilds_page') }}">Servers</a>
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('guild_settings') }}">Guild Settings</a>
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('command_permissions') }}">Command Permissions</a>
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('bot_profile') }}">Bot Profile</a>
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('random_user_page') }}">Random User</a>
+              </div>
             </div>
           </div>
-          <div class="col-12 col-md-4">
+          <div class="col-12 col-lg-4">
             <div class="card card-soft p-3 h-100">
-              <p class="text-secondary small mb-1">Access</p>
-              <p class="mb-0 fw-semibold">{{ "Admin" if session.get("is_admin") else ("Guild Admin" if session.get("is_guild_admin") else "Read-only") }}</p>
+              <h3 class="h6 mb-2">Community</h3>
+              <div class="d-grid gap-2">
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('member_activity_page') }}">Member Activity</a>
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('actions') }}">Moderation Actions</a>
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('tag_responses') }}">Tag Responses</a>
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('spicy_prompts') }}">Spicy Prompts</a>
+              </div>
             </div>
           </div>
-          <div class="col-12 col-md-4">
+          <div class="col-12 col-lg-4">
             <div class="card card-soft p-3 h-100">
-              <p class="text-secondary small mb-1">Latency</p>
-              <p class="mb-0 fw-semibold">{{ snapshot.latency_ms }} ms</p>
+              <h3 class="h6 mb-2">Feeds</h3>
+              <div class="d-grid gap-2">
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('youtube_subscriptions') }}">YouTube</a>
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('reddit_feeds') }}">Reddit</a>
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('wordpress_feeds') }}">WordPress</a>
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('linkedin_feeds') }}">LinkedIn</a>
+              </div>
+            </div>
+          </div>
+          <div class="col-12 col-lg-4">
+            <div class="card card-soft p-3 h-100">
+              <h3 class="h6 mb-2">Uptime</h3>
+              <div class="d-grid gap-2">
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('uptime_monitors_page') }}">Uptime Monitors</a>
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('status_page') }}">Status</a>
+              </div>
+            </div>
+          </div>
+          <div class="col-12 col-lg-4">
+            <div class="card card-soft p-3 h-100">
+              <h3 class="h6 mb-2">Admin</h3>
+              <div class="d-grid gap-2">
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('users') }}">Users</a>
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('guild_access') }}">Guild Access</a>
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('settings') }}">Settings (Global)</a>
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('observability') }}">Observability (Global)</a>
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('logs') }}">Logs (Global)</a>
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('documentation') }}">Documentation (Global)</a>
+              </div>
+            </div>
+          </div>
+          <div class="col-12 col-lg-4">
+            <div class="card card-soft p-3 h-100">
+              <h3 class="h6 mb-2">Account</h3>
+              <div class="d-grid gap-2">
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('account') }}">My Account</a>
+              </div>
             </div>
           </div>
         </div>
@@ -3413,7 +3662,7 @@ PAGE_TEMPLATE = """
             <h1 class="h5 mb-1">Logs</h1>
             <p class="text-secondary small mb-0">Download or preview the latest log files.</p>
           </div>
-          <a class="btn btn-outline-primary btn-sm" href="{{ url_for('logs_download') }}">Download all logs (ZIP)</a>
+          <a class="btn btn-outline-primary btn-sm" href="{{ url_for('logs_download') }}">Export all logs (ZIP)</a>
         </div>
         <form method="get" class="row g-2">
           <input type="hidden" name="_" value="1">
@@ -3422,6 +3671,16 @@ PAGE_TEMPLATE = """
             <select class="form-select" id="log" name="log" onchange="this.form.submit()">
               {% for option in log_options %}
               <option value="{{ option }}" {% if option == selected_log %}selected{% endif %}>{{ option }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="col-12 col-lg-3">
+            <label class="form-label" for="refresh_interval">Auto Refresh</label>
+            <select class="form-select" id="refresh_interval" name="refresh" onchange="this.form.submit()">
+              {% for interval in refresh_interval_options %}
+              <option value="{{ interval }}" {% if interval == selected_refresh_interval %}selected{% endif %}>
+                {% if interval == 0 %}Off{% else %}{{ interval }}s{% endif %}
+              </option>
               {% endfor %}
             </select>
           </div>
@@ -4130,8 +4389,8 @@ PAGE_TEMPLATE = """
   <script>
     (function () {
       const storageKey = "web_theme_choice";
-      const fallbackTheme = "light";
-      const allowed = { light: true, black: true, ocean: true, ember: true, forest: true };
+      const fallbackTheme = "black";
+      const allowed = { light: true, black: true, forest: true, ember: true, ice: true };
 
       function setTheme(theme) {
         const selected = allowed[theme] ? theme : fallbackTheme;
@@ -4150,14 +4409,28 @@ PAGE_TEMPLATE = """
         btn.addEventListener("click", function () { setTheme(btn.getAttribute("data-theme-choice")); });
       });
 
-      const navSelect = document.getElementById("nav-page-select");
-      if (navSelect) {
+      document.querySelectorAll(".nav-page-select").forEach((navSelect) => {
         navSelect.addEventListener("change", function () {
           const target = navSelect.value || "";
           if (!target) { return; }
-          window.location.href = target;
+          const selectedOption = navSelect.options[navSelect.selectedIndex];
+          const isExternal = selectedOption && selectedOption.dataset && selectedOption.dataset.external === "1";
+          if (isExternal) {
+            window.open(target, "_blank", "noopener");
+          } else {
+            window.location.href = target;
+          }
           navSelect.value = "";
         });
+      });
+
+      const refreshValue = Number("{{ selected_refresh_interval|default(0) }}");
+      if (refreshValue && refreshValue > 0) {
+        window.setTimeout(() => {
+          const url = new URL(window.location.href);
+          url.searchParams.set("refresh", String(refreshValue));
+          window.location.href = url.toString();
+        }, refreshValue * 1000);
       }
 
       const csrfToken = "{{ csrf_token }}";
@@ -4234,7 +4507,7 @@ def create_app(
     observability_history: deque[dict] = deque(maxlen=240)
 
     try:
-        audit_log_path = _resolve_log_directory(db_path) / "web_gui_audit.log"
+        audit_log_path = _resolve_log_directory(db_path) / "web_audit.log"
         audit_logger = logging.getLogger("wickedyoda-helper.web-audit")
         audit_logger.setLevel(logging.INFO)
         already_attached = any(
@@ -6091,6 +6364,10 @@ def create_app(
         selected_log = Path(request.args.get("log", default_log).strip()).name
         if selected_log not in log_options:
             selected_log = default_log
+        raw_refresh = request.args.get("refresh", "0").strip()
+        selected_refresh_interval = int(raw_refresh) if raw_refresh.isdigit() else 0
+        if selected_refresh_interval not in AUTO_REFRESH_INTERVAL_OPTIONS:
+            selected_refresh_interval = 0
         selected_path = resolved_paths.get(selected_log)
         if selected_path is None:
             log_preview = "Invalid log file selection."
@@ -6105,6 +6382,8 @@ def create_app(
             selected_log=selected_log,
             log_options=log_options,
             log_preview=log_preview,
+            selected_refresh_interval=selected_refresh_interval,
+            refresh_interval_options=list(AUTO_REFRESH_INTERVAL_OPTIONS),
         )
 
     @app.get("/admin/logs/download")
@@ -6117,21 +6396,18 @@ def create_app(
         if not existing_paths:
             flash("No log files found to download.", "danger")
             return redirect(url_for("logs"))
-
-        archive = io.BytesIO()
-        with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-            for path in existing_paths:
-                try:
-                    zf.write(path, arcname=path.name)
-                except OSError:
-                    continue
-        archive.seek(0)
+        payload_bytes, _ = _build_logs_export_payload(log_dir, existing_paths)
         return send_file(
-            archive,
+            io.BytesIO(payload_bytes),
             mimetype="application/zip",
             as_attachment=True,
             download_name="wickedyoda-logs.zip",
         )
+
+    @app.get("/admin/logs/export")
+    @admin_required
+    def logs_export():
+        return logs_download()
 
     @app.get("/admin/wiki")
     @login_required

@@ -1,6 +1,6 @@
 # Multi-Guild and Env Setup
 
-Last Updated: 2026-03-22
+Last Updated: 2026-03-28
 
 ## Required vs Optional Vars
 
@@ -14,17 +14,22 @@ Last Updated: 2026-03-22
   - Storage vars (`DATA_DIR`, `ACTION_DB_PATH`, `LOG_DIR`)
   - Feed integration timeouts (`YOUTUBE_REQUEST_TIMEOUT_SECONDS`, `WORDPRESS_REQUEST_TIMEOUT_SECONDS`, `LINKEDIN_REQUEST_TIMEOUT_SECONDS`)
   - Spicy Prompts repo vars (`SPICY_PROMPTS_*`)
+  - Uptime monitors (no required env vars; configured in web GUI)
 
 ## Storage Paths
 
 - In the shipped Docker Compose example, `DATA_DIR` in `env.env` is the host-side bind path for persistent data.
 - In the shipped Docker Compose example, `LOG_DIR` in `env.env` is the host-side bind path for persistent logs.
-- `docker-compose.yml` overrides the bot's in-container `DATA_DIR` to `/app/data` and `LOG_DIR` to `/app/log`.
+- `docker-compose.yml` overrides the bot's in-container `DATA_DIR` to `/app/data` and `LOG_DIR` to `/logs`.
 - `ACTION_DB_PATH` defaults to the in-container `DATA_DIR/mod_actions.db` when unset.
 - `LOG_DIR` defaults under the in-container `DATA_DIR` when unset or invalid, but the shipped Compose example pins it to `/app/log`.
 - The shipped `docker-compose.yml` example bind-mounts `${DATA_DIR:-/root/docker/wickedyodabot}` to `/app/data`.
-- The shipped `docker-compose.yml` example bind-mounts `${LOG_DIR:-/root/docker/wickedyodabot/log}` to `/app/log`.
+- The shipped `docker-compose.yml` example bind-mounts `${LOG_DIR:-/root/docker/wickedyodabot/log}` to `/logs`.
 - Start Compose with `docker compose --env-file env.env up -d` so the bind path comes from `env.env`.
+
+## env.env Overlay
+
+The runtime loads defaults from `env.env`, then applies overrides from `/app/env.env` (written by the web GUI). This allows per-deployment overrides without editing the base file.
 
 ## How Guild Selection Works
 
@@ -78,7 +83,7 @@ WEB_PORT=8080
 WEB_TLS_ENABLED=true
 WEB_TLS_PORT=8081
 DATA_DIR=/root/docker/wickedyodabot
-LOG_DIR=/root/docker/wickedyodabot/log
+LOG_DIR=/root/docker/wickedyodabot/logs
 ```
 
 ## Single-Guild Legacy Example
@@ -92,11 +97,21 @@ WEB_PORT=8080
 WEB_TLS_ENABLED=true
 WEB_TLS_PORT=8081
 DATA_DIR=/root/docker/wickedyodabot
-LOG_DIR=/root/docker/wickedyodabot/log
+LOG_DIR=/root/docker/wickedyodabot/logs
 ```
 
 
 ## Log Retention
 
 - `LOG_RETENTION_DAYS` controls how long log files are kept (default 90).
-- Logs are written inside the container to `/app/logs` and should be bind-mounted to the host (e.g. `./logs:/app/logs`).
+- Logs are written inside the container to `/logs` and should be bind-mounted to the host (e.g. `./logs:/logs`).
+
+## Guild Admin Access
+
+Guild Admins are web users scoped to a subset of guilds. Access groups are configured under `/admin/guild-access`:
+
+- Create a group
+- Assign guilds to the group
+- Assign user emails to the group
+
+Guild Admin users only see and manage the guilds assigned to their groups.

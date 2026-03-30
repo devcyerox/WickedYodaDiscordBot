@@ -1,10 +1,10 @@
 # Wicked Yoda's Little Helper Wiki
 
-Last Updated: 2026-03-22
+Last Updated: 2026-03-28
 
 This folder contains internal project wiki docs for bot operations, command behavior, feed automation, and web admin usage.
 
-Current feature areas include moderation commands, fun/community slash commands, feed automation, repo-backed Spicy Prompts content refresh, guild-scoped member activity reporting, and the multi-guild web admin portal.
+Current feature areas include moderation commands, fun/community slash commands, feed automation, uptime monitoring, repo-backed Spicy Prompts content refresh, guild-scoped member activity reporting, and the multi-guild web admin portal with role-based access.
 
 ## Pages
 
@@ -26,8 +26,12 @@ Current feature areas include moderation commands, fun/community slash commands,
 - Login required:
   - `/admin`
   - `/admin/home`
+  - `/admin/overview`
   - `/admin/guilds`
+  - `/admin/guild-settings`
+  - `/admin/random-user`
   - `/admin/status`
+  - `/admin/uptime-monitors`
   - `/admin/actions`
   - `/admin/member-activity`
   - `/admin/reddit`
@@ -35,12 +39,18 @@ Current feature areas include moderation commands, fun/community slash commands,
   - `/admin/linkedin`
   - `/admin/youtube`
   - `/admin/spicy-prompts`
+  - `/admin/command-permissions`
+  - `/admin/tag-responses`
   - `/admin/documentation`
+  - `/admin/documentation/<page>`
   - `/admin/logs`
+  - `/admin/logs/download`
+  - `/admin/logs/export`
   - `/admin/wiki`
   - `/admin/account`
 - Admin-write pages and actions:
   - `/admin/users`
+  - `/admin/guild-access`
   - `/admin/command-permissions`
   - `/admin/tag-responses`
   - `/admin/guild-settings`
@@ -81,3 +91,4 @@ Whenever activity reporting or analytics views change:
 
 
 Recent updates include log retention controls, dashboard status cards for Spicy Prompts, command status visibility on the dashboard, and Spicy Prompts random category rotation with 4-hour repeat protection.
+Additional updates include Guild Admin access groups, uptime monitors (HTTP/TCP/status pages), random user picker with 30-day exclusion window, and dashboard category listings for all web admin pages.
