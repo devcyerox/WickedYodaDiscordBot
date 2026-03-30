@@ -823,19 +823,30 @@ def parse_tcp_target(raw_value: str) -> tuple[str, int]:
     return host, port
 
 
+def require_http_url(raw_url: str) -> str:
+    parsed = urllib.parse.urlparse(raw_url)
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError("Only http/https URLs are allowed.")
+    if not parsed.netloc:
+        raise ValueError("URL must include a host.")
+    return raw_url
+
+
 def check_http_endpoint(url: str, timeout_seconds: int) -> tuple[bool, int, str]:
+    url = require_http_url(url)
     start = time.monotonic()
     request = urllib.request.Request(url, method="GET", headers={"User-Agent": "WickedYodaBot/1.0"})
-    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:  # nosec B310
         status = int(response.status)
     elapsed_ms = int((time.monotonic() - start) * 1000)
     return 200 <= status < 400, elapsed_ms, f"HTTP {status}"
 
 
 def check_statuspage_endpoint(url: str, timeout_seconds: int) -> tuple[bool, int, str]:
+    url = require_http_url(url)
     start = time.monotonic()
     request = urllib.request.Request(url, method="GET", headers={"User-Agent": "WickedYodaBot/1.0"})
-    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:  # nosec B310
         status_code = int(response.status)
         body = response.read().decode("utf-8", errors="replace")
     elapsed_ms = int((time.monotonic() - start) * 1000)
